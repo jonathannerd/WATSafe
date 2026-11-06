@@ -628,7 +628,7 @@ class _DetectorSelectorCard extends StatelessWidget {
               style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 12.5),
             ),
             const SizedBox(height: 14),
-            ...DetectorType.values.map((type) {
+            ...capabilities.keys.map((type) {
               final cap = capabilities[type];
               final status = cap?.status ?? CapabilityStatus.unsupported;
               final statusColor = WatSafeTheme.colorForCapabilityStatus(status);

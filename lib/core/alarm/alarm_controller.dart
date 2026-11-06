@@ -53,6 +53,7 @@ class AlarmController extends ChangeNotifier {
   int _incidentSequence = 0;
   int _remainingCountdownSeconds = 0;
   bool _isCalibrating = false;
+  bool _isPreparingToArm = false;
 
   Timer? _countdownTimer;
   Timer? _testAlarmTimer;
@@ -280,9 +281,28 @@ class AlarmController extends ChangeNotifier {
 
   /// Verifies detector readiness and starts the arming countdown.
   Future<bool> startArming() async {
-    if (_state == ProtectionState.arming ||
+    if (_isPreparingToArm ||
+        _state == ProtectionState.arming ||
         _state == ProtectionState.armed ||
         _state == ProtectionState.alarming) {
+      return false;
+    }
+
+    _isPreparingToArm = true;
+    try {
+      return await _prepareAndStartArming();
+    } finally {
+      _isPreparingToArm = false;
+    }
+  }
+
+  Future<bool> _prepareAndStartArming() async {
+    // Browsers require audio activation within the original Arm gesture.
+    try {
+      await _audioAdapter.prepareForAlarm();
+    } catch (error) {
+      _warningMessage = 'Unable to prepare the alarm sound: $error';
+      notifyListeners();
       return false;
     }
 
@@ -530,7 +550,8 @@ class AlarmController extends ChangeNotifier {
   /// Starts a clearly labeled local Test Alarm that lasts at most 5 seconds
   /// and can be stopped immediately without arming the detector.
   Future<bool> startTestAlarm() async {
-    if (_state == ProtectionState.arming ||
+    if (_isPreparingToArm ||
+        _state == ProtectionState.arming ||
         _state == ProtectionState.armed ||
         _state == ProtectionState.alarming ||
         _state == ProtectionState.paused) {
@@ -570,18 +591,28 @@ class AlarmController extends ChangeNotifier {
         maxDuration: const Duration(seconds: 5),
       );
     } catch (error) {
+      if (_activeTestIncident?.id != testIncident.id) {
+        return false;
+      }
       _warningMessage = 'Audio playback error during Test Alarm: $error';
+      await stopTestAlarm();
+      return false;
     }
 
+    if (_activeTestIncident?.id != testIncident.id || !_isTestAlarmRunning) {
+      return false;
+    }
     try {
       await _incidentStorage.saveIncident(testIncident);
     } catch (error) {
       _warningMessage = 'Test alarm started, but incident save failed: $error';
     }
 
-    _testAlarmTimer = Timer(const Duration(seconds: 5), () {
-      unawaited(stopTestAlarm(autoCompleted: true));
-    });
+    if (_activeTestIncident?.id == testIncident.id && _isTestAlarmRunning) {
+      _testAlarmTimer = Timer(const Duration(seconds: 5), () {
+        unawaited(stopTestAlarm(autoCompleted: true));
+      });
+    }
     notifyListeners();
     return true;
   }
@@ -594,6 +625,8 @@ class AlarmController extends ChangeNotifier {
     _testAlarmTimer?.cancel();
     _testAlarmTimer = null;
     _isTestAlarmRunning = false;
+    final testIncident = _activeTestIncident;
+    _activeTestIncident = null;
 
     try {
       await _audioAdapter.stopAlarm();
@@ -601,7 +634,6 @@ class AlarmController extends ChangeNotifier {
       // Ignore stop error
     }
 
-    final testIncident = _activeTestIncident;
     if (testIncident != null) {
       final resolved = testIncident.copyWith(
         resolvedAt: _clock(),
@@ -609,7 +641,6 @@ class AlarmController extends ChangeNotifier {
             ? 'Test alarm completed (5s limit)'
             : 'Test alarm stopped manually',
       );
-      _activeTestIncident = null;
       _replaceIncidentInMemory(resolved);
       try {
         await _incidentStorage.updateIncident(resolved);
@@ -618,10 +649,12 @@ class AlarmController extends ChangeNotifier {
       }
     }
 
-    final cap = selectedCapability;
-    _statusMessage = (cap != null && cap.canArm)
-        ? 'Test alarm finished. Ready to arm.'
-        : (cap?.summary ?? 'Test alarm finished.');
+    if (!_isTestAlarmRunning) {
+      final cap = selectedCapability;
+      _statusMessage = (cap != null && cap.canArm)
+          ? 'Test alarm finished. Ready to arm.'
+          : (cap?.summary ?? 'Test alarm finished.');
+    }
     notifyListeners();
   }
 

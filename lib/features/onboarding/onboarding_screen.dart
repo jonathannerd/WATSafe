@@ -39,19 +39,23 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       _errorMessage = null;
     });
 
-    final result = await widget.controller.setupInitialPin(
-      pin: _pinController.text.trim(),
-      confirmPin: _confirmPinController.text.trim(),
-    );
+    String? errorMessage;
+    try {
+      final result = await widget.controller.setupInitialPin(
+        pin: _pinController.text.trim(),
+        confirmPin: _confirmPinController.text.trim(),
+      );
+      errorMessage = result.errorMessage;
+    } catch (_) {
+      errorMessage = 'Could not save your PIN. Check local storage and retry.';
+    }
 
     if (!mounted) {
       return;
     }
     setState(() {
       _isSubmitting = false;
-      if (!result.isValid) {
-        _errorMessage = result.errorMessage;
-      }
+      _errorMessage = errorMessage;
     });
   }
 

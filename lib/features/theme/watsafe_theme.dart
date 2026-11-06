@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../../core/alarm/alarm_state.dart';
@@ -46,6 +47,7 @@ class WatSafeTheme {
 
     return ThemeData(
       useMaterial3: true,
+      fontFamily: kIsWeb ? 'Roboto' : null,
       brightness: Brightness.dark,
       colorScheme: colorScheme,
       scaffoldBackgroundColor: charcoalDeep,

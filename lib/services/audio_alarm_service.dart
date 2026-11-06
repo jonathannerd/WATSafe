@@ -41,6 +41,11 @@ class PlatformAudioAlarmService implements AudioAlarmAdapter {
   }
 
   @override
+  Future<void> prepareForAlarm() async {
+    await _loadAlarmAssetBytes();
+  }
+
+  @override
   Future<void> startLoopingAlarm({required double volume}) async {
     _cancelTimers();
     _isPlaying = true;
@@ -144,9 +149,17 @@ class FakeAudioAlarmAdapter implements AudioAlarmAdapter {
   int stopCount = 0;
   double lastVolume = 0.85;
   bool shouldThrowOnStart = false;
+  bool shouldThrowOnPrepare = false;
 
   @override
   bool get isPlaying => _isPlaying;
+
+  @override
+  Future<void> prepareForAlarm() async {
+    if (shouldThrowOnPrepare) {
+      throw StateError('Audio activation was denied');
+    }
+  }
 
   @override
   String get audioLimitationsNote =>

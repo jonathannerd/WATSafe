@@ -48,6 +48,9 @@ abstract class MotionDetectorAdapter {
 
 /// Contract for local alarm audio playback.
 abstract class AudioAlarmAdapter {
+  /// Prepares audio during the user's Arm action, before the countdown.
+  Future<void> prepareForAlarm();
+
   /// Starts the continuous looping siren immediately at [volume] (`0.0`..`1.0`).
   Future<void> startLoopingAlarm({required double volume});
 
