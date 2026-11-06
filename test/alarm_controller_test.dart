@@ -179,6 +179,16 @@ void main() {
     expect(controller.state, ProtectionState.armed);
   }
 
+  test('An unavailable siren leaves protection disarmed', () async {
+    fakeAudio.shouldThrowOnPrepare = true;
+
+    expect(await controller.startArming(), isFalse);
+    expect(controller.state, ProtectionState.disarmed);
+    expect(controller.activeSessionId, isNull);
+    expect(fakeDetector.startCount, 0);
+    expect(controller.warningMessage, contains('Audio activation was denied'));
+  });
+
   test(
     '1. Arming and cancellation, including ignoring a stale countdown callback',
     () async {

@@ -2,9 +2,40 @@
 
 # WATSafe
 
-**WATSafe** is a cross-platform device protection application built with Flutter and native platform adapters for **macOS**, **Windows**, **iOS**, and **Android**.
+**WATSafe** is a Flutter device protection prototype with a shared browser
+build and native runners for macOS, Windows, iOS, and Android. The browser
+build can detect changes in the webcam view, sound a local siren, and record
+an incident that the owner can resolve with their PIN.
 
-Desktop builds protect laptops against unauthorized tampering or movement while armed. Mobile builds are architected to provide local device motion protection where permitted by the OS and to receive remote alerts from paired devices once the backend service is connected.
+## Browser quick start
+
+Use this target for team development and demos on Macs and Windows laptops.
+It needs Flutter and Chrome or Edge. The browser build runs without Xcode.
+
+~~~bash
+flutter pub get
+flutter run -d web-server --web-port=8080
+~~~
+
+Open [localhost:8080](http://localhost:8080) in your browser. Set a PIN, grant
+camera access, and use **Run 5-Second Test Alarm** to check the audio output.
+Arm the webcam, wait for calibration, then move a large object through the
+camera view. Enter your PIN to stop the siren and see the event in **Incidents**.
+
+Keep the WATSafe tab visible and the device awake during the demo. Hiding the
+tab pauses monitoring and releases the camera. Use a well-lit scene. Changes
+in the view, including people and lighting, can trigger the alarm.
+
+One teammate can prepare a browser build for everyone else:
+
+~~~bash
+flutter build web --no-web-resources-cdn
+~~~
+
+Serve the contents of build/web over HTTPS, or use localhost for local
+testing. Teammates opening a served build only need a browser. Camera frames
+are processed locally, and each browser profile keeps its own settings,
+incident history, and salted PIN hash.
 
 ---
 

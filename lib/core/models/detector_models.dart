@@ -47,6 +47,15 @@ enum DetectorType {
     limitationNote:
         'iOS restricts continuous background sensor capture. Live motion monitoring operates '
         'only while WATSafe remains in the foreground; suspended or locked devices rely on paired-device push alerts.',
+  ),
+  browserCameraSceneMotion(
+    id: 'browser_camera_scene_motion',
+    displayName: 'Browser Webcam',
+    platformLabel: 'Browser',
+    modalityLabel: 'Webcam Scene Motion',
+    limitationNote:
+        'Keep this tab visible and the device awake while monitoring. '
+        'People, lighting changes, and laptop movement can all trigger the alarm.',
   );
 
   const DetectorType({

@@ -3,34 +3,32 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'core/alarm/alarm_controller.dart';
+import 'core/contracts/platform_contracts.dart';
+import 'core/models/detector_models.dart';
 import 'core/models/settings_models.dart';
 import 'features/shell/watsafe_shell.dart';
 import 'features/theme/watsafe_theme.dart';
-import 'platform/platform_detector_registry.dart';
-import 'services/audio_alarm_service.dart';
-import 'services/local_storage_service.dart';
+import 'platform/app_services_native.dart'
+    if (dart.library.js_interop) 'platform/web/app_services_web.dart'
+    as platform;
 import 'services/pin_security_service.dart';
 import 'services/remote_notification_service.dart';
-import 'services/secure_pin_storage_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  final pinStorage = PlatformSecurePinStorage();
-  final pinService = PinSecurityService(storage: pinStorage);
-  final incidentStorage = FileIncidentStorage();
-  final settingsStorage = FileSettingsStorage();
-  final audioAdapter = PlatformAudioAlarmService();
-  final notificationAdapter = const UnconfiguredRemoteNotificationService();
-  final detectors = PlatformDetectorRegistry.createDefaultDetectors();
+  final services = platform.createAppServices();
 
   final controller = AlarmController(
-    detectors: detectors,
-    audioAdapter: audioAdapter,
-    pinService: pinService,
-    incidentStorage: incidentStorage,
-    settingsStorage: _PlatformDefaultSettingsDecorator(settingsStorage),
-    notificationAdapter: notificationAdapter,
+    detectors: services.detectors,
+    audioAdapter: services.audio,
+    pinService: PinSecurityService(storage: services.pinStorage),
+    incidentStorage: services.incidents,
+    settingsStorage: _PlatformDefaultSettingsDecorator(
+      services.settings,
+      services.defaultDetector,
+    ),
+    notificationAdapter: const UnconfiguredRemoteNotificationService(),
   );
 
   await controller.initialize();
@@ -39,19 +37,17 @@ Future<void> main() async {
 
 /// Ensures the initial default detector matches the current host platform when
 /// no settings file has been saved yet.
-class _PlatformDefaultSettingsDecorator extends FileSettingsStorage {
-  _PlatformDefaultSettingsDecorator(this._inner);
+class _PlatformDefaultSettingsDecorator implements SettingsStorageAdapter {
+  _PlatformDefaultSettingsDecorator(this._inner, this._defaultDetector);
 
-  final FileSettingsStorage _inner;
+  final SettingsStorageAdapter _inner;
+  final DetectorType _defaultDetector;
 
   @override
   Future<ProtectionSettings> loadSettings() async {
     final loaded = await _inner.loadSettings();
     if (!loaded.onboardingCompleted) {
-      return loaded.copyWith(
-        selectedDetector:
-            PlatformDetectorRegistry.defaultDetectorForCurrentPlatform(),
-      );
+      return loaded.copyWith(selectedDetector: _defaultDetector);
     }
     return loaded;
   }
