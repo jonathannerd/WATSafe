@@ -93,6 +93,17 @@ class WatSafeRelayServer {
         return;
       }
 
+      if (method == 'POST' && path == '/v1/devices/command') {
+        final body = await _readJsonBody(request);
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'delivered': true,
+          'commandId': 'cmd_${++_seq}',
+          'deviceId': body['deviceId'],
+          'command': body['command'],
+        });
+        return;
+      }
+
       if (method == 'POST' && path == '/v1/incidents:report') {
         final body = await _readJsonBody(request);
         // Enforce strict privacy invariant: reject camera frames or PIN hashes

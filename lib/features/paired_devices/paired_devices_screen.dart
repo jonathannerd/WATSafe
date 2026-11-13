@@ -92,6 +92,24 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
     });
   }
 
+  Future<void> _handleDeviceCommand(
+    PairedDeviceSummary device,
+    PairedDeviceCommandType command,
+  ) async {
+    final record = await widget.controller.executePairedDeviceCommand(
+      deviceId: device.deviceId,
+      command: command,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _feedbackMessage =
+          record?.summary ??
+          'Could not execute command on "${device.displayName}".';
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
@@ -235,6 +253,10 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
                 const SizedBox(height: 20),
                 _buildPairingManagementCard(context),
               ],
+              if (controller.pairedDeviceActions.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 20),
+                _buildActivityLogCard(context, controller.pairedDeviceActions),
+              ],
               const SizedBox(height: 20),
               Card(
                 child: Padding(
@@ -277,72 +299,264 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
     BuildContext context,
     PairedDeviceSummary device,
   ) {
-    final isIos = device.platform.toLowerCase().contains('ios');
+    final isIos = device.isIosDevice;
+    final badgeColor = device.isRingingRemotely
+        ? WatSafeTheme.alarmCrimson
+        : (device.pushChannelReady
+              ? WatSafeTheme.readyEmerald
+              : WatSafeTheme.amberAccent);
+    final badgeText = device.isRingingRemotely
+        ? 'RINGING'
+        : (device.pushChannelReady ? 'PUSH READY' : 'PENDING');
+
+    final sensorColor = device.remoteSensorForwardingEnabled
+        ? WatSafeTheme.readyEmerald
+        : WatSafeTheme.warmSubtle;
+
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(14),
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: WatSafeTheme.charcoalElevated,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: WatSafeTheme.charcoalBorder),
+        border: Border.all(
+          color: device.isRingingRemotely
+              ? WatSafeTheme.alarmCrimson
+              : WatSafeTheme.charcoalBorder,
+        ),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Icon(
-            isIos ? Icons.phone_iphone : Icons.phone_android,
-            color: WatSafeTheme.amberAccent,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  device.displayName,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 15,
+          Row(
+            children: <Widget>[
+              Icon(
+                isIos ? Icons.phone_iphone : Icons.phone_android,
+                color: WatSafeTheme.amberAccent,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      device.displayName,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${device.platform} • ID: ${device.deviceId} • ${device.remoteStateLabel}',
+                      style: const TextStyle(
+                        color: WatSafeTheme.warmMuted,
+                        fontSize: 12.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: sensorColor.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: sensorColor),
+                ),
+                child: Text(
+                  device.remoteSensorForwardingEnabled
+                      ? 'SENSOR LINK ACTIVE'
+                      : 'SENSOR LINK PAUSED',
+                  key: Key('sensor_link_badge_${device.deviceId}'),
+                  style: TextStyle(
+                    color: sensorColor,
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  '${device.platform} • ID: ${device.deviceId}',
-                  style: const TextStyle(
-                    color: WatSafeTheme.warmMuted,
-                    fontSize: 12.5,
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: badgeColor.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: badgeColor),
+                ),
+                child: Text(
+                  badgeText,
+                  key: Key('push_status_badge_${device.deviceId}'),
+                  style: TextStyle(
+                    color: badgeColor,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
                   ),
+                ),
+              ),
+              if (widget.controller.canManagePairing) ...<Widget>[
+                const SizedBox(width: 8),
+                IconButton(
+                  key: Key('unpair_device_${device.deviceId}'),
+                  tooltip: 'Unpair device',
+                  icon: const Icon(
+                    Icons.link_off,
+                    color: WatSafeTheme.warmMuted,
+                  ),
+                  onPressed: () {
+                    widget.controller.unpairCompanionDevice(device.deviceId);
+                  },
+                ),
+              ],
+            ],
+          ),
+          if (device.lastActionSummary != null) ...<Widget>[
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: WatSafeTheme.charcoalSurface,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: WatSafeTheme.charcoalBorder),
+              ),
+              child: Text(
+                'Latest Activity: ${device.lastActionSummary}',
+                key: Key('device_last_action_${device.deviceId}'),
+                style: const TextStyle(
+                  color: WatSafeTheme.warmOffWhite,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
+          if (widget.controller.canManagePairing) ...<Widget>[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                FilledButton.tonalIcon(
+                  key: Key('cmd_test_push_${device.deviceId}'),
+                  onPressed: () => _handleDeviceCommand(
+                    device,
+                    PairedDeviceCommandType.sendTestPush,
+                  ),
+                  icon: const Icon(
+                    Icons.notifications_active_outlined,
+                    size: 16,
+                  ),
+                  label: const Text('Send Test Alert'),
+                ),
+                OutlinedButton.icon(
+                  key: Key('cmd_ring_${device.deviceId}'),
+                  onPressed: () => _handleDeviceCommand(
+                    device,
+                    PairedDeviceCommandType.toggleRemoteRing,
+                  ),
+                  icon: Icon(
+                    device.isRingingRemotely
+                        ? Icons.volume_off_outlined
+                        : Icons.ring_volume_outlined,
+                    size: 16,
+                  ),
+                  label: Text(
+                    device.isRingingRemotely ? 'Stop Ringing' : 'Ring Device',
+                  ),
+                ),
+                OutlinedButton.icon(
+                  key: Key('cmd_sync_${device.deviceId}'),
+                  onPressed: () => _handleDeviceCommand(
+                    device,
+                    PairedDeviceCommandType.syncProtectionState,
+                  ),
+                  icon: const Icon(Icons.sync, size: 16),
+                  label: const Text('Sync Status'),
+                ),
+                OutlinedButton.icon(
+                  key: Key('cmd_toggle_sensor_${device.deviceId}'),
+                  onPressed: () => _handleDeviceCommand(
+                    device,
+                    PairedDeviceCommandType.toggleRemoteSensorForwarding,
+                  ),
+                  icon: Icon(
+                    device.remoteSensorForwardingEnabled
+                        ? Icons.sensors_off_outlined
+                        : Icons.sensors_outlined,
+                    size: 16,
+                  ),
+                  label: Text(
+                    device.remoteSensorForwardingEnabled
+                        ? 'Pause Sensor Link'
+                        : 'Enable Sensor Link',
+                  ),
+                ),
+                OutlinedButton.icon(
+                  key: Key('cmd_motion_tamper_${device.deviceId}'),
+                  onPressed: () => _handleDeviceCommand(
+                    device,
+                    PairedDeviceCommandType.simulateCompanionMotionTrigger,
+                  ),
+                  icon: const Icon(Icons.vibration, size: 16),
+                  label: const Text('Trigger Motion Tamper'),
                 ),
               ],
             ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: WatSafeTheme.readyEmerald.withValues(alpha: 0.16),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: WatSafeTheme.readyEmerald),
-            ),
-            child: Text(
-              device.pushChannelReady ? 'PUSH READY' : 'PENDING',
-              style: const TextStyle(
-                color: WatSafeTheme.readyEmerald,
-                fontSize: 11,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ),
-          if (widget.controller.canManagePairing) ...<Widget>[
-            const SizedBox(width: 10),
-            IconButton(
-              key: Key('unpair_device_${device.deviceId}'),
-              tooltip: 'Unpair device',
-              icon: const Icon(Icons.link_off, color: WatSafeTheme.warmMuted),
-              onPressed: () {
-                widget.controller.unpairCompanionDevice(device.deviceId);
-              },
-            ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _buildActivityLogCard(
+    BuildContext context,
+    List<PairedDeviceActionRecord> actions,
+  ) {
+    final visibleActions = actions.take(10).toList(growable: false);
+    return Card(
+      key: const Key('paired_device_activity_log_card'),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              'Paired Device Activity & Command Log (${actions.length})',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 12),
+            for (final item in visibleActions)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Icon(
+                      item.delivered
+                          ? Icons.check_circle_outline
+                          : Icons.error_outline,
+                      size: 16,
+                      color: item.delivered
+                          ? WatSafeTheme.readyEmerald
+                          : WatSafeTheme.alarmCrimson,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${item.deviceName}: ${item.summary}',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          color: WatSafeTheme.warmOffWhite,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

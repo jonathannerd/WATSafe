@@ -204,6 +204,86 @@ void main() {
         await adapter.dispose();
       },
     );
+
+    test(
+      'AndroidMotionDetectorAdapter bridges foreground motion sensors from a paired Android companion on non-Android hosts',
+      () async {
+        final notificationService = ConfigurableRemoteNotificationService(
+          persistToDisk: false,
+        );
+        final adapter = AndroidMotionDetectorAdapter(
+          isAndroidOverride: false,
+          notificationAdapter: notificationService,
+        );
+
+        // Without a paired Android device, capability is unsupported
+        var cap = await adapter.checkCapability();
+        expect(cap.status, CapabilityStatus.unsupported);
+
+        // Pair an Android device
+        final paired = await notificationService.pairDevice(
+          displayName: 'Aidan\'s Pixel 9',
+          platform: 'Android (FCM)',
+          pairingCode: 'WAT-777',
+        );
+
+        // Now AndroidMotionDetectorAdapter is ready via Paired Android Companion Sensor Bridging
+        cap = await adapter.checkCapability();
+        expect(cap.status, CapabilityStatus.ready);
+        expect(cap.canArm, isTrue);
+        expect(
+          cap.hardwareDeviceName,
+          contains('Aidan\'s Pixel 9 (Android Foreground Service)'),
+        );
+
+        // Pause sensor forwarding and verify permissionRequired state + requestPermission re-enable
+        await notificationService.sendDeviceCommand(
+          deviceId: paired.deviceId,
+          command: PairedDeviceCommandType.toggleRemoteSensorForwarding,
+        );
+        cap = await adapter.checkCapability();
+        expect(cap.status, CapabilityStatus.permissionRequired);
+
+        final perm = await adapter.requestPermission();
+        expect(perm, PermissionStatus.granted);
+        cap = await adapter.checkCapability();
+        expect(cap.status, CapabilityStatus.ready);
+
+        // Start monitoring and trigger companion motion tamper
+        final received = <DetectorEvent>[];
+        final sub = adapter.events.listen(received.add);
+
+        final startRes = await adapter.startMonitoring(
+          const MonitorConfig(
+            sessionId: 'bridged_android_sess_1',
+            sensitivity: 0.7,
+          ),
+        );
+        expect(startRes.started, isTrue);
+
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        expect(
+          received.any(
+            (e) => e.eventType == DetectorEventType.calibrationCompleted,
+          ),
+          isTrue,
+        );
+
+        await notificationService.sendDeviceCommand(
+          deviceId: paired.deviceId,
+          command: PairedDeviceCommandType.simulateCompanionMotionTrigger,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+
+        expect(
+          received.any((e) => e.eventType == DetectorEventType.motionTriggered),
+          isTrue,
+        );
+
+        await sub.cancel();
+        await adapter.dispose();
+      },
+    );
   });
 
   group('Dynamic Permission Button Label & Icon', () {
@@ -463,8 +543,68 @@ void main() {
         expect(find.text('PUSH READY'), findsOneWidget);
         expect(controller.pairedDevices, hasLength(1));
 
-        // Unpair the device
         final deviceId = controller.pairedDevices.first.deviceId;
+
+        // 1. Send Test Alert to paired device
+        final testPushBtn = find.byKey(Key('cmd_test_push_$deviceId'));
+        await tester.ensureVisible(testPushBtn);
+        await tester.tap(testPushBtn);
+        await tester.pumpAndSettle();
+        expect(controller.pairedDeviceActions, isNotEmpty);
+        expect(
+          controller.pairedDeviceActions.first.commandType,
+          PairedDeviceCommandType.sendTestPush,
+        );
+        expect(
+          find.byKey(const Key('paired_device_activity_log_card')),
+          findsOneWidget,
+        );
+
+        // 2. Ring / Locate paired device and verify badge updates to RINGING
+        final ringBtn = find.byKey(Key('cmd_ring_$deviceId'));
+        await tester.ensureVisible(ringBtn);
+        await tester.tap(ringBtn);
+        await tester.pumpAndSettle();
+        expect(controller.pairedDevices.first.isRingingRemotely, isTrue);
+        expect(find.text('RINGING'), findsOneWidget);
+        expect(find.text('Stop Ringing'), findsOneWidget);
+
+        // Stop ringing
+        await tester.tap(ringBtn);
+        await tester.pumpAndSettle();
+        expect(controller.pairedDevices.first.isRingingRemotely, isFalse);
+
+        // 3. Sync Protection Status to paired device
+        final syncBtn = find.byKey(Key('cmd_sync_$deviceId'));
+        await tester.ensureVisible(syncBtn);
+        await tester.tap(syncBtn);
+        await tester.pumpAndSettle();
+        expect(
+          controller.pairedDeviceActions.first.commandType,
+          PairedDeviceCommandType.syncProtectionState,
+        );
+
+        // 4. Toggle Foreground Sensor Link
+        final sensorBtn = find.byKey(Key('cmd_toggle_sensor_$deviceId'));
+        await tester.ensureVisible(sensorBtn);
+        await tester.tap(sensorBtn);
+        await tester.pumpAndSettle();
+        expect(
+          controller.pairedDevices.first.remoteSensorForwardingEnabled,
+          isFalse,
+        );
+        expect(find.text('SENSOR LINK PAUSED'), findsOneWidget);
+
+        // Re-enable Foreground Sensor Link
+        await tester.tap(sensorBtn);
+        await tester.pumpAndSettle();
+        expect(
+          controller.pairedDevices.first.remoteSensorForwardingEnabled,
+          isTrue,
+        );
+        expect(find.text('SENSOR LINK ACTIVE'), findsOneWidget);
+
+        // Unpair the device
         final unpairBtn = find.byKey(Key('unpair_device_$deviceId'));
         await tester.ensureVisible(unpairBtn);
         await tester.tap(unpairBtn);

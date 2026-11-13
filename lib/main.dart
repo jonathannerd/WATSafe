@@ -22,7 +22,9 @@ Future<void> main() async {
   final settingsStorage = FileSettingsStorage();
   final audioAdapter = PlatformAudioAlarmService();
   final notificationAdapter = ConfigurableRemoteNotificationService();
-  final detectors = PlatformDetectorRegistry.createDefaultDetectors();
+  final detectors = PlatformDetectorRegistry.createDefaultDetectors(
+    notificationAdapter: notificationAdapter,
+  );
 
   final controller = AlarmController(
     detectors: detectors,

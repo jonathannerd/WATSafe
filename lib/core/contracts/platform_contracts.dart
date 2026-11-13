@@ -138,6 +138,11 @@ class PairedDeviceSummary {
     required this.platform,
     required this.pairedAt,
     required this.pushChannelReady,
+    this.remoteStateLabel = 'Connected • Standby',
+    this.remoteSensorForwardingEnabled = true,
+    this.isRingingRemotely = false,
+    this.lastActionSummary,
+    this.lastSeenAt,
   });
 
   final String deviceId;
@@ -145,6 +150,41 @@ class PairedDeviceSummary {
   final String platform;
   final DateTime pairedAt;
   final bool pushChannelReady;
+  final String remoteStateLabel;
+  final bool remoteSensorForwardingEnabled;
+  final bool isRingingRemotely;
+  final String? lastActionSummary;
+  final DateTime? lastSeenAt;
+
+  bool get isAndroidDevice => platform.toLowerCase().contains('android');
+  bool get isIosDevice => platform.toLowerCase().contains('ios');
+
+  PairedDeviceSummary copyWith({
+    String? deviceId,
+    String? displayName,
+    String? platform,
+    DateTime? pairedAt,
+    bool? pushChannelReady,
+    String? remoteStateLabel,
+    bool? remoteSensorForwardingEnabled,
+    bool? isRingingRemotely,
+    String? lastActionSummary,
+    DateTime? lastSeenAt,
+  }) {
+    return PairedDeviceSummary(
+      deviceId: deviceId ?? this.deviceId,
+      displayName: displayName ?? this.displayName,
+      platform: platform ?? this.platform,
+      pairedAt: pairedAt ?? this.pairedAt,
+      pushChannelReady: pushChannelReady ?? this.pushChannelReady,
+      remoteStateLabel: remoteStateLabel ?? this.remoteStateLabel,
+      remoteSensorForwardingEnabled:
+          remoteSensorForwardingEnabled ?? this.remoteSensorForwardingEnabled,
+      isRingingRemotely: isRingingRemotely ?? this.isRingingRemotely,
+      lastActionSummary: lastActionSummary ?? this.lastActionSummary,
+      lastSeenAt: lastSeenAt ?? this.lastSeenAt,
+    );
+  }
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
@@ -153,11 +193,17 @@ class PairedDeviceSummary {
       'platform': platform,
       'pairedAtUtcIso': pairedAt.toUtc().toIso8601String(),
       'pushChannelReady': pushChannelReady,
+      'remoteStateLabel': remoteStateLabel,
+      'remoteSensorForwardingEnabled': remoteSensorForwardingEnabled,
+      'isRingingRemotely': isRingingRemotely,
+      'lastActionSummary': lastActionSummary,
+      'lastSeenAtUtcIso': lastSeenAt?.toUtc().toIso8601String(),
     };
   }
 
   factory PairedDeviceSummary.fromJson(Map<String, Object?> json) {
     final pairedAtRaw = json['pairedAtUtcIso'] as String? ?? '';
+    final lastSeenRaw = json['lastSeenAtUtcIso'] as String?;
     return PairedDeviceSummary(
       deviceId: json['deviceId'] as String? ?? 'dev_unknown',
       displayName: json['displayName'] as String? ?? 'Companion Device',
@@ -166,6 +212,99 @@ class PairedDeviceSummary {
           DateTime.tryParse(pairedAtRaw)?.toLocal() ??
           DateTime.fromMillisecondsSinceEpoch(0),
       pushChannelReady: json['pushChannelReady'] as bool? ?? true,
+      remoteStateLabel:
+          json['remoteStateLabel'] as String? ?? 'Connected • Standby',
+      remoteSensorForwardingEnabled:
+          json['remoteSensorForwardingEnabled'] as bool? ?? true,
+      isRingingRemotely: json['isRingingRemotely'] as bool? ?? false,
+      lastActionSummary: json['lastActionSummary'] as String?,
+      lastSeenAt: lastSeenRaw != null
+          ? DateTime.tryParse(lastSeenRaw)?.toLocal()
+          : null,
+    );
+  }
+}
+
+/// Interactive commands and actions that can be executed on a paired device.
+enum PairedDeviceCommandType {
+  sendTestPush(id: 'send_test_push', displayName: 'Send Test Alert'),
+  toggleRemoteRing(id: 'toggle_remote_ring', displayName: 'Ring / Locate'),
+  syncProtectionState(
+    id: 'sync_protection_state',
+    displayName: 'Sync Protection State',
+  ),
+  toggleRemoteSensorForwarding(
+    id: 'toggle_remote_sensor',
+    displayName: 'Toggle Sensor Link',
+  ),
+  simulateCompanionMotionTrigger(
+    id: 'simulate_companion_motion',
+    displayName: 'Trigger Companion Motion',
+  );
+
+  const PairedDeviceCommandType({required this.id, required this.displayName});
+
+  final String id;
+  final String displayName;
+
+  static PairedDeviceCommandType fromId(String raw) {
+    for (final value in PairedDeviceCommandType.values) {
+      if (value.id == raw || value.name == raw) {
+        return value;
+      }
+    }
+    return PairedDeviceCommandType.sendTestPush;
+  }
+}
+
+/// Audit log entry for an interactive command or alert sent to / received from
+/// a paired companion device.
+@immutable
+class PairedDeviceActionRecord {
+  const PairedDeviceActionRecord({
+    required this.actionId,
+    required this.deviceId,
+    required this.deviceName,
+    required this.commandType,
+    required this.timestamp,
+    required this.delivered,
+    required this.summary,
+  });
+
+  final String actionId;
+  final String deviceId;
+  final String deviceName;
+  final PairedDeviceCommandType commandType;
+  final DateTime timestamp;
+  final bool delivered;
+  final String summary;
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'actionId': actionId,
+      'deviceId': deviceId,
+      'deviceName': deviceName,
+      'commandType': commandType.id,
+      'timestampUtcIso': timestamp.toUtc().toIso8601String(),
+      'delivered': delivered,
+      'summary': summary,
+    };
+  }
+
+  factory PairedDeviceActionRecord.fromJson(Map<String, Object?> json) {
+    final tsRaw = json['timestampUtcIso'] as String? ?? '';
+    return PairedDeviceActionRecord(
+      actionId: json['actionId'] as String? ?? 'act_unknown',
+      deviceId: json['deviceId'] as String? ?? 'dev_unknown',
+      deviceName: json['deviceName'] as String? ?? 'Companion Device',
+      commandType: PairedDeviceCommandType.fromId(
+        json['commandType'] as String? ?? 'send_test_push',
+      ),
+      timestamp:
+          DateTime.tryParse(tsRaw)?.toLocal() ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      delivered: json['delivered'] as bool? ?? true,
+      summary: json['summary'] as String? ?? 'Action executed',
     );
   }
 }
@@ -206,10 +345,14 @@ abstract class RemoteNotificationAdapter {
 }
 
 /// Extended contract for notification adapters that support interactive device
-/// pairing, unpairing, and backend relay endpoint configuration.
+/// pairing, unpairing, remote companion commands, and sensor telemetry bridging.
 abstract class MutableRemoteNotificationAdapter
     extends RemoteNotificationAdapter {
   String? get relayEndpointUrl;
+
+  List<PairedDeviceActionRecord> get actionHistory;
+
+  Stream<Map<String, Object?>> get companionSensorEvents;
 
   Future<void> configureRelayEndpoint(String? endpointUrl);
 
@@ -220,4 +363,10 @@ abstract class MutableRemoteNotificationAdapter
   });
 
   Future<void> unpairDevice(String deviceId);
+
+  Future<PairedDeviceActionRecord> sendDeviceCommand({
+    required String deviceId,
+    required PairedDeviceCommandType command,
+    Map<String, Object?>? payload,
+  });
 }
