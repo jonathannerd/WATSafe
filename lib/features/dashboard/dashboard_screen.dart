@@ -255,8 +255,17 @@ class _ProtectionHeroCard extends StatelessWidget {
                           FilledButton.tonalIcon(
                             onPressed:
                                 controller.requestSelectedDetectorPermission,
-                            icon: const Icon(Icons.videocam_outlined, size: 18),
-                            label: const Text('Grant Camera Permission'),
+                            icon: Icon(
+                              capability!.type.usesCamera
+                                  ? Icons.videocam_outlined
+                                  : Icons.sensors,
+                              size: 18,
+                            ),
+                            label: Text(
+                              capability!.type.usesCamera
+                                  ? 'Grant Camera Permission'
+                                  : 'Grant Motion Sensor Permission',
+                            ),
                           ),
                         OutlinedButton.icon(
                           onPressed: controller.refreshCapabilities,

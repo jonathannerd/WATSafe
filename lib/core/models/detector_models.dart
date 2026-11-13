@@ -27,8 +27,8 @@ enum DetectorType {
     platformLabel: 'Windows',
     modalityLabel: 'MediaFoundation Scene Motion',
     limitationNote:
-        'Planned fallback for Windows laptops without an integrated accelerometer. '
-        'Processes local webcam frames for scene-motion changes.',
+        'Analyzes downsampled 64x48 grayscale camera frames locally via Windows Media Foundation. '
+        'Reacts to people, lighting changes, or laptop movement—never saves or uploads frames.',
   ),
   androidMotionSensors(
     id: 'android_motion_sensors',
@@ -63,6 +63,12 @@ enum DetectorType {
   final String modalityLabel;
   final String limitationNote;
 
+  /// Whether this detector modality relies on optical camera capture rather
+  /// than hardware motion/accelerometer sensors.
+  bool get usesCamera =>
+      this == DetectorType.macosCameraSceneMotion ||
+      this == DetectorType.windowsCameraSceneMotion;
+
   static DetectorType fromId(String id) {
     for (final value in DetectorType.values) {
       if (value.id == id) {
@@ -87,7 +93,7 @@ enum CapabilityStatus {
   /// Detector is available or running, but input quality is degraded (e.g., dark/covered lens).
   degraded,
 
-  /// Required hardware is missing or unsupported on this device or host OS.
+  /// Required hardware is absent or unsupported on this device or host OS.
   unsupported,
 
   /// Planned integration contract exists, but native implementation is deferred to a later task.
@@ -137,8 +143,10 @@ class DetectorCapability {
 
   bool get needsPermissionRequest =>
       status == CapabilityStatus.permissionRequired ||
-      permissionStatus == PermissionStatus.notDetermined ||
-      permissionStatus == PermissionStatus.denied;
+      (status != CapabilityStatus.unsupported &&
+          status != CapabilityStatus.notImplemented &&
+          (permissionStatus == PermissionStatus.notDetermined ||
+              permissionStatus == PermissionStatus.denied));
 
   DetectorCapability copyWith({
     DetectorType? type,

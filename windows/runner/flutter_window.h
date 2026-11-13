@@ -8,7 +8,11 @@
 
 #include "win32_window.h"
 
-// A window that does nothing but host a Flutter view.
+class WindowsPlatformBridges;
+
+// A window that hosts a Flutter view and registers WATSafe native Windows
+// platform bridges (WinRT Accelerometer, Media Foundation Webcam Scene-Motion,
+// WinMM Siren Audio, and DPAPI Secure Storage).
 class FlutterWindow : public Win32Window {
  public:
   // Creates a new FlutterWindow hosting a Flutter view running |project|.
@@ -28,6 +32,9 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // Native WATSafe Windows platform channel bridges.
+  std::unique_ptr<WindowsPlatformBridges> bridges_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

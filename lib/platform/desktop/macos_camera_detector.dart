@@ -58,6 +58,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
       _nativeEventSub = _eventChannel.receiveBroadcastStream().listen(
         _onNativeEvent,
         onError: (Object error) {
+          _nativeEventSub = null;
           _eventsController.add(
             DetectorEvent(
               eventId: 'macos_cam_err_${++_eventCounter}',
@@ -230,6 +231,8 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
       );
     }
 
+    await _nativeEventSub?.cancel();
+    _nativeEventSub = null;
     _ensureEventSubscription();
     try {
       final response = await _methodChannel.invokeMapMethod<String, Object?>(

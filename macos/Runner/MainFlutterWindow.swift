@@ -773,16 +773,65 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       return
     }
 
-    // Compute normalized scene-motion score in [0.0, 1.0]
-    var diffSum: Float = 0
-    for i in 0..<count {
-      let delta = abs(currentGrid[i] - referenceGrid[i])
-      diffSum += delta
-      // Exponentially adapt reference frame to gradual ambient lighting shifts
-      referenceGrid[i] = (0.92 * referenceGrid[i]) + (0.08 * currentGrid[i])
+    // Compute global ego-motion & illumination-compensated scene-motion score in [0.0, 1.0]
+    var refLumSum: Float = 0
+    for val in referenceGrid {
+      refLumSum += val
+    }
+    let refMean255 = refLumSum / Float(count)
+    let dcShift = max(-45.0, min(45.0, meanLum255 - refMean255))
+
+    let blocksX = 4
+    let blocksY = 4
+    let totalBlocks = blocksX * blocksY
+    var blockDiffSum = [Float](repeating: 0, count: totalBlocks)
+    var blockPixelCount = [Int](repeating: 0, count: totalBlocks)
+
+    var rawDiffSum: Float = 0
+    var structDiffSum: Float = 0
+    for gy in 0..<gridH {
+      let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
+      for gx in 0..<gridW {
+        let bx = min(blocksX - 1, (gx * blocksX) / max(1, gridW))
+        let blockIdx = by * blocksX + bx
+        let i = gy * gridW + gx
+
+        let signedDiff = currentGrid[i] - referenceGrid[i]
+        let rawDelta = abs(signedDiff)
+        let structDelta = abs(signedDiff - (0.75 * dcShift))
+
+        rawDiffSum += rawDelta
+        structDiffSum += structDelta
+        blockDiffSum[blockIdx] += structDelta
+        blockPixelCount[blockIdx] += 1
+
+        // Exponentially adapt reference frame to gradual ambient lighting shifts
+        referenceGrid[i] = (0.92 * referenceGrid[i]) + (0.08 * currentGrid[i])
+      }
     }
 
-    let motionScore = Double(diffSum / Float(count * 255))
+    let blockActivityThreshold = max(0.018, motionThreshold * 0.45)
+    var activeBlocks = 0
+    for b in 0..<totalBlocks where blockPixelCount[b] > 0 {
+      let blockScore = Double(blockDiffSum[b] / Float(blockPixelCount[b] * 255))
+      if blockScore >= blockActivityThreshold {
+        activeBlocks += 1
+      }
+    }
+
+    let rawMotionScore = Double(rawDiffSum / Float(count * 255))
+    let structMotionScore = Double(structDiffSum / Float(count * 255))
+
+    let spatialWeight: Double
+    if activeBlocks >= 7 || rawMotionScore >= (motionThreshold * 1.8) {
+      spatialWeight = 1.0
+    } else if activeBlocks <= 3 {
+      spatialWeight = 0.35
+    } else {
+      spatialWeight = 0.35 + (Double(activeBlocks - 3) * (0.65 / 4.0))
+    }
+
+    let motionScore = structMotionScore * spatialWeight
     if motionScore >= motionThreshold {
       consecutiveAboveThreshold += 1
     } else {

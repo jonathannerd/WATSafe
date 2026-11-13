@@ -173,11 +173,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                                     widget.controller
                                         .requestSelectedDetectorPermission();
                                   },
-                                  icon: const Icon(
-                                    Icons.videocam_outlined,
+                                  icon: Icon(
+                                    capability.type.usesCamera
+                                        ? Icons.videocam_outlined
+                                        : Icons.sensors,
                                     size: 18,
                                   ),
-                                  label: const Text('Grant Camera Permission'),
+                                  label: Text(
+                                    capability.type.usesCamera
+                                        ? 'Grant Camera Permission'
+                                        : 'Grant Motion Sensor Permission',
+                                  ),
                                 ),
                               OutlinedButton.icon(
                                 onPressed:

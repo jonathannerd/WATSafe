@@ -1,21 +1,21 @@
 # WATSafe Platform Capabilities & Limitations
 
-This document records what is **Implemented**, **Tested**, and **Planned** across each target platform in the initial milestone, along with hardware and operating system constraints that affect user decisions.
+This document records what is **Implemented**, **Tested**, and **Planned** across each target platform, along with hardware and operating system constraints that affect user decisions.
 
 ---
 
-## 1. Capability Matrix (Milestone 1)
+## 1. Capability Matrix
 
 | Subsystem / Feature | macOS | Windows | Android | iOS | Status in Code |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Shared Material 3 UI & Adaptive Shell** | Implemented | Implemented | Implemented | Implemented | Automated widget tests + macOS build |
-| **Central Alarm State Machine (`AlarmController`)** | Implemented | Implemented | Implemented | Implemented | 7 focused unit test suites passing |
-| **Salted PBKDF2-HMAC-SHA256 PIN & Lockout** | Implemented | Implemented | Implemented | Implemented | Tested (Keychain on macOS + 0600 file fallback) |
-| **Local Looping Siren & 5s Test Alarm** | Implemented (`AVAudioPlayer`) | Fallback (`SystemSound`) | Fallback (`SystemSound`) | Fallback (`SystemSound`) | Tested on macOS (`assets/audio/alarm_siren.wav`) |
+| **Shared Material 3 UI & Adaptive Shell** | Implemented | Implemented | Implemented | Implemented | Automated widget tests + macOS/Windows builds |
+| **Central Alarm State Machine (`AlarmController`)** | Implemented | Implemented | Implemented | Implemented | Unit & widget test suites passing |
+| **Salted PBKDF2-HMAC-SHA256 PIN & Lockout** | Implemented (`Keychain` + `0600` fallback) | **Implemented** (`DPAPI CryptProtectData`) | Planned (`AndroidKeyStore`) | Planned (`Keychain`) | Tested on macOS & Windows |
+| **Local Looping Siren & 5s Test Alarm** | Implemented (`AVAudioPlayer`) | **Implemented** (`WinMM PlaySoundW`) | Fallback (`SystemSound`) | Fallback (`SystemSound`) | Tested (`assets/audio/alarm_siren.wav`) |
 | **Local Incident & Settings Storage** | Implemented | Implemented | Implemented | Implemented | Tested (JSON persistence, zero images/PINs) |
-| **Webcam Scene-Motion Detection** | **Implemented** (`AVFoundation`) | Planned (`MediaFoundation`) | N/A | N/A | Implemented & compiled on macOS; returns `notImplemented` on Windows |
-| **Hardware Accelerometer Detection** | Unsupported (No public macOS API) | Planned (`WinRT Sensors`) | Planned (`SensorManager`) | Planned (`CMMotionManager`) | Returns `notImplemented` on Windows/Android/iOS |
-| **Background / Foreground Service Lifecycle** | Implemented (`NSWorkspace` sleep/wake) | Planned | Planned (Android 14+ FGS) | Foreground-only (iOS limit) | macOS sleep/wake wired; mobile planned |
+| **Webcam Scene-Motion Detection** | **Implemented** (`AVFoundation`) | **Implemented** (`MediaFoundation`) | N/A | N/A | Implemented & compiled on macOS & Windows |
+| **Hardware Accelerometer Detection** | Unsupported (No public macOS API) | **Implemented** (`WinRT Sensors` + `ISensorManager`) | Planned (`SensorManager`) | Planned (`CMMotionManager`) | Implemented on Windows; returns `unsupported` when hardware absent |
+| **Background / Foreground Service Lifecycle** | Implemented (`NSWorkspace` sleep/wake) | **Implemented** (`WM_POWERBROADCAST` sleep/wake) | Planned (Android 14+ FGS) | Foreground-only (iOS limit) | macOS & Windows sleep/wake wired; mobile planned |
 | **Device Pairing & Remote Push Alerts** | Interface ready | Interface ready | Interface ready | Interface ready | Explicitly shows `Not configured` |
 
 ---
@@ -43,7 +43,9 @@ Every `MotionDetectorAdapter` and `RemoteNotificationAdapter` reports one of the
 - **System Sleep / Lid Closure:** When macOS enters sleep (`NSWorkspace.willSleepNotification`), camera capture pauses and `AlarmController` transitions from `armed` (`PROTECTED`) to `paused` (`PAUSED`).
 
 ### Windows (`windows_accelerometer` & `windows_camera_scene_motion`)
-- **Hardware Availability Check Required:** Only 2-in-1 convertibles and select Windows laptops include a sensor accessible via `Windows.Devices.Sensors.Accelerometer.GetDefault()`. When `GetDefault()` returns `nullptr`, the Windows adapter must report `CapabilityStatus.unsupported` and guide the user to the Windows webcam scene-motion detector.
+- **Hardware Accelerometer (`windows_accelerometer`):** Queries `Windows.Devices.Sensors.Accelerometer.GetDefault()` and `ISensorManager` (`SENSOR_TYPE_ACCELEROMETER_3D`). On 2-in-1 convertibles and tablets with a 3-axis accelerometer, it calibrates a $1\,\text{g}$ resting vector/magnitude baseline and triggers on tilt or pickup acceleration. When `GetDefault()` returns `nullptr` (common on standard clamshell laptops without an HID sensor hub), the adapter reports `CapabilityStatus.unsupported` and `AlarmController` automatically falls back to `Windows Webcam Scene-Motion` when a camera is available.
+- **Webcam Scene-Motion (`windows_camera_scene_motion`):** Enumerates video capture hardware via Windows Media Foundation (`MFEnumDeviceSources`) and processes frames off the UI thread via `IMFSourceReader`, downsampling `NV12`, `YUY2`, `RGB32`, or `RGB24` frames to a `64x48` grayscale grid with adaptive reference calibration, consecutive-frame persistence filtering, and covered-lens / low-light warnings.
+- **System Sleep / Wake:** Handles `WM_POWERBROADCAST` (`PBT_APMSUSPEND` / `PBT_APMRESUMEAUTOMATIC`) to pause and resume active Windows monitoring sessions honestly.
 
 ### Android (`android_motion_sensors`)
 - **Sensors:** Uses `SensorManager` (`Sensor.TYPE_LINEAR_ACCELERATION` with `Sensor.TYPE_ACCELEROMETER` fallback).

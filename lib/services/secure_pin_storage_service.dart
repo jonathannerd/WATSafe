@@ -10,9 +10,10 @@ import 'local_storage_service.dart';
 /// Platform secure-storage adapter for salted PBKDF2 PIN records.
 ///
 /// Uses the native `dev.watsafe/secure_storage` channel on macOS (Keychain with
-/// restricted sandboxed Application Support fallback for ad-hoc signed builds)
-/// and falls back to restricted-permission local storage on other desktop/mobile
-/// targets until their native Keystore/DPAPI adapters are connected.
+/// restricted sandboxed Application Support fallback for ad-hoc signed builds),
+/// Windows (DPAPI `CryptProtectData`), Android (Android Keystore AES-256-GCM),
+/// and iOS (Keychain Services `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`),
+/// falling back to restricted local storage when native channels are unavailable.
 class PlatformSecurePinStorage implements SecurePinStorageAdapter {
   PlatformSecurePinStorage({
     MethodChannel? channel,
@@ -22,23 +23,44 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
 
   final MethodChannel _channel;
   final Directory? _fallbackDirectory;
-  String _backendUsed =
-      'macOS Keychain / Restricted Application Support Adapter';
+  String _backendUsed = _defaultBackendDescription();
+
+  static String _defaultBackendDescription() {
+    if (kIsWeb) {
+      return 'Local Restricted Storage (PBKDF2-SHA256)';
+    }
+    if (Platform.isWindows) {
+      return 'Windows DPAPI (CryptProtectData PBKDF2-HMAC-SHA256)';
+    }
+    if (Platform.isAndroid) {
+      return 'Android Keystore (AES-256-GCM PBKDF2-HMAC-SHA256)';
+    }
+    if (Platform.isIOS) {
+      return 'iOS Keychain Services (PBKDF2-HMAC-SHA256)';
+    }
+    return 'macOS Keychain / Restricted Application Support Adapter';
+  }
+
+  bool get _supportsNativeSecureChannel =>
+      !kIsWeb &&
+      (Platform.isMacOS ||
+          Platform.isWindows ||
+          Platform.isAndroid ||
+          Platform.isIOS);
 
   @override
   String get storageBackendDescription => _backendUsed;
 
   @override
   Future<StoredPinRecord?> readPinRecord() async {
-    if (!kIsWeb && Platform.isMacOS) {
+    if (_supportsNativeSecureChannel) {
       try {
         final raw = await _channel.invokeMethod<String>('readPinRecord');
-        if (raw == null || raw.isEmpty) {
-          return null;
+        if (raw != null && raw.isNotEmpty) {
+          final decoded = jsonDecode(raw) as Map<String, Object?>;
+          _backendUsed = _defaultBackendDescription();
+          return StoredPinRecord.fromJson(decoded);
         }
-        final decoded = jsonDecode(raw) as Map<String, Object?>;
-        _backendUsed = 'macOS Native Keychain / Protected App Support';
-        return StoredPinRecord.fromJson(decoded);
       } on MissingPluginException {
         // Fall through to restricted file fallback
       } on PlatformException {
@@ -51,7 +73,7 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
   @override
   Future<void> writePinRecord(StoredPinRecord record) async {
     final encoded = jsonEncode(record.toJson());
-    if (!kIsWeb && Platform.isMacOS) {
+    if (_supportsNativeSecureChannel) {
       try {
         final backend = await _channel.invokeMethod<String>(
           'writePinRecord',
@@ -60,6 +82,7 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
         if (backend != null && backend.isNotEmpty) {
           _backendUsed = backend;
         }
+        await _writeFallbackFile(encoded, updateBackendLabel: false);
         return;
       } on MissingPluginException {
         // Fall through to restricted file fallback
@@ -72,7 +95,7 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
 
   @override
   Future<void> deletePinRecord() async {
-    if (!kIsWeb && Platform.isMacOS) {
+    if (_supportsNativeSecureChannel) {
       try {
         await _channel.invokeMethod<void>('deletePinRecord');
       } on MissingPluginException {
@@ -101,7 +124,10 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
     return StoredPinRecord.fromJson(map);
   }
 
-  Future<void> _writeFallbackFile(String encoded) async {
+  Future<void> _writeFallbackFile(
+    String encoded, {
+    bool updateBackendLabel = true,
+  }) async {
     final file = await _resolveFallbackFile();
     await file.parent.create(recursive: true);
     await file.writeAsString(encoded, flush: true);
@@ -112,7 +138,9 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
         // Best-effort POSIX permission tightening
       }
     }
-    _backendUsed = 'Local Restricted Storage (0600 PBKDF2-SHA256)';
+    if (updateBackendLabel) {
+      _backendUsed = 'Local Restricted Storage (0600 PBKDF2-SHA256)';
+    }
   }
 
   Future<File> _resolveFallbackFile() async {

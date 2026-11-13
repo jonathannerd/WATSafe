@@ -5,8 +5,10 @@ import 'package:flutter/services.dart';
 import '../core/contracts/platform_contracts.dart';
 
 /// Platform audio adapter that plays the bundled local looping WAV asset
-/// (`assets/audio/alarm_siren.wav`) via native `AVAudioPlayer` on macOS and
-/// provides a system-alert fallback when native audio channels are absent.
+/// (`assets/audio/alarm_siren.wav`) via native platform audio bridges on
+/// macOS (`AVAudioPlayer`), Windows (`WinMM PlaySoundW`), Android (`AudioTrack`
+/// with `USAGE_ALARM`), and iOS (`AVAudioPlayer` with `AVAudioSession`),
+/// providing a system-alert fallback when native audio channels are absent.
 class PlatformAudioAlarmService implements AudioAlarmAdapter {
   PlatformAudioAlarmService({MethodChannel? channel})
     : _channel = channel ?? const MethodChannel('dev.watsafe/audio_alarm');
