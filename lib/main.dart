@@ -21,7 +21,7 @@ Future<void> main() async {
   final incidentStorage = FileIncidentStorage();
   final settingsStorage = FileSettingsStorage();
   final audioAdapter = PlatformAudioAlarmService();
-  final notificationAdapter = const UnconfiguredRemoteNotificationService();
+  final notificationAdapter = ConfigurableRemoteNotificationService();
   final detectors = PlatformDetectorRegistry.createDefaultDetectors();
 
   final controller = AlarmController(
@@ -33,7 +33,7 @@ Future<void> main() async {
     notificationAdapter: notificationAdapter,
   );
 
-  await controller.initialize();
+  unawaited(controller.initialize());
   runApp(WatSafeApp(controller: controller));
 }
 

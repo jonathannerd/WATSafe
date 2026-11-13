@@ -129,7 +129,7 @@ abstract class SettingsStorageAdapter {
   Future<void> saveSettings(ProtectionSettings settings);
 }
 
-/// Summary of a paired remote device (for future cloud/push integration).
+/// Summary of a paired remote device (for cloud/push or companion relay integration).
 @immutable
 class PairedDeviceSummary {
   const PairedDeviceSummary({
@@ -145,6 +145,29 @@ class PairedDeviceSummary {
   final String platform;
   final DateTime pairedAt;
   final bool pushChannelReady;
+
+  Map<String, Object?> toJson() {
+    return <String, Object?>{
+      'deviceId': deviceId,
+      'displayName': displayName,
+      'platform': platform,
+      'pairedAtUtcIso': pairedAt.toUtc().toIso8601String(),
+      'pushChannelReady': pushChannelReady,
+    };
+  }
+
+  factory PairedDeviceSummary.fromJson(Map<String, Object?> json) {
+    final pairedAtRaw = json['pairedAtUtcIso'] as String? ?? '';
+    return PairedDeviceSummary(
+      deviceId: json['deviceId'] as String? ?? 'dev_unknown',
+      displayName: json['displayName'] as String? ?? 'Companion Device',
+      platform: json['platform'] as String? ?? 'Android',
+      pairedAt:
+          DateTime.tryParse(pairedAtRaw)?.toLocal() ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      pushChannelReady: json['pushChannelReady'] as bool? ?? true,
+    );
+  }
 }
 
 /// Status of the remote pairing & push notification subsystem.
@@ -180,4 +203,21 @@ abstract class RemoteNotificationAdapter {
   Future<NotificationServiceStatus> getStatus();
   Future<List<PairedDeviceSummary>> listPairedDevices();
   Future<NotificationDispatchResult> sendIncidentAlert(IncidentRecord incident);
+}
+
+/// Extended contract for notification adapters that support interactive device
+/// pairing, unpairing, and backend relay endpoint configuration.
+abstract class MutableRemoteNotificationAdapter
+    extends RemoteNotificationAdapter {
+  String? get relayEndpointUrl;
+
+  Future<void> configureRelayEndpoint(String? endpointUrl);
+
+  Future<PairedDeviceSummary> pairDevice({
+    required String displayName,
+    required String platform,
+    String? pairingCode,
+  });
+
+  Future<void> unpairDevice(String deviceId);
 }

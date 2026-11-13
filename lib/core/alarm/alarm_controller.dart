@@ -111,6 +111,14 @@ class AlarmController extends ChangeNotifier {
   NotificationServiceStatus get notificationStatus => _notificationStatus;
   List<PairedDeviceSummary> get pairedDevices =>
       List<PairedDeviceSummary>.unmodifiable(_pairedDevices);
+  bool get canManagePairing =>
+      _notificationAdapter is MutableRemoteNotificationAdapter;
+  String? get relayEndpointUrl {
+    final adapter = _notificationAdapter;
+    return adapter is MutableRemoteNotificationAdapter
+        ? adapter.relayEndpointUrl
+        : null;
+  }
 
   /// Initializes settings, PIN state, incident history, detector capabilities,
   /// and event stream subscriptions.
@@ -148,6 +156,20 @@ class AlarmController extends ChangeNotifier {
     }
 
     await refreshCapabilities();
+    if (_settings.selectedDetector == DetectorType.windowsAccelerometer) {
+      final accelCap = _capabilities[DetectorType.windowsAccelerometer];
+      final camCap = _capabilities[DetectorType.windowsCameraSceneMotion];
+      if ((accelCap == null || !accelCap.canArm) &&
+          camCap != null &&
+          (camCap.canArm ||
+              camCap.status == CapabilityStatus.permissionRequired)) {
+        _settings = _settings.copyWith(
+          selectedDetector: DetectorType.windowsCameraSceneMotion,
+        );
+        await _persistSettingsSafely();
+        await refreshCapabilities();
+      }
+    }
     _isInitialized = true;
     notifyListeners();
   }
@@ -637,6 +659,77 @@ class AlarmController extends ChangeNotifier {
       _warningMessage = 'Could not clear incident storage: $error';
     }
     notifyListeners();
+  }
+
+  /// Refreshes remote notification service status and paired device list.
+  Future<void> refreshNotificationStatus() async {
+    try {
+      _notificationStatus = await _notificationAdapter.getStatus();
+      _pairedDevices = await _notificationAdapter.listPairedDevices();
+    } catch (error) {
+      _warningMessage = 'Could not refresh remote notification status: $error';
+    }
+    notifyListeners();
+  }
+
+  /// Configures the optional backend relay endpoint URL when supported by the
+  /// active [RemoteNotificationAdapter].
+  Future<bool> configureRelayEndpoint(String? endpointUrl) async {
+    final adapter = _notificationAdapter;
+    if (adapter is! MutableRemoteNotificationAdapter) {
+      return false;
+    }
+    try {
+      await adapter.configureRelayEndpoint(endpointUrl);
+      await refreshNotificationStatus();
+      return true;
+    } catch (error) {
+      _warningMessage = 'Failed to update relay endpoint: $error';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Pairs a new companion mobile device for remote alert delivery.
+  Future<PairedDeviceSummary?> pairCompanionDevice({
+    required String displayName,
+    required String platform,
+    String? pairingCode,
+  }) async {
+    final adapter = _notificationAdapter;
+    if (adapter is! MutableRemoteNotificationAdapter) {
+      return null;
+    }
+    try {
+      final device = await adapter.pairDevice(
+        displayName: displayName,
+        platform: platform,
+        pairingCode: pairingCode,
+      );
+      await refreshNotificationStatus();
+      return device;
+    } catch (error) {
+      _warningMessage = 'Failed to pair companion device: $error';
+      notifyListeners();
+      return null;
+    }
+  }
+
+  /// Removes a paired companion device by [deviceId].
+  Future<bool> unpairCompanionDevice(String deviceId) async {
+    final adapter = _notificationAdapter;
+    if (adapter is! MutableRemoteNotificationAdapter) {
+      return false;
+    }
+    try {
+      await adapter.unpairDevice(deviceId);
+      await refreshNotificationStatus();
+      return true;
+    } catch (error) {
+      _warningMessage = 'Failed to unpair companion device: $error';
+      notifyListeners();
+      return false;
+    }
   }
 
   void _handleDetectorEvent(DetectorEvent event) {
