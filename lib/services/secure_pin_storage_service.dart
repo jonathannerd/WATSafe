@@ -18,11 +18,16 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
   PlatformSecurePinStorage({
     MethodChannel? channel,
     Directory? fallbackDirectory,
+    bool? supportsNativeChannelOverride,
   }) : _channel = channel ?? const MethodChannel('dev.watsafe/secure_storage'),
-       _fallbackDirectory = fallbackDirectory;
+       _fallbackDirectory = fallbackDirectory,
+       _supportsNativeChannelOverride = supportsNativeChannelOverride;
 
   final MethodChannel _channel;
   final Directory? _fallbackDirectory;
+  final bool? _supportsNativeChannelOverride;
+  static const String _fallbackBackendDescription =
+      'Local Restricted Storage (0600 PBKDF2-SHA256)';
   String _backendUsed = _defaultBackendDescription();
 
   static String _defaultBackendDescription() {
@@ -42,11 +47,12 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
   }
 
   bool get _supportsNativeSecureChannel =>
-      !kIsWeb &&
-      (Platform.isMacOS ||
-          Platform.isWindows ||
-          Platform.isAndroid ||
-          Platform.isIOS);
+      _supportsNativeChannelOverride ??
+      (!kIsWeb &&
+          (Platform.isMacOS ||
+              Platform.isWindows ||
+              Platform.isAndroid ||
+              Platform.isIOS));
 
   @override
   String get storageBackendDescription => _backendUsed;
@@ -58,7 +64,9 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
         final raw = await _channel.invokeMethod<String>('readPinRecord');
         if (raw != null && raw.isNotEmpty) {
           final decoded = jsonDecode(raw) as Map<String, Object?>;
-          _backendUsed = _defaultBackendDescription();
+          if (_backendUsed == _fallbackBackendDescription) {
+            _backendUsed = _defaultBackendDescription();
+          }
           return StoredPinRecord.fromJson(decoded);
         }
       } on MissingPluginException {
@@ -81,8 +89,10 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
         );
         if (backend != null && backend.isNotEmpty) {
           _backendUsed = backend;
+        } else {
+          _backendUsed = _defaultBackendDescription();
         }
-        await _writeFallbackFile(encoded, updateBackendLabel: false);
+        await _deleteFallbackFileSafely();
         return;
       } on MissingPluginException {
         // Fall through to restricted file fallback
@@ -104,9 +114,17 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
         // Ignore
       }
     }
-    final file = await _resolveFallbackFile();
-    if (await file.exists()) {
-      await file.delete();
+    await _deleteFallbackFileSafely();
+  }
+
+  Future<void> _deleteFallbackFileSafely() async {
+    try {
+      final file = await _resolveFallbackFile();
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {
+      // Best-effort cleanup of stale fallback file
     }
   }
 
@@ -120,7 +138,7 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
       return null;
     }
     final map = jsonDecode(content) as Map<String, Object?>;
-    _backendUsed = 'Local Restricted Storage (0600 PBKDF2-SHA256)';
+    _backendUsed = _fallbackBackendDescription;
     return StoredPinRecord.fromJson(map);
   }
 
@@ -139,7 +157,7 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
       }
     }
     if (updateBackendLabel) {
-      _backendUsed = 'Local Restricted Storage (0600 PBKDF2-SHA256)';
+      _backendUsed = _fallbackBackendDescription;
     }
   }
 

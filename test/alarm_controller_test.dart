@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:watsafe/core/alarm/alarm_controller.dart';
 import 'package:watsafe/core/alarm/alarm_state.dart';
@@ -114,6 +116,8 @@ class FailingNotificationAdapter implements RemoteNotificationAdapter {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   late FakeMotionDetector fakeDetector;
   late FakeAudioAlarmAdapter fakeAudio;
   late InMemorySecurePinStorage pinStorage;
@@ -539,4 +543,217 @@ void main() {
       );
     },
   );
+
+  group('PlatformSecurePinStorage', () {
+    const testChannel = MethodChannel('dev.watsafe/test_secure_storage');
+    late Directory tempDir;
+    late File fallbackFile;
+
+    const sampleRecord = StoredPinRecord(
+      algorithm: 'PBKDF2-HMAC-SHA256',
+      iterations: 20000,
+      saltBase64: 'c2FsdF9ieXRlc18xMjM0NTY=',
+      hashBase64: 'aGFzaF9ieXRlc18xMjM0NTY3ODkwYWJjZGVm',
+      updatedAtUtcIso: '2026-10-30T12:00:00.000Z',
+    );
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('watsafe_pin_test_');
+      fallbackFile = File(
+        '${tempDir.path}${Platform.pathSeparator}watsafe_pin_hash.json',
+      );
+    });
+
+    tearDown(() async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(testChannel, null);
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+      }
+    });
+
+    test(
+      '1. Native write success does not create fallback file and reads from native channel',
+      () async {
+        String? nativeStoredPayload;
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(testChannel, (MethodCall call) async {
+              switch (call.method) {
+                case 'writePinRecord':
+                  final args = call.arguments as Map<Object?, Object?>?;
+                  nativeStoredPayload = args?['payload'] as String?;
+                  return 'macOS Security Keychain (PBKDF2-HMAC-SHA256)';
+                case 'readPinRecord':
+                  return nativeStoredPayload;
+              }
+              return null;
+            });
+
+        final storage = PlatformSecurePinStorage(
+          channel: testChannel,
+          fallbackDirectory: tempDir,
+          supportsNativeChannelOverride: true,
+        );
+
+        await storage.writePinRecord(sampleRecord);
+
+        expect(await fallbackFile.exists(), isFalse);
+        expect(
+          storage.storageBackendDescription,
+          'macOS Security Keychain (PBKDF2-HMAC-SHA256)',
+        );
+
+        final loaded = await storage.readPinRecord();
+        expect(loaded, isNotNull);
+        expect(loaded!.algorithm, sampleRecord.algorithm);
+        expect(loaded.iterations, sampleRecord.iterations);
+        expect(loaded.saltBase64, sampleRecord.saltBase64);
+        expect(loaded.hashBase64, sampleRecord.hashBase64);
+        expect(loaded.updatedAtUtcIso, sampleRecord.updatedAtUtcIso);
+        expect(
+          storage.storageBackendDescription,
+          'macOS Security Keychain (PBKDF2-HMAC-SHA256)',
+        );
+      },
+    );
+
+    test(
+      '2. Native write success removes any pre-existing stale fallback file',
+      () async {
+        var shouldFailNativeWrite = true;
+        String? nativeStoredPayload;
+
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(testChannel, (MethodCall call) async {
+              if (call.method == 'writePinRecord') {
+                if (shouldFailNativeWrite) {
+                  throw PlatformException(
+                    code: 'DPAPI_WRITE_FAILED',
+                    message: 'Simulated native storage failure',
+                  );
+                }
+                final args = call.arguments as Map<Object?, Object?>?;
+                nativeStoredPayload = args?['payload'] as String?;
+                return 'Windows DPAPI (CryptProtectData PBKDF2-HMAC-SHA256)';
+              }
+              if (call.method == 'readPinRecord') {
+                return nativeStoredPayload;
+              }
+              return null;
+            });
+
+        final storage = PlatformSecurePinStorage(
+          channel: testChannel,
+          fallbackDirectory: tempDir,
+          supportsNativeChannelOverride: true,
+        );
+
+        // First write fails natively -> creates fallback file
+        await storage.writePinRecord(sampleRecord);
+        expect(await fallbackFile.exists(), isTrue);
+        expect(
+          storage.storageBackendDescription,
+          'Local Restricted Storage (0600 PBKDF2-SHA256)',
+        );
+
+        // Second write succeeds natively -> deletes stale fallback file
+        shouldFailNativeWrite = false;
+        await storage.writePinRecord(sampleRecord);
+        expect(await fallbackFile.exists(), isFalse);
+        expect(
+          storage.storageBackendDescription,
+          'Windows DPAPI (CryptProtectData PBKDF2-HMAC-SHA256)',
+        );
+      },
+    );
+
+    test(
+      '3. Native write failure (PlatformException and MissingPluginException) falls back to local file',
+      () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(testChannel, (MethodCall call) async {
+              throw PlatformException(
+                code: 'KEYSTORE_WRITE_FAILED',
+                message: 'Simulated keystore error',
+              );
+            });
+
+        final storage = PlatformSecurePinStorage(
+          channel: testChannel,
+          fallbackDirectory: tempDir,
+          supportsNativeChannelOverride: true,
+        );
+
+        await storage.writePinRecord(sampleRecord);
+        expect(await fallbackFile.exists(), isTrue);
+        expect(
+          storage.storageBackendDescription,
+          'Local Restricted Storage (0600 PBKDF2-SHA256)',
+        );
+
+        final loadedFromPlatformExceptionFallback = await storage
+            .readPinRecord();
+        expect(loadedFromPlatformExceptionFallback, isNotNull);
+        expect(
+          loadedFromPlatformExceptionFallback!.hashBase64,
+          sampleRecord.hashBase64,
+        );
+
+        // Verify MissingPluginException also falls back cleanly
+        await fallbackFile.delete();
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(testChannel, null);
+
+        await storage.writePinRecord(sampleRecord);
+        expect(await fallbackFile.exists(), isTrue);
+
+        final loadedFromMissingPluginFallback = await storage.readPinRecord();
+        expect(loadedFromMissingPluginFallback, isNotNull);
+        expect(
+          loadedFromMissingPluginFallback!.saltBase64,
+          sampleRecord.saltBase64,
+        );
+      },
+    );
+
+    test('4. deletePinRecord removes both native and fallback records', () async {
+      String? nativeStoredPayload = '{"algorithm":"PBKDF2-HMAC-SHA256"}';
+      var nativeDeleteCalled = false;
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(testChannel, (MethodCall call) async {
+            switch (call.method) {
+              case 'readPinRecord':
+                return nativeStoredPayload;
+              case 'deletePinRecord':
+                nativeDeleteCalled = true;
+                nativeStoredPayload = null;
+                return null;
+            }
+            return null;
+          });
+
+      final storage = PlatformSecurePinStorage(
+        channel: testChannel,
+        fallbackDirectory: tempDir,
+        supportsNativeChannelOverride: false,
+      );
+      // Write to fallback file first
+      await storage.writePinRecord(sampleRecord);
+      expect(await fallbackFile.exists(), isTrue);
+
+      // Now use native-enabled instance to delete both native and fallback records
+      final nativeStorage = PlatformSecurePinStorage(
+        channel: testChannel,
+        fallbackDirectory: tempDir,
+        supportsNativeChannelOverride: true,
+      );
+      await nativeStorage.deletePinRecord();
+
+      expect(nativeDeleteCalled, isTrue);
+      expect(nativeStoredPayload, isNull);
+      expect(await fallbackFile.exists(), isFalse);
+      expect(await nativeStorage.readPinRecord(), isNull);
+    });
+  });
 }
