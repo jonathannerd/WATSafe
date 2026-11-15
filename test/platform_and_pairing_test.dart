@@ -476,5 +476,467 @@ void main() {
         await fakeDetector.dispose();
       },
     );
+
+    test(
+      'End-to-end short-lived code/QR pairing delivers alerts only to paired phone, blocks unpaired/other sessions, deduplicates reconnects, and rejects credentials',
+      () async {
+        final endpoint = 'http://127.0.0.1:$relayPort';
+
+        // 1. Protected Laptop A setup
+        final laptopANotifications = ConfigurableRemoteNotificationService(
+          persistToDisk: false,
+          initialRelayEndpointUrl: endpoint,
+        );
+        final laptopADetector = FakeMotionDetector(
+          type: DetectorType.macosCameraSceneMotion,
+        );
+        final laptopAPinService = PinSecurityService(
+          storage: InMemorySecurePinStorage(),
+          pbkdf2Iterations: 500,
+        );
+        await laptopAPinService.setupInitialPin(
+          pin: '246810',
+          confirmPin: '246810',
+        );
+        final laptopAController = AlarmController(
+          detectors: <DetectorType, MotionDetectorAdapter>{
+            DetectorType.macosCameraSceneMotion: laptopADetector,
+          },
+          audioAdapter: FakeAudioAlarmAdapter(),
+          pinService: laptopAPinService,
+          incidentStorage: InMemoryIncidentStorage(),
+          settingsStorage: InMemorySettingsStorage(
+            const ProtectionSettings(
+              selectedDetector: DetectorType.macosCameraSceneMotion,
+              armingCountdownSeconds: 1,
+              onboardingCompleted: true,
+            ),
+          ),
+          notificationAdapter: laptopANotifications,
+        );
+        await laptopAController.initialize();
+
+        // Laptop A generates a short-lived single-use pairing code + QR link
+        final inviteA = await laptopAController.initiateHostPairing(
+          hostDisplayName: 'Jonathan\'s MacBook Pro',
+        );
+        expect(inviteA.pairingCode, isNotEmpty);
+        expect(inviteA.qrPayload, startsWith('watsafe://pair?'));
+        expect(laptopAController.pairedDevices, isEmpty);
+
+        // 2. Companion Phone A pairs using the watsafe://pair QR payload
+        final phoneANotifications = ConfigurableRemoteNotificationService(
+          persistToDisk: false,
+        );
+        final phoneADetector = FakeMotionDetector(
+          type: DetectorType.androidMotionSensors,
+        );
+        final phoneAPinService = PinSecurityService(
+          storage: InMemorySecurePinStorage(),
+          pbkdf2Iterations: 500,
+        );
+        await phoneAPinService.setupInitialPin(
+          pin: '135791',
+          confirmPin: '135791',
+        );
+        final phoneAController = AlarmController(
+          detectors: <DetectorType, MotionDetectorAdapter>{
+            DetectorType.androidMotionSensors: phoneADetector,
+          },
+          audioAdapter: FakeAudioAlarmAdapter(),
+          pinService: phoneAPinService,
+          incidentStorage: InMemoryIncidentStorage(),
+          settingsStorage: InMemorySettingsStorage(
+            const ProtectionSettings(
+              selectedDetector: DetectorType.androidMotionSensors,
+              onboardingCompleted: true,
+            ),
+          ),
+          notificationAdapter: phoneANotifications,
+        );
+        await phoneAController.initialize();
+
+        final sessionStateA = await phoneAController.pairAsCompanionPhone(
+          pairingCodeOrPayload: inviteA.qrPayload,
+          displayName: 'Chuan\'s Pixel 9',
+          platform: 'Android (FCM)',
+        );
+        expect(sessionStateA.isConnected, isTrue);
+        expect(sessionStateA.hostDisplayName, 'Jonathan\'s MacBook Pro');
+
+        // Reusing the single-use pairing code from a second client must fail
+        final roguePhone = ConfigurableRemoteNotificationService(
+          persistToDisk: false,
+          initialRelayEndpointUrl: endpoint,
+        );
+        await expectLater(
+          roguePhone.pairAsCompanionPhone(
+            pairingCodeOrPayload: inviteA.pairingCode,
+            displayName: 'Intruder Phone',
+            platform: 'Android',
+          ),
+          throwsStateError,
+        );
+
+        // Laptop A syncs and shows Phone A is connected
+        final syncedDevices = await laptopAController
+            .syncPairedDevicesFromRelay();
+        expect(syncedDevices, hasLength(1));
+        expect(syncedDevices.first.displayName, 'Chuan\'s Pixel 9');
+        expect(syncedDevices.first.connected, isTrue);
+        expect(
+          laptopAController.notificationStatus.capabilityStatus,
+          CapabilityStatus.ready,
+        );
+        expect(
+          laptopAController.notificationStatus.summary,
+          contains('Connected (1 paired device)'),
+        );
+
+        // 3. Separate Session B (different laptop + phone) on the same relay
+        final laptopBNotifications = ConfigurableRemoteNotificationService(
+          persistToDisk: false,
+          initialRelayEndpointUrl: endpoint,
+        );
+        final inviteB = await laptopBNotifications.initiateHostPairing(
+          hostDisplayName: 'Other Student Laptop',
+        );
+        final phoneBNotifications = ConfigurableRemoteNotificationService(
+          persistToDisk: false,
+        );
+        await phoneBNotifications.pairAsCompanionPhone(
+          pairingCodeOrPayload: inviteB.qrPayload,
+          displayName: 'Phone B',
+          platform: 'iOS (APNs)',
+        );
+        expect(phoneBNotifications.companionSession.isConnected, isTrue);
+
+        // 4. Arm Laptop A and trigger a real motion alarm
+        await laptopAController.startArming();
+        final armSessionId = laptopAController.activeSessionId!;
+        await laptopAController.handleCountdownTickForSession(armSessionId);
+        expect(laptopAController.state, ProtectionState.armed);
+
+        laptopADetector.emit(
+          DetectorEvent(
+            eventId: 'evt_laptop_theft_1',
+            sessionId: armSessionId,
+            detectorType: DetectorType.macosCameraSceneMotion,
+            eventType: DetectorEventType.motionTriggered,
+            timestamp: DateTime.utc(2026, 11, 14, 18, 30, 0),
+            summary: 'Laptop lifted from desk (global optical flow 0.41)',
+            motionScore: 0.41,
+            threshold: 0.095,
+            consecutiveAboveThresholdFrames: 3,
+          ),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        expect(laptopAController.state, ProtectionState.alarming);
+
+        // 5. Paired Phone A receives the alert and surfaces the remote banner
+        final alertsForPhoneA = await phoneAController
+            .pollCompanionAlertsOnce();
+        expect(alertsForPhoneA, hasLength(1));
+        expect(
+          alertsForPhoneA.first.incidentId,
+          laptopAController.activeIncident!.id,
+        );
+        expect(
+          alertsForPhoneA.first.hostDisplayName,
+          'Jonathan\'s MacBook Pro',
+        );
+        expect(
+          alertsForPhoneA.first.triggerSummary,
+          contains('Laptop lifted from desk'),
+        );
+        expect(
+          phoneAController.latestUnacknowledgedCompanionAlert?.incidentId,
+          laptopAController.activeIncident!.id,
+        );
+
+        // 6. Verify strict session isolation:
+        //    (a) Phone B (paired to Session B) receives ZERO alerts from Session A
+        final alertsForPhoneB = await phoneBNotifications
+            .pollCompanionAlertsOnce();
+        expect(alertsForPhoneB, isEmpty);
+        expect(phoneBNotifications.receivedCompanionAlerts, isEmpty);
+
+        //    (b) Unpaired HTTP client without valid companion token gets 401
+        final rawClient = HttpClient();
+        final unauthReq = await rawClient.getUrl(
+          Uri.parse('$endpoint/v1/companion/alerts?afterSeq=0'),
+        );
+        final unauthResp = await unauthReq.close();
+        expect(unauthResp.statusCode, HttpStatus.unauthorized);
+        await unauthResp.drain<void>();
+
+        // 7. Verify reconnect & retry deduplication:
+        //    Re-sending the same incident from Laptop A and replaying from seq=0 on Phone A
+        //    must NOT duplicate the alert.
+        await laptopANotifications.sendIncidentAlert(
+          laptopAController.activeIncident!,
+        );
+        final replayed = await phoneANotifications.pollCompanionAlertsOnce(
+          replayFromZero: true,
+        );
+        expect(replayed, isEmpty);
+        expect(phoneAController.receivedCompanionAlerts, hasLength(1));
+
+        // 8. Verify database credentials, PINs, and camera frames are blocked
+        for (final forbiddenPayload in <Map<String, Object?>>[
+          <String, Object?>{
+            'incidentId': 'leak_db_1',
+            'databaseUrl':
+                'postgres://avnadmin:secret@db.aivencloud.com/defaultdb',
+          },
+          <String, Object?>{
+            'incidentId': 'leak_conn_str',
+            'triggerSummary':
+                'postgresql://avnadmin:secret@db.aivencloud.com:25060/defaultdb',
+          },
+          <String, Object?>{'incidentId': 'leak_pin', 'pinHash': 'deadbeef'},
+        ]) {
+          final badReq = await rawClient.postUrl(
+            Uri.parse('$endpoint/v1/incidents:report'),
+          );
+          badReq.headers.contentType = ContentType.json;
+          badReq.write(jsonEncode(forbiddenPayload));
+          final badResp = await badReq.close();
+          expect(badResp.statusCode, HttpStatus.badRequest);
+          await badResp.drain<void>();
+        }
+
+        // 9. Unpairing Phone A revokes its companion token immediately
+        await laptopAController.unpairCompanionDevice(
+          syncedDevices.first.deviceId,
+        );
+        await phoneAController.pollCompanionAlertsOnce();
+        expect(phoneAController.companionSession.isConnected, isFalse);
+
+        rawClient.close(force: true);
+        roguePhone.dispose();
+        laptopBNotifications.dispose();
+        phoneBNotifications.dispose();
+        laptopAController.dispose();
+        phoneAController.dispose();
+        await laptopADetector.dispose();
+        await phoneADetector.dispose();
+      },
+    );
+
+    test(
+      'PostgresRelayStore parses Aiven environment variables securely and redacts credentials',
+      () {
+        expect(
+          PostgresRelayStore.fromEnvironment(const <String, String>{}),
+          isNull,
+        );
+
+        final store = PostgresRelayStore.fromEnvironment(const <String, String>{
+          'AIVEN_DATABASE_URL':
+              'postgres://avnadmin:SuperSecretPass123@pg-watsafe-test.aivencloud.com:25432/defaultdb?sslmode=require',
+          'WATSAFE_DB_TABLE_PREFIX': 'chuan_ci_',
+        });
+        expect(store, isNotNull);
+        expect(store!.backendName, 'aiven_postgres');
+        expect(
+          store.redactedDescription,
+          'postgres://avnadmin@pg-watsafe-test.aivencloud.com:25432/defaultdb',
+        );
+        expect(
+          store.redactedDescription,
+          isNot(contains('SuperSecretPass123')),
+        );
+      },
+    );
+
+    testWidgets(
+      'Companion phone UI pairs via laptop short-lived code and displays REMOTE LAPTOP ALARM banner on trigger',
+      (WidgetTester tester) async {
+        HttpOverrides.global = null;
+        await tester.binding.setSurfaceSize(const Size(1100, 950));
+        final endpoint = 'http://127.0.0.1:$relayPort';
+
+        late FakeMotionDetector laptopDetector;
+        late AlarmController laptopController;
+        late PairingCodeInvitation invite;
+
+        await tester.runAsync(() async {
+          laptopDetector = FakeMotionDetector(
+            type: DetectorType.macosCameraSceneMotion,
+          );
+          final laptopPin = PinSecurityService(
+            storage: InMemorySecurePinStorage(),
+            pbkdf2Iterations: 500,
+          );
+          await laptopPin.setupInitialPin(pin: '112233', confirmPin: '112233');
+          laptopController = AlarmController(
+            detectors: <DetectorType, MotionDetectorAdapter>{
+              DetectorType.macosCameraSceneMotion: laptopDetector,
+            },
+            audioAdapter: FakeAudioAlarmAdapter(),
+            pinService: laptopPin,
+            incidentStorage: InMemoryIncidentStorage(),
+            settingsStorage: InMemorySettingsStorage(
+              const ProtectionSettings(
+                selectedDetector: DetectorType.macosCameraSceneMotion,
+                armingCountdownSeconds: 1,
+                onboardingCompleted: true,
+              ),
+            ),
+            notificationAdapter: ConfigurableRemoteNotificationService(
+              persistToDisk: false,
+              initialRelayEndpointUrl: endpoint,
+            ),
+          );
+          await laptopController.initialize();
+          invite = await laptopController.initiateHostPairing(
+            hostDisplayName: 'Library MacBook',
+          );
+        });
+
+        final phoneDetector = FakeMotionDetector(
+          type: DetectorType.androidMotionSensors,
+        );
+        final phonePin = PinSecurityService(
+          storage: InMemorySecurePinStorage(),
+          pbkdf2Iterations: 500,
+        );
+        await phonePin.setupInitialPin(pin: '445566', confirmPin: '445566');
+        final phoneController = AlarmController(
+          detectors: <DetectorType, MotionDetectorAdapter>{
+            DetectorType.androidMotionSensors: phoneDetector,
+          },
+          audioAdapter: FakeAudioAlarmAdapter(),
+          pinService: phonePin,
+          incidentStorage: InMemoryIncidentStorage(),
+          settingsStorage: InMemorySettingsStorage(
+            const ProtectionSettings(
+              selectedDetector: DetectorType.androidMotionSensors,
+              onboardingCompleted: true,
+            ),
+          ),
+          notificationAdapter: ConfigurableRemoteNotificationService(
+            persistToDisk: false,
+          ),
+        );
+        await phoneController.initialize();
+
+        await tester.pumpWidget(WatSafeApp(controller: phoneController));
+        await tester.pumpAndSettle();
+
+        // Navigate to Paired Devices tab on the phone
+        await tester.tap(find.text('Paired Devices'));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(
+          find.byKey(const Key('companion_code_or_qr_input')),
+          invite.qrPayload,
+        );
+        final connectBtn = find.byKey(
+          const Key('connect_companion_phone_button'),
+        );
+        await tester.ensureVisible(connectBtn);
+        await tester.runAsync(() async {
+          await phoneController.pairAsCompanionPhone(
+            pairingCodeOrPayload: invite.qrPayload,
+            displayName: 'Test iPhone',
+            platform: 'iOS (APNs)',
+          );
+          await laptopController.syncPairedDevicesFromRelay();
+        });
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const Key('companion_connected_badge')),
+          findsOneWidget,
+        );
+        expect(laptopController.pairedDevices, hasLength(1));
+
+        // Trigger alarm on laptop inside real async zone so loopback HTTP finishes
+        await tester.runAsync(() async {
+          await laptopController.startArming();
+          final sid = laptopController.activeSessionId!;
+          await laptopController.handleCountdownTickForSession(sid);
+          laptopDetector.emit(
+            DetectorEvent(
+              eventId: 'evt_ui_banner_1',
+              sessionId: sid,
+              detectorType: DetectorType.macosCameraSceneMotion,
+              eventType: DetectorEventType.motionTriggered,
+              timestamp: DateTime.utc(2026, 11, 14, 19, 0, 0),
+              summary: 'Camera rotated sharply across all quadrants',
+              motionScore: 0.39,
+              threshold: 0.095,
+              consecutiveAboveThresholdFrames: 3,
+            ),
+          );
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          await phoneController.pollCompanionAlertsOnce();
+        });
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const Key('remote_laptop_alarm_banner')),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('REMOTE LAPTOP ALARM: Library MacBook'),
+          findsOneWidget,
+        );
+
+        laptopController.dispose();
+        phoneController.dispose();
+        await laptopDetector.dispose();
+        await phoneDetector.dispose();
+      },
+    );
+
+    final liveDbUrl =
+        (Platform.environment['AIVEN_DATABASE_URL'] ??
+                Platform.environment['DATABASE_URL'] ??
+                '')
+            .trim();
+    test(
+      'Live Aiven PostgreSQL relay store persists sessions, pairing bonds, and alerts when AIVEN_DATABASE_URL is configured',
+      () async {
+        final liveServer = WatSafeRelayServer.fromEnvironment(
+          environment: <String, String>{
+            ...Platform.environment,
+            'WATSAFE_DB_TABLE_PREFIX': 'watsafe_it_',
+          },
+        );
+        final livePort = await liveServer.start(
+          address: InternetAddress.loopbackIPv4,
+          port: 0,
+        );
+        try {
+          expect(liveServer.storageBackend, 'aiven_postgres');
+          final host = ConfigurableRemoteNotificationService(
+            persistToDisk: false,
+            initialRelayEndpointUrl: 'http://127.0.0.1:$livePort',
+          );
+          final invite = await host.initiateHostPairing(
+            hostDisplayName: 'Aiven Test Host',
+          );
+          final phone = ConfigurableRemoteNotificationService(
+            persistToDisk: false,
+          );
+          final connected = await phone.pairAsCompanionPhone(
+            pairingCodeOrPayload: invite.qrPayload,
+            displayName: 'Chuan Test Phone',
+            platform: 'Android (FCM)',
+          );
+          expect(connected.isConnected, isTrue);
+          host.dispose();
+          phone.dispose();
+        } finally {
+          await liveServer.stop();
+        }
+      },
+      skip: liveDbUrl.isEmpty
+          ? 'Set AIVEN_DATABASE_URL or DATABASE_URL to run against Chuan\'s Aiven PostgreSQL database.'
+          : false,
+    );
   });
 }

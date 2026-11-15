@@ -1,6 +1,16 @@
 package dev.watsafe.temp.watsafe
 
+import android.Manifest
+import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -8,8 +18,11 @@ import android.hardware.SensorManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.Build
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -38,7 +51,7 @@ class MainActivity : FlutterActivity() {
   override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
     super.configureFlutterEngine(flutterEngine)
     val messenger = flutterEngine.dartExecutor.binaryMessenger
-    motionBridge = AndroidMotionSensorBridge(applicationContext, messenger)
+    motionBridge = AndroidMotionSensorBridge(this, messenger)
     audioBridge = AndroidAudioAlarmBridge(messenger)
     secureStorageBridge = AndroidSecureStorageBridge(applicationContext, messenger)
   }
@@ -53,34 +66,185 @@ class MainActivity : FlutterActivity() {
     motionBridge?.onHostResume()
   }
 
+  override fun onRequestPermissionsResult(
+    requestCode: Int,
+    permissions: Array<out String>,
+    grantResults: IntArray
+  ) {
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    motionBridge?.onRequestPermissionsResult(requestCode, grantResults)
+  }
+
   override fun onDestroy() {
-    motionBridge?.dispose()
+    motionBridge?.detachActivity()
     audioBridge?.dispose()
     super.onDestroy()
   }
 }
 
 // ============================================================================
-// 1. Android Motion Sensor Bridge (`dev.watsafe/android_motion` & `_events`)
+// 1. Android Foreground Monitoring Service & Motion Sensor Coordinator
 // ============================================================================
 
-private class AndroidMotionSensorBridge(
-  private val context: Context,
-  messenger: io.flutter.plugin.common.BinaryMessenger
-) : MethodChannel.MethodCallHandler, EventChannel.StreamHandler, SensorEventListener {
+class WatSafeMonitoringService : Service() {
+  override fun onBind(intent: Intent?): IBinder? = null
 
-  private val methodChannel = MethodChannel(messenger, "dev.watsafe/android_motion")
-  private val eventChannel = EventChannel(messenger, "dev.watsafe/android_motion_events")
+  override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    if (intent?.action == ACTION_STOP_FROM_NOTIFICATION) {
+      WatSafeMonitoringCoordinator.stopFromForegroundService(
+        applicationContext,
+        "Android foreground monitoring stopped from persistent notification."
+      )
+      stopForegroundCompat()
+      stopSelf()
+      return START_NOT_STICKY
+    }
+
+    val notification = buildMonitoringNotification(
+      applicationContext,
+      isAlarming = WatSafeMonitoringCoordinator.isAlarmLatched
+    )
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        startForeground(
+          NOTIFICATION_ID,
+          notification,
+          ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        )
+      } else {
+        startForeground(NOTIFICATION_ID, notification)
+      }
+      WatSafeMonitoringCoordinator.markForegroundServiceRunning(applicationContext, true)
+    } catch (error: Exception) {
+      WatSafeMonitoringCoordinator.stopFromForegroundService(
+        applicationContext,
+        "Android 14+ foreground service failed to start: ${error.message ?: "Restricted by OS"}"
+      )
+      stopSelf()
+      return START_NOT_STICKY
+    }
+
+    return START_STICKY
+  }
+
+  override fun onDestroy() {
+    WatSafeMonitoringCoordinator.onServiceDestroyed(applicationContext)
+    super.onDestroy()
+  }
+
+  private fun stopForegroundCompat() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+      stopForeground(STOP_FOREGROUND_REMOVE)
+    } else {
+      @Suppress("DEPRECATION")
+      stopForeground(true)
+    }
+  }
+
+  companion object {
+    const val CHANNEL_ID = "watsafe_armed_monitoring"
+    const val NOTIFICATION_ID = 4101
+    const val ACTION_START_MONITORING = "dev.watsafe.action.START_MONITORING"
+    const val ACTION_STOP_FROM_NOTIFICATION = "dev.watsafe.action.STOP_MONITORING"
+
+    fun ensureNotificationChannel(context: Context) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+          ?: return
+        val channel = NotificationChannel(
+          CHANNEL_ID,
+          "WATSafe Armed Motion Protection",
+          NotificationManager.IMPORTANCE_LOW
+        ).apply {
+          description = "Shows when WATSafe is actively monitoring physical device motion in the background."
+          setShowBadge(false)
+        }
+        mgr.createNotificationChannel(channel)
+      }
+    }
+
+    fun buildMonitoringNotification(context: Context, isAlarming: Boolean): Notification {
+      ensureNotificationChannel(context)
+
+      val openIntent = Intent(context, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+      }
+      val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+        (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+      val openPendingIntent = PendingIntent.getActivity(context, 1001, openIntent, pendingFlags)
+
+      val stopIntent = Intent(context, WatSafeMonitoringService::class.java).apply {
+        action = ACTION_STOP_FROM_NOTIFICATION
+      }
+      val stopPendingIntent = PendingIntent.getService(context, 1002, stopIntent, pendingFlags)
+
+      val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        Notification.Builder(context, CHANNEL_ID)
+      } else {
+        @Suppress("DEPRECATION")
+        Notification.Builder(context)
+      }
+
+      val title = if (isAlarming) {
+        "WATSafe ALARM ACTIVE — Enter PIN to Disarm"
+      } else {
+        "WATSafe Armed — Monitoring Device Motion"
+      }
+      val body = if (isAlarming) {
+        "Sustained motion detected. Open WATSafe and enter your PIN to disarm."
+      } else {
+        "Motion sensors remain active while the screen is off or backgrounded."
+      }
+
+      builder
+        .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+        .setContentTitle(title)
+        .setContentText(body)
+        .setOngoing(true)
+        .setContentIntent(openPendingIntent)
+
+      if (!isAlarming) {
+        val action = Notification.Action.Builder(
+          android.R.drawable.ic_media_pause,
+          "Stop Monitoring",
+          stopPendingIntent
+        ).build()
+        builder.addAction(action)
+      }
+
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+      }
+      return builder.build()
+    }
+
+    fun updateNotification(context: Context, isAlarming: Boolean) {
+      val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        ?: return
+      mgr.notify(NOTIFICATION_ID, buildMonitoringNotification(context, isAlarming))
+    }
+  }
+}
+
+private object WatSafeMonitoringCoordinator : SensorEventListener {
   private val mainHandler = Handler(Looper.getMainLooper())
-  private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
-
   private var eventSink: EventChannel.EventSink? = null
+  private var pendingFailureEvent: Map<String, Any>? = null
+
+  private var sensorManager: SensorManager? = null
+  private var wakeLock: PowerManager.WakeLock? = null
   private var activeSensor: Sensor? = null
-  private var activeSessionId: String? = null
+  var activeSessionId: String? = null
+    private set
+  var isForegroundServiceRunning: Boolean = false
+    private set
+  var isAlarmLatched: Boolean = false
+    private set
+  private var stoppingIntentionally: Boolean = false
+
   private var motionThreshold: Double = 0.095
   private var calibrationDurationMs: Long = 1500L
   private var persistenceFramesRequired: Int = 3
-
   private var sessionStartTimeMs: Long = 0L
   private var isCalibrationDone: Boolean = false
   private var hasBaseline: Boolean = false
@@ -90,84 +254,42 @@ private class AndroidMotionSensorBridge(
   private var refMag: Double = 0.0
   private var consecutiveAboveThreshold: Int = 0
   private var sampleCount: Int = 0
+  private var appContext: Context? = null
 
-  init {
-    methodChannel.setMethodCallHandler(this)
-    eventChannel.setStreamHandler(this)
+  fun attachEventSink(sink: EventChannel.EventSink?) {
+    eventSink = sink
+    if (sink != null) {
+      val pending = pendingFailureEvent
+      if (pending != null) {
+        pendingFailureEvent = null
+        mainHandler.post { sink.success(pending) }
+      }
+    }
   }
 
-  override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
-    eventSink = events
-  }
-
-  override fun onCancel(arguments: Any?) {
-    eventSink = null
-  }
-
-  private fun discoverMotionSensor(): Sensor? {
-    val mgr = sensorManager ?: return null
+  fun discoverMotionSensor(context: Context): Sensor? {
+    val mgr = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager ?: return null
+    sensorManager = mgr
     return mgr.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
       ?: mgr.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
   }
 
-  override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
-    when (call.method) {
-      "checkCapability" -> {
-        val sensor = discoverMotionSensor()
-        val hasHardware = sensor != null
-        result.success(
-          mapOf(
-            "hasMotionHardware" to hasHardware,
-            "deviceName" to (sensor?.name ?: "No Motion Sensor Detected"),
-            "permissionStatus" to if (hasHardware) "granted" else "notApplicable",
-            "detail" to if (hasHardware) {
-              "Android SensorManager ready (${sensor?.name}, vendor: ${sensor?.vendor})."
-            } else {
-              "Android SensorManager found no linear acceleration or accelerometer sensors."
-            }
-          )
-        )
-      }
-
-      "requestPermission" -> {
-        result.success(if (discoverMotionSensor() != null) "granted" else "notApplicable")
-      }
-
-      "startMonitoring" -> {
-        val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
-        startMonitoring(args, result)
-      }
-
-      "updateSensitivity" -> {
-        val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
-        val threshold = (args["motionScoreThreshold"] as? Number)?.toDouble()
-        if (threshold != null) {
-          motionThreshold = max(0.02, min(0.50, threshold))
-        }
-        result.success(null)
-      }
-
-      "stopMonitoring" -> {
-        stopMonitoringInternal()
-        result.success(null)
-      }
-
-      else -> result.notImplemented()
-    }
+  fun updateThreshold(threshold: Double) {
+    motionThreshold = max(0.02, min(0.50, threshold))
   }
 
-  private fun startMonitoring(args: Map<*, *>, result: MethodChannel.Result) {
-    stopMonitoringInternal()
-    val sensor = discoverMotionSensor()
-    if (sensor == null || sensorManager == null) {
-      result.success(
-        mapOf(
-          "started" to false,
-          "message" to "No Android accelerometer or linear acceleration sensor detected.",
-          "errorCode" to "NO_SENSOR_HARDWARE"
-        )
+  fun startMonitoring(context: Context, args: Map<*, *>): Map<String, Any> {
+    stopMonitoringByClient(context)
+    val appCtx = context.applicationContext
+    appContext = appCtx
+    val sensor = discoverMotionSensor(appCtx)
+    val mgr = sensorManager
+    if (sensor == null || mgr == null) {
+      return mapOf(
+        "started" to false,
+        "message" to "No Android accelerometer or linear acceleration sensor detected.",
+        "errorCode" to "NO_SENSOR_HARDWARE"
       )
-      return
     }
 
     val sessionId = (args["sessionId"] as? String) ?: "session_default"
@@ -175,6 +297,8 @@ private class AndroidMotionSensorBridge(
     val calibrationMs = (args["calibrationDurationMs"] as? Number)?.toLong() ?: 1500L
     val persistenceFrames = (args["persistenceFramesRequired"] as? Number)?.toInt() ?: 3
 
+    stoppingIntentionally = false
+    isAlarmLatched = false
     activeSessionId = sessionId
     activeSensor = sensor
     motionThreshold = max(0.02, min(0.50, threshold))
@@ -186,47 +310,139 @@ private class AndroidMotionSensorBridge(
     consecutiveAboveThreshold = 0
     sampleCount = 0
 
-    val registered = sensorManager.registerListener(
+    acquireWakeLock(appCtx)
+
+    val registered = mgr.registerListener(
       this,
       sensor,
       SensorManager.SENSOR_DELAY_GAME
     )
     if (!registered) {
+      releaseWakeLock()
       activeSessionId = null
       activeSensor = null
-      result.success(
-        mapOf(
-          "started" to false,
-          "message" to "Failed to register Android SensorEventListener.",
-          "errorCode" to "REGISTER_LISTENER_FAILED"
-        )
+      return mapOf(
+        "started" to false,
+        "message" to "Failed to register Android SensorEventListener.",
+        "errorCode" to "REGISTER_LISTENER_FAILED"
       )
-      return
+    }
+
+    try {
+      val serviceIntent = Intent(appCtx, WatSafeMonitoringService::class.java).apply {
+        action = WatSafeMonitoringService.ACTION_START_MONITORING
+      }
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        appCtx.startForegroundService(serviceIntent)
+      } else {
+        appCtx.startService(serviceIntent)
+      }
+      isForegroundServiceRunning = true
+    } catch (error: Exception) {
+      mgr.unregisterListener(this)
+      releaseWakeLock()
+      activeSessionId = null
+      activeSensor = null
+      return mapOf(
+        "started" to false,
+        "message" to "Android blocked starting the background monitoring service: ${error.message ?: "ForegroundServiceStartNotAllowed"}",
+        "errorCode" to "FOREGROUND_SERVICE_BLOCKED"
+      )
     }
 
     emitEvent(
       mapOf(
         "sessionId" to sessionId,
         "eventType" to "calibrationStarted",
-        "summary" to "Calibrating baseline on ${sensor.name}...",
+        "summary" to "Calibrating baseline on ${sensor.name} (foreground service active)...",
         "threshold" to motionThreshold,
         "timestampMs" to sessionStartTimeMs
       )
     )
 
-    result.success(
-      mapOf(
-        "started" to true,
-        "message" to "Monitoring active on ${sensor.name}."
-      )
+    return mapOf(
+      "started" to true,
+      "message" to "Background monitoring active on ${sensor.name}."
     )
   }
 
-  private fun stopMonitoringInternal() {
+  fun markForegroundServiceRunning(context: Context, running: Boolean) {
+    appContext = context.applicationContext
+    isForegroundServiceRunning = running
+  }
+
+  fun stopMonitoringByClient(context: Context) {
+    stoppingIntentionally = true
+    isForegroundServiceRunning = false
+    isAlarmLatched = false
     sensorManager?.unregisterListener(this)
+    releaseWakeLock()
     activeSensor = null
     activeSessionId = null
     consecutiveAboveThreshold = 0
+    try {
+      context.applicationContext.stopService(
+        Intent(context.applicationContext, WatSafeMonitoringService::class.java)
+      )
+    } catch (_: Exception) {}
+  }
+
+  fun stopFromForegroundService(context: Context, reason: String) {
+    val sessionId = activeSessionId
+    stoppingIntentionally = true
+    isForegroundServiceRunning = false
+    isAlarmLatched = false
+    sensorManager?.unregisterListener(this)
+    releaseWakeLock()
+    activeSensor = null
+    activeSessionId = null
+    consecutiveAboveThreshold = 0
+    if (sessionId != null) {
+      emitFailureEvent(
+        mapOf(
+          "sessionId" to sessionId,
+          "eventType" to "detectorFailed",
+          "summary" to reason,
+          "errorCode" to "FOREGROUND_SERVICE_STOPPED",
+          "timestampMs" to System.currentTimeMillis()
+        )
+      )
+    }
+  }
+
+  fun onServiceDestroyed(context: Context) {
+    isForegroundServiceRunning = false
+    if (!stoppingIntentionally && activeSessionId != null) {
+      stopFromForegroundService(
+        context,
+        "Android terminated the foreground motion monitoring service; protection is no longer armed."
+      )
+    }
+  }
+
+  private fun acquireWakeLock(context: Context) {
+    releaseWakeLock()
+    try {
+      val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+      val lock = pm.newWakeLock(
+        PowerManager.PARTIAL_WAKE_LOCK,
+        "watsafe:MotionMonitoringWakeLock"
+      ).apply {
+        setReferenceCounted(false)
+        // Bounded max hold (12 hours) so the wake lock can never leak indefinitely.
+        acquire(12L * 60L * 60L * 1000L)
+      }
+      wakeLock = lock
+    } catch (_: Exception) {}
+  }
+
+  private fun releaseWakeLock() {
+    try {
+      if (wakeLock?.isHeld == true) {
+        wakeLock?.release()
+      }
+    } catch (_: Exception) {}
+    wakeLock = null
   }
 
   override fun onSensorChanged(event: SensorEvent?) {
@@ -263,7 +479,7 @@ private class AndroidMotionSensorBridge(
           mapOf(
             "sessionId" to sessionId,
             "eventType" to "calibrationCompleted",
-            "summary" to "Android motion baseline calibrated. Active motion detection enabled.",
+            "summary" to "Android motion baseline calibrated. Foreground service monitoring active.",
             "motionScore" to 0.0,
             "threshold" to motionThreshold,
             "consecutiveFrames" to 0,
@@ -294,6 +510,10 @@ private class AndroidMotionSensorBridge(
     }
 
     if (consecutiveAboveThreshold >= persistenceFramesRequired) {
+      if (!isAlarmLatched) {
+        isAlarmLatched = true
+        appContext?.let { WatSafeMonitoringService.updateNotification(it, isAlarming = true) }
+      }
       emitEvent(
         mapOf(
           "sessionId" to sessionId,
@@ -331,38 +551,164 @@ private class AndroidMotionSensorBridge(
 
   override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-  fun onHostPause() {
-    val sessionId = activeSessionId ?: return
-    emitEvent(
-      mapOf(
-        "sessionId" to sessionId,
-        "eventType" to "lifecyclePaused",
-        "summary" to "Android activity backgrounded; motion monitoring paused.",
-        "timestampMs" to System.currentTimeMillis()
-      )
-    )
-  }
-
-  fun onHostResume() {
-    val sessionId = activeSessionId ?: return
-    emitEvent(
-      mapOf(
-        "sessionId" to sessionId,
-        "eventType" to "lifecycleResumed",
-        "summary" to "Android activity resumed in foreground.",
-        "timestampMs" to System.currentTimeMillis()
-      )
-    )
-  }
-
   private fun emitEvent(payload: Map<String, Any>) {
     mainHandler.post {
       eventSink?.success(payload)
     }
   }
 
-  fun dispose() {
-    stopMonitoringInternal()
+  private fun emitFailureEvent(payload: Map<String, Any>) {
+    mainHandler.post {
+      val sink = eventSink
+      if (sink != null) {
+        sink.success(payload)
+      } else {
+        pendingFailureEvent = payload
+      }
+    }
+  }
+}
+
+private class AndroidMotionSensorBridge(
+  private var activity: Activity?,
+  messenger: io.flutter.plugin.common.BinaryMessenger
+) : MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
+
+  private val appContext: Context = activity!!.applicationContext
+  private val methodChannel = MethodChannel(messenger, "dev.watsafe/android_motion")
+  private val eventChannel = EventChannel(messenger, "dev.watsafe/android_motion_events")
+  private var pendingPermissionResult: MethodChannel.Result? = null
+
+  init {
+    methodChannel.setMethodCallHandler(this)
+    eventChannel.setStreamHandler(this)
+  }
+
+  override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+    WatSafeMonitoringCoordinator.attachEventSink(events)
+  }
+
+  override fun onCancel(arguments: Any?) {
+    WatSafeMonitoringCoordinator.attachEventSink(null)
+  }
+
+  private fun notificationPermissionGranted(): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      appContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+        PackageManager.PERMISSION_GRANTED
+    } else {
+      true
+    }
+  }
+
+  override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+    when (call.method) {
+      "checkCapability" -> {
+        val sensor = WatSafeMonitoringCoordinator.discoverMotionSensor(appContext)
+        val hasHardware = sensor != null
+        val notifGranted = notificationPermissionGranted()
+        result.success(
+          mapOf(
+            "hasMotionHardware" to hasHardware,
+            "deviceName" to (sensor?.name ?: "No Motion Sensor Detected"),
+            "permissionStatus" to if (!hasHardware) {
+              "notApplicable"
+            } else if (notifGranted) {
+              "granted"
+            } else {
+              "notDetermined"
+            },
+            "notificationPermissionGranted" to notifGranted,
+            "detail" to if (hasHardware) {
+              if (notifGranted) {
+                "Android SensorManager + Foreground Service ready (${sensor?.name})."
+              } else {
+                "Android SensorManager ready (${sensor?.name}); grant notification permission so the persistent armed status banner is visible."
+              }
+            } else {
+              "Android SensorManager found no linear acceleration or accelerometer sensors."
+            }
+          )
+        )
+      }
+
+      "requestPermission" -> {
+        if (WatSafeMonitoringCoordinator.discoverMotionSensor(appContext) == null) {
+          result.success("notApplicable")
+          return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationPermissionGranted()) {
+          val hostActivity = activity
+          if (hostActivity != null && pendingPermissionResult == null) {
+            pendingPermissionResult = result
+            hostActivity.requestPermissions(
+              arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+              REQUEST_POST_NOTIFICATIONS
+            )
+            return
+          }
+        }
+        result.success(if (notificationPermissionGranted()) "granted" else "denied")
+      }
+
+      "startMonitoring" -> {
+        val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+        result.success(WatSafeMonitoringCoordinator.startMonitoring(appContext, args))
+      }
+
+      "updateSensitivity" -> {
+        val args = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+        val threshold = (args["motionScoreThreshold"] as? Number)?.toDouble()
+        if (threshold != null) {
+          WatSafeMonitoringCoordinator.updateThreshold(threshold)
+        }
+        result.success(null)
+      }
+
+      "stopMonitoring" -> {
+        WatSafeMonitoringCoordinator.stopMonitoringByClient(appContext)
+        result.success(null)
+      }
+
+      else -> result.notImplemented()
+    }
+  }
+
+  fun onRequestPermissionsResult(requestCode: Int, grantResults: IntArray) {
+    if (requestCode != REQUEST_POST_NOTIFICATIONS) return
+    val pending = pendingPermissionResult ?: return
+    pendingPermissionResult = null
+    val granted = grantResults.isNotEmpty() &&
+      grantResults[0] == PackageManager.PERMISSION_GRANTED
+    pending.success(if (granted) "granted" else "denied")
+  }
+
+  fun onHostPause() {
+    // Keep motion monitoring running in the background while the foreground
+    // service is active (including when the user locks the screen).
+    val sessionId = WatSafeMonitoringCoordinator.activeSessionId ?: return
+    if (WatSafeMonitoringCoordinator.isForegroundServiceRunning) {
+      return
+    }
+    // Only if no foreground service is active, report the interruption honestly.
+    WatSafeMonitoringCoordinator.stopFromForegroundService(
+      appContext,
+      "Android activity backgrounded without an active foreground service (session $sessionId)."
+    )
+  }
+
+  fun onHostResume() {
+    // Foreground service continued monitoring seamlessly while backgrounded.
+  }
+
+  fun detachActivity() {
+    activity = null
+    pendingPermissionResult = null
+    WatSafeMonitoringCoordinator.attachEventSink(null)
+  }
+
+  companion object {
+    private const val REQUEST_POST_NOTIFICATIONS = 4102
   }
 }
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:watsafe/core/alarm/alarm_controller.dart';
 import 'package:watsafe/core/alarm/alarm_state.dart';
@@ -16,6 +17,7 @@ import 'package:watsafe/services/secure_pin_storage_service.dart';
 class FakeMotionDetector implements MotionDetectorAdapter {
   FakeMotionDetector({
     this.type = DetectorType.macosCameraSceneMotion,
+    this.supportsBackgroundMonitoring = false,
     DetectorCapability? initialCapability,
   }) : capability =
            initialCapability ??
@@ -28,6 +30,8 @@ class FakeMotionDetector implements MotionDetectorAdapter {
            );
 
   final DetectorType type;
+  @override
+  final bool supportsBackgroundMonitoring;
   DetectorCapability capability;
   DetectorStartResult nextStartResult = const DetectorStartResult(
     started: true,
@@ -537,6 +541,330 @@ void main() {
         controller.warningMessage,
         contains('Remote alert dispatch failed'),
       );
+    },
+  );
+
+  test(
+    '8. Disarming while siren startup is still pending stops audio and never restarts siren',
+    () async {
+      await armControllerToArmedState();
+      final sessionId = controller.activeSessionId!;
+
+      // Hold startLoopingAlarm pending across an async boundary
+      final startPending = Completer<void>();
+      fakeAudio.pendingStartCompleter = startPending;
+
+      fakeDetector.emit(
+        DetectorEvent(
+          eventId: 'evt_pending_audio',
+          sessionId: sessionId,
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: currentTime,
+          summary: 'Motion trigger with slow audio startup',
+          motionScore: 0.22,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.state, ProtectionState.alarming);
+      expect(fakeAudio.loopingStartCount, 1);
+      expect(fakeAudio.isPlaying, isTrue);
+
+      // User enters a wrong PIN while startup is still pending -> alarm stays active
+      final wrong = await controller.verifyAndDisarm('999999');
+      expect(wrong.verified, isFalse);
+      expect(controller.state, ProtectionState.alarming);
+      expect(fakeAudio.stopCount, 0);
+      expect(fakeAudio.isPlaying, isTrue);
+
+      // User enters the correct PIN while startLoopingAlarm Future is STILL pending
+      final disarmed = await controller.verifyAndDisarm('246810');
+      expect(disarmed.verified, isTrue);
+      expect(controller.state, ProtectionState.disarmed);
+      expect(fakeAudio.isPlaying, isFalse);
+      expect(fakeAudio.stopCount, greaterThanOrEqualTo(1));
+
+      // Now allow the pending startLoopingAlarm Future to finish
+      startPending.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      // Siren MUST remain stopped and controller MUST remain disarmed
+      expect(controller.state, ProtectionState.disarmed);
+      expect(fakeAudio.isPlaying, isFalse);
+      expect(controller.activeIncident, isNull);
+      expect(controller.incidents.first.resolvedAt, isNotNull);
+      expect(
+        controller.incidents.first.resolutionSummary,
+        'Disarmed with verified PIN',
+      );
+    },
+  );
+
+  test(
+    '9. Invalid and repeated state transitions & concurrent PIN submissions are guarded',
+    () async {
+      // Motion trigger while disarmed is ignored
+      fakeDetector.emit(
+        DetectorEvent(
+          eventId: 'ignored_disarmed',
+          sessionId: 'session_none',
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: currentTime,
+          summary: 'Ignored trigger while disarmed',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.state, ProtectionState.disarmed);
+      expect(fakeAudio.loopingStartCount, 0);
+
+      // Start arming -> repeated startArming returns false without creating second session
+      expect(await controller.startArming(), isTrue);
+      final armingSessionId = controller.activeSessionId!;
+      expect(await controller.startArming(), isFalse);
+      expect(controller.activeSessionId, armingSessionId);
+
+      // Motion trigger during arming countdown (before armed) is ignored
+      fakeDetector.emit(
+        DetectorEvent(
+          eventId: 'ignored_arming',
+          sessionId: armingSessionId,
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: currentTime,
+          summary: 'Ignored trigger during countdown',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.state, ProtectionState.arming);
+      expect(fakeAudio.loopingStartCount, 0);
+
+      // Complete countdown -> armed
+      for (var i = 0; i < 3; i++) {
+        await controller.handleCountdownTickForSession(armingSessionId);
+      }
+      expect(controller.state, ProtectionState.armed);
+      expect(await controller.startArming(), isFalse);
+
+      // cancelArming when already armed is a no-op (requires PIN to disarm)
+      await controller.cancelArming();
+      expect(controller.state, ProtectionState.armed);
+
+      // Trigger alarm -> alarming
+      fakeDetector.emit(
+        DetectorEvent(
+          eventId: 'trigger_real',
+          sessionId: armingSessionId,
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: currentTime,
+          summary: 'Real trigger',
+          motionScore: 0.30,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.state, ProtectionState.alarming);
+      expect(fakeAudio.loopingStartCount, 1);
+
+      // Concurrent repeated PIN submissions do not cause duplicate stopAlarm calls
+      final results = await Future.wait(<Future<PinVerificationResult>>[
+        controller.verifyAndDisarm('246810'),
+        controller.verifyAndDisarm('246810'),
+      ]);
+      expect(results[0].verified, isTrue);
+      expect(results[1].verified, isTrue);
+      expect(controller.state, ProtectionState.disarmed);
+      expect(fakeAudio.isPlaying, isFalse);
+      expect(fakeAudio.stopCount, 1);
+
+      // Another sequential submission while already disarmed also avoids duplicate stopAlarm
+      final extraDisarm = await controller.verifyAndDisarm('246810');
+      expect(extraDisarm.verified, isTrue);
+      expect(fakeAudio.stopCount, 1);
+    },
+  );
+
+  test(
+    '10. Minimize/suspend during arming or armed pauses cleanly, prevents duplicate streams on repeated resume, and stays paused if restart fails',
+    () async {
+      // A: Minimize mid-countdown (arming, before detector ever started)
+      expect(await controller.startArming(), isTrue);
+      final sessionId = controller.activeSessionId!;
+      expect(controller.state, ProtectionState.arming);
+      expect(fakeDetector.startCount, 0);
+
+      await controller.handleAppLifecycleState(AppLifecycleState.hidden);
+      expect(controller.state, ProtectionState.paused);
+      expect(controller.state.isProtected, isFalse);
+
+      // Stale countdown tick after pause is ignored
+      await controller.handleCountdownTickForSession(sessionId);
+      expect(controller.state, ProtectionState.paused);
+
+      // Suppose camera is temporarily busy when app first resumes -> stays PAUSED
+      fakeDetector.nextStartResult = const DetectorStartResult(
+        started: false,
+        status: CapabilityStatus.unsupported,
+        message: 'Camera temporarily busy.',
+        errorCode: 'CAMERA_BUSY',
+      );
+      await controller.handleAppLifecycleState(AppLifecycleState.resumed);
+      expect(controller.state, ProtectionState.paused);
+      expect(controller.state.isProtected, isFalse);
+      expect(controller.warningMessage, contains('Resume Monitoring'));
+      expect(fakeDetector.startCount, 1);
+
+      // Camera becomes available; fire three concurrent resume signals
+      fakeDetector.nextStartResult = const DetectorStartResult(
+        started: true,
+        status: CapabilityStatus.ready,
+        message: 'Camera restarted.',
+      );
+      fakeDetector.emit(
+        DetectorEvent(
+          eventId: 'dup_resume_evt',
+          sessionId: sessionId,
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.lifecycleResumed,
+          timestamp: currentTime,
+          summary: 'Native wake notification',
+        ),
+      );
+      await Future.wait(<Future<void>>[
+        controller.handleAppLifecycleState(AppLifecycleState.resumed),
+        controller.handleAppLifecycleState(AppLifecycleState.resumed),
+      ]);
+      await Future<void>.delayed(Duration.zero);
+
+      // Single-flight guard: only ONE additional startMonitoring call occurred!
+      expect(controller.state, ProtectionState.armed);
+      expect(controller.state.isProtected, isTrue);
+      expect(fakeDetector.startCount, 2);
+    },
+  );
+
+  test(
+    '11. Minimize, suspend, and repeated resume during active alarm preserve alarming state, require PIN, and never duplicate sirens',
+    () async {
+      await armControllerToArmedState();
+      final sessionId = controller.activeSessionId!;
+
+      fakeDetector.emit(
+        DetectorEvent(
+          eventId: 'alarm_before_min',
+          sessionId: sessionId,
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: currentTime,
+          summary: 'Laptop moved sharply',
+          motionScore: 0.35,
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.state, ProtectionState.alarming);
+      expect(fakeAudio.isPlaying, isTrue);
+      expect(fakeAudio.loopingStartCount, 1);
+
+      // Minimize and resume repeatedly while siren is already playing
+      await controller.handleAppLifecycleState(AppLifecycleState.hidden);
+      expect(controller.state, ProtectionState.alarming);
+      expect(fakeAudio.isPlaying, isTrue);
+
+      await controller.handleAppLifecycleState(AppLifecycleState.resumed);
+      await controller.handleAppLifecycleState(AppLifecycleState.resumed);
+      expect(controller.state, ProtectionState.alarming);
+      // Siren was still playing -> zero duplicate startLoopingAlarm calls
+      expect(fakeAudio.loopingStartCount, 1);
+
+      // Simulate OS/browser interrupting audio while backgrounded, plus autoplay block on resume
+      await fakeAudio.stopAlarm();
+      expect(fakeAudio.isPlaying, isFalse);
+      await controller.handleAppLifecycleState(AppLifecycleState.paused);
+      expect(controller.state, ProtectionState.alarming);
+      expect(controller.warningMessage, contains('suspended audio'));
+
+      fakeAudio.shouldThrowOnStart = true;
+      await controller.handleAppLifecycleState(AppLifecycleState.resumed);
+      expect(controller.state, ProtectionState.alarming);
+      expect(fakeAudio.isPlaying, isFalse);
+      expect(controller.warningMessage, contains('Resume Siren Audio'));
+
+      // User taps Resume Siren Audio -> audio resumes
+      fakeAudio.shouldThrowOnStart = false;
+      await controller.resumeInterruptedAlarmAudio();
+      expect(controller.state, ProtectionState.alarming);
+      expect(fakeAudio.isPlaying, isTrue);
+
+      // Normal PIN verification is still required to disarm
+      final wrong = await controller.verifyAndDisarm('111111');
+      expect(wrong.verified, isFalse);
+      expect(controller.state, ProtectionState.alarming);
+      expect(fakeAudio.isPlaying, isTrue);
+
+      final right = await controller.verifyAndDisarm('246810');
+      expect(right.verified, isTrue);
+      expect(controller.state, ProtectionState.disarmed);
+      expect(fakeAudio.isPlaying, isFalse);
+    },
+  );
+
+  test(
+    '12. Background-capable detector (Android Foreground Service) stays armed on app pause and exits armed if service stops',
+    () async {
+      final bgDetector = FakeMotionDetector(
+        type: DetectorType.androidMotionSensors,
+        supportsBackgroundMonitoring: true,
+      );
+      final bgController = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.androidMotionSensors: bgDetector,
+        },
+        audioAdapter: fakeAudio,
+        pinService: pinService,
+        incidentStorage: incidentStorage,
+        settingsStorage: InMemorySettingsStorage(
+          const ProtectionSettings(
+            selectedDetector: DetectorType.androidMotionSensors,
+            armingCountdownSeconds: 3,
+            onboardingCompleted: true,
+          ),
+        ),
+        notificationAdapter: notificationAdapter,
+        clock: () => currentTime,
+      );
+      await bgController.initialize();
+
+      expect(await bgController.startArming(), isTrue);
+      final sessionId = bgController.activeSessionId!;
+      for (var i = 0; i < 3; i++) {
+        await bgController.handleCountdownTickForSession(sessionId);
+      }
+      expect(bgController.state, ProtectionState.armed);
+
+      // Screen turns off / app enters background while foreground service is active
+      await bgController.handleAppLifecycleState(AppLifecycleState.paused);
+      expect(bgController.state, ProtectionState.armed);
+      expect(bgDetector.stopCount, 0);
+
+      // Foreground service stopped by user/OS -> transitions out of armed immediately
+      bgDetector.emit(
+        DetectorEvent(
+          eventId: 'fgs_stopped',
+          sessionId: sessionId,
+          detectorType: DetectorType.androidMotionSensors,
+          eventType: DetectorEventType.detectorFailed,
+          timestamp: currentTime,
+          summary: 'Foreground monitoring service was stopped.',
+          errorCode: 'SERVICE_STOPPED',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(bgController.state, ProtectionState.unavailable);
+      expect(bgController.state.isProtected, isFalse);
+
+      bgController.dispose();
+      await bgDetector.dispose();
     },
   );
 }

@@ -134,9 +134,11 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                                   color: WatSafeTheme.alarmCrimson,
                                   borderRadius: BorderRadius.circular(6),
                                 ),
-                                child: const Text(
-                                  'ALARM ACTIVE — SIREN SOUNDING',
-                                  style: TextStyle(
+                                child: Text(
+                                  widget.controller.isAudioPlaying
+                                      ? 'ALARM ACTIVE — SIREN SOUNDING'
+                                      : 'ALARM ACTIVE — AUDIO INTERRUPTED',
+                                  style: const TextStyle(
                                     color: WatSafeTheme.warmOffWhite,
                                     fontSize: 11,
                                     fontWeight: FontWeight.w800,
@@ -219,12 +221,31 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                           borderRadius: BorderRadius.circular(8),
                           border: Border.all(color: WatSafeTheme.orangeAccent),
                         ),
-                        child: Text(
-                          widget.controller.warningMessage!,
-                          style: const TextStyle(
-                            color: WatSafeTheme.warmOffWhite,
-                            fontWeight: FontWeight.w600,
-                          ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(
+                              widget.controller.warningMessage!,
+                              style: const TextStyle(
+                                color: WatSafeTheme.warmOffWhite,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            if (!widget.controller.isAudioPlaying) ...<Widget>[
+                              const SizedBox(height: 8),
+                              OutlinedButton.icon(
+                                key: const Key('resume_alarm_audio_button'),
+                                onPressed: widget
+                                    .controller
+                                    .resumeInterruptedAlarmAudio,
+                                icon: const Icon(
+                                  Icons.volume_up_outlined,
+                                  size: 18,
+                                ),
+                                label: const Text('Resume Siren Audio'),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
                     ],

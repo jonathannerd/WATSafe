@@ -44,6 +44,9 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
   DetectorType get detectorType => DetectorType.iosCoreMotionForeground;
 
   @override
+  bool get supportsBackgroundMonitoring => false;
+
+  @override
   Stream<DetectorEvent> get events => _eventsController.stream;
 
   void _ensureEventSubscription() {

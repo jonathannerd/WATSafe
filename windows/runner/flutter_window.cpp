@@ -645,8 +645,12 @@ class WindowsAccelerometerBridge {
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       session_id = active_session_id_;
+      if (!session_id.empty()) {
+        paused_session_id_ = session_id;
+      }
     }
     if (!session_id.empty()) {
+      StopCapture();
       EmitEvent(flutter::EncodableMap{
           {flutter::EncodableValue("sessionId"),
            flutter::EncodableValue(session_id)},
@@ -665,7 +669,9 @@ class WindowsAccelerometerBridge {
     std::string session_id;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      session_id = active_session_id_;
+      session_id =
+          !active_session_id_.empty() ? active_session_id_ : paused_session_id_;
+      paused_session_id_.clear();
     }
     if (!session_id.empty()) {
       EmitEvent(flutter::EncodableMap{
@@ -675,7 +681,7 @@ class WindowsAccelerometerBridge {
            flutter::EncodableValue("lifecycleResumed")},
           {flutter::EncodableValue("summary"),
            flutter::EncodableValue(
-               "Windows system woke from sleep; accelerometer monitoring resumed.")},
+               "Windows system woke from sleep; accelerometer monitoring ready to resume.")},
           {flutter::EncodableValue("timestampMs"),
            flutter::EncodableValue(CurrentTimeMillis())},
       });
@@ -777,6 +783,7 @@ class WindowsAccelerometerBridge {
 
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
+      paused_session_id_.clear();
       active_session_id_ = session_id;
     }
     motion_threshold_.store(threshold);
@@ -1049,6 +1056,7 @@ class WindowsAccelerometerBridge {
 
   std::mutex state_mutex_;
   std::string active_session_id_;
+  std::string paused_session_id_;
   std::atomic<bool> running_{false};
   std::atomic<double> motion_threshold_{0.095};
   std::thread worker_thread_;
@@ -1201,23 +1209,38 @@ CameraDeviceProbe ProbeWindowsCamera() {
 }
 
 bool IsSupportedVideoSubtype(const GUID& subtype) {
-  return subtype == MFVideoFormat_NV12 || subtype == MFVideoFormat_YUY2 ||
-         subtype == MFVideoFormat_RGB32 || subtype == MFVideoFormat_ARGB32 ||
-         subtype == MFVideoFormat_RGB24;
+  return subtype == MFVideoFormat_NV12 || subtype == MFVideoFormat_I420 ||
+         subtype == MFVideoFormat_IYUV || subtype == MFVideoFormat_YUY2 ||
+         subtype == MFVideoFormat_UYVY || subtype == MFVideoFormat_RGB32 ||
+         subtype == MFVideoFormat_ARGB32 || subtype == MFVideoFormat_RGB24;
 }
 
 int32_t DefaultStrideForSubtype(const GUID& subtype, UINT32 width) {
   if (subtype == MFVideoFormat_RGB32 || subtype == MFVideoFormat_ARGB32) {
-    return static_cast<int32_t>(width * 4);
+    return static_cast<int32_t>(width * 4u);
   }
   if (subtype == MFVideoFormat_RGB24) {
-    return static_cast<int32_t>(width * 3);
+    return static_cast<int32_t>(width * 3u);
   }
-  if (subtype == MFVideoFormat_YUY2) {
-    return static_cast<int32_t>(width * 2);
+  if (subtype == MFVideoFormat_YUY2 || subtype == MFVideoFormat_UYVY) {
+    return static_cast<int32_t>(width * 2u);
   }
-  // NV12 and planar formats have 1 byte per Y sample in the luminance plane.
+  // NV12, I420, and IYUV have 1 byte per Y sample in the luminance plane.
   return static_cast<int32_t>(width);
+}
+
+size_t ContiguousFrameBytesForSubtype(const GUID& subtype, UINT32 width,
+                                      UINT32 height) {
+  if (subtype == MFVideoFormat_NV12 || subtype == MFVideoFormat_I420 ||
+      subtype == MFVideoFormat_IYUV) {
+    const size_t w = static_cast<size_t>(width);
+    const size_t h = static_cast<size_t>(height);
+    const size_t uv_w = (w + 1u) / 2u;
+    const size_t uv_h = (h + 1u) / 2u;
+    return (w * h) + (uv_w * uv_h * 2u);
+  }
+  return static_cast<size_t>(DefaultStrideForSubtype(subtype, width)) *
+         static_cast<size_t>(height);
 }
 
 bool ExtractStreamFormatInfo(IMFMediaType* media_type, GUID* out_subtype,
@@ -1275,8 +1298,8 @@ bool ConfigureSourceReaderVideoFormat(IMFSourceReader* reader,
     int32_t stride = 0;
     if (ExtractStreamFormatInfo(native_type.Get(), &subtype, &w, &h, &stride)) {
       const UINT32 pixels = w * h;
-      // Prefer resolutions around 320x240..640x480; otherwise smallest available.
-      const UINT32 score = (w >= 160 && w <= 640) ? pixels : (pixels + 10000000u);
+      const UINT32 score =
+          (w >= 160 && w <= 640) ? pixels : (pixels + 10000000u);
       if (score < best_pixels) {
         best_pixels = score;
         best_native_type = native_type;
@@ -1299,9 +1322,11 @@ bool ConfigureSourceReaderVideoFormat(IMFSourceReader* reader,
     }
   }
 
-  // 2. Ask Media Foundation video processor / decoder for NV12, RGB32, or YUY2.
-  const GUID preferred_subtypes[] = {MFVideoFormat_NV12, MFVideoFormat_RGB32,
-                                     MFVideoFormat_YUY2, MFVideoFormat_RGB24};
+  // 2. Ask Media Foundation video processor / MJPEG decoder for a supported
+  //    uncompressed output format.
+  const GUID preferred_subtypes[] = {
+      MFVideoFormat_NV12,  MFVideoFormat_YUY2,  MFVideoFormat_I420,
+      MFVideoFormat_RGB32, MFVideoFormat_UYVY,  MFVideoFormat_RGB24};
   for (const GUID& target_subtype : preferred_subtypes) {
     ComPtr<IMFMediaType> partial_type;
     if (SUCCEEDED(::MFCreateMediaType(partial_type.GetAddressOf())) &&
@@ -1326,76 +1351,84 @@ bool ConfigureSourceReaderVideoFormat(IMFSourceReader* reader,
   return false;
 }
 
-bool SampleFrameToGrayscaleGrid(const uint8_t* raw_data, size_t buffer_len,
-                                const GUID& subtype, UINT32 src_width,
-                                UINT32 src_height, int32_t stride,
-                                int32_t grid_w, int32_t grid_h,
-                                std::vector<float>* out_grid,
-                                float* out_lum_sum) {
-  if (raw_data == nullptr || src_width == 0 || src_height == 0 ||
+float SamplePixelLuminanceFromRow(const uint8_t* row_ptr, size_t max_row_bytes,
+                                  const GUID& subtype, UINT32 sx) {
+  if (subtype == MFVideoFormat_NV12 || subtype == MFVideoFormat_I420 ||
+      subtype == MFVideoFormat_IYUV) {
+    const size_t offset = static_cast<size_t>(sx);
+    if (offset < max_row_bytes) {
+      return static_cast<float>(row_ptr[offset]);
+    }
+  } else if (subtype == MFVideoFormat_YUY2) {
+    const size_t offset = static_cast<size_t>(sx) * 2u;
+    if (offset < max_row_bytes) {
+      return static_cast<float>(row_ptr[offset]);
+    }
+  } else if (subtype == MFVideoFormat_UYVY) {
+    const size_t offset = (static_cast<size_t>(sx) * 2u) + 1u;
+    if (offset < max_row_bytes) {
+      return static_cast<float>(row_ptr[offset]);
+    }
+  } else if (subtype == MFVideoFormat_RGB32 ||
+             subtype == MFVideoFormat_ARGB32) {
+    const size_t offset = static_cast<size_t>(sx) * 4u;
+    if (offset + 2u < max_row_bytes) {
+      const int32_t b = static_cast<int32_t>(row_ptr[offset]);
+      const int32_t g = static_cast<int32_t>(row_ptr[offset + 1u]);
+      const int32_t r = static_cast<int32_t>(row_ptr[offset + 2u]);
+      return static_cast<float>((77 * r + 150 * g + 29 * b) >> 8);
+    }
+  } else if (subtype == MFVideoFormat_RGB24) {
+    const size_t offset = static_cast<size_t>(sx) * 3u;
+    if (offset + 2u < max_row_bytes) {
+      const int32_t b = static_cast<int32_t>(row_ptr[offset]);
+      const int32_t g = static_cast<int32_t>(row_ptr[offset + 1u]);
+      const int32_t r = static_cast<int32_t>(row_ptr[offset + 2u]);
+      return static_cast<float>((77 * r + 150 * g + 29 * b) >> 8);
+    }
+  }
+  return 0.0f;
+}
+
+// Samples a 2D surface locked via IMF2DBuffer::Lock2D where scanline0 already
+// points to the top visual row and pitch may be positive or negative.
+bool Sample2DSurfaceToGrayscaleGrid(const uint8_t* scanline0, LONG pitch,
+                                    const GUID& subtype, UINT32 src_width,
+                                    UINT32 src_height, int32_t grid_w,
+                                    int32_t grid_h,
+                                    std::vector<float>* out_grid,
+                                    float* out_lum_sum) {
+  if (scanline0 == nullptr || pitch == 0 || src_width == 0 || src_height == 0 ||
       grid_w <= 0 || grid_h <= 0) {
     return false;
   }
-
-  const size_t abs_stride = static_cast<size_t>(
-      stride < 0 ? -stride : (stride > 0 ? stride : DefaultStrideForSubtype(subtype, src_width)));
-  const bool bottom_up =
-      (stride < 0) &&
-      (subtype == MFVideoFormat_RGB32 || subtype == MFVideoFormat_ARGB32 ||
-       subtype == MFVideoFormat_RGB24);
-
-  const size_t required_bytes = abs_stride * static_cast<size_t>(src_height);
-  if (buffer_len < required_bytes) {
+  const size_t min_stride =
+      static_cast<size_t>(DefaultStrideForSubtype(subtype, src_width));
+  const size_t abs_pitch =
+      static_cast<size_t>(pitch < 0 ? -pitch : pitch);
+  if (abs_pitch < min_stride) {
     return false;
   }
 
-  const size_t count = static_cast<size_t>(grid_w * grid_h);
+  const size_t count =
+      static_cast<size_t>(grid_w) * static_cast<size_t>(grid_h);
   out_grid->assign(count, 0.0f);
   float lum_sum = 0.0f;
 
   for (int32_t gy = 0; gy < grid_h; ++gy) {
-    UINT32 sy = (static_cast<UINT32>(gy) * src_height) /
-                static_cast<UINT32>(grid_h);
-    if (bottom_up) {
-      sy = (src_height - 1) - sy;
-    }
-    const size_t row_offset = static_cast<size_t>(sy) * abs_stride;
-
+    const UINT32 sy =
+        (static_cast<UINT32>(gy) * src_height) / static_cast<UINT32>(grid_h);
+    const uint8_t* row_ptr =
+        scanline0 +
+        (static_cast<ptrdiff_t>(sy) * static_cast<ptrdiff_t>(pitch));
     for (int32_t gx = 0; gx < grid_w; ++gx) {
-      const UINT32 sx = (static_cast<UINT32>(gx) * src_width) /
-                        static_cast<UINT32>(grid_w);
-      float y_val = 0.0f;
-
-      if (subtype == MFVideoFormat_NV12) {
-        const size_t offset = row_offset + static_cast<size_t>(sx);
-        if (offset < buffer_len) {
-          y_val = static_cast<float>(raw_data[offset]);
-        }
-      } else if (subtype == MFVideoFormat_YUY2) {
-        const size_t offset = row_offset + (static_cast<size_t>(sx) * 2);
-        if (offset < buffer_len) {
-          y_val = static_cast<float>(raw_data[offset]);
-        }
-      } else if (subtype == MFVideoFormat_RGB32 ||
-                 subtype == MFVideoFormat_ARGB32) {
-        const size_t offset = row_offset + (static_cast<size_t>(sx) * 4);
-        if (offset + 2 < buffer_len) {
-          const int32_t b = static_cast<int32_t>(raw_data[offset]);
-          const int32_t g = static_cast<int32_t>(raw_data[offset + 1]);
-          const int32_t r = static_cast<int32_t>(raw_data[offset + 2]);
-          y_val = static_cast<float>((77 * r + 150 * g + 29 * b) >> 8);
-        }
-      } else if (subtype == MFVideoFormat_RGB24) {
-        const size_t offset = row_offset + (static_cast<size_t>(sx) * 3);
-        if (offset + 2 < buffer_len) {
-          const int32_t b = static_cast<int32_t>(raw_data[offset]);
-          const int32_t g = static_cast<int32_t>(raw_data[offset + 1]);
-          const int32_t r = static_cast<int32_t>(raw_data[offset + 2]);
-          y_val = static_cast<float>((77 * r + 150 * g + 29 * b) >> 8);
-        }
-      }
-
-      const size_t idx = static_cast<size_t>(gy * grid_w + gx);
+      const UINT32 sx =
+          (static_cast<UINT32>(gx) * src_width) / static_cast<UINT32>(grid_w);
+      const float y_val =
+          SamplePixelLuminanceFromRow(row_ptr, abs_pitch, subtype, sx);
+      const size_t idx =
+          static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
+          static_cast<size_t>(gx);
       (*out_grid)[idx] = y_val;
       lum_sum += y_val;
     }
@@ -1403,6 +1436,298 @@ bool SampleFrameToGrayscaleGrid(const uint8_t* raw_data, size_t buffer_len,
 
   *out_lum_sum = lum_sum;
   return true;
+}
+
+// Samples a 1D / contiguous buffer while resolving stripped row padding from
+// ConvertToContiguousBuffer vs. padded MF_MT_DEFAULT_STRIDE.
+bool SampleContiguousBufferToGrayscaleGrid(
+    const uint8_t* raw_data, size_t buffer_len, const GUID& subtype,
+    UINT32 src_width, UINT32 src_height, int32_t reported_stride,
+    bool is_contiguous_copy, int32_t grid_w, int32_t grid_h,
+    std::vector<float>* out_grid, float* out_lum_sum) {
+  if (raw_data == nullptr || src_width == 0 || src_height == 0 ||
+      grid_w <= 0 || grid_h <= 0) {
+    return false;
+  }
+
+  const size_t min_stride =
+      static_cast<size_t>(DefaultStrideForSubtype(subtype, src_width));
+  const size_t min_luma_bytes = min_stride * static_cast<size_t>(src_height);
+  if (buffer_len < min_luma_bytes) {
+    return false;
+  }
+
+  const size_t abs_reported = static_cast<size_t>(
+      reported_stride < 0
+          ? -reported_stride
+          : (reported_stride > 0 ? reported_stride
+                                 : static_cast<int32_t>(min_stride)));
+  const size_t contiguous_total =
+      ContiguousFrameBytesForSubtype(subtype, src_width, src_height);
+
+  size_t effective_stride = abs_reported;
+  if (is_contiguous_copy || abs_reported < min_stride) {
+    effective_stride = min_stride;
+  } else if (abs_reported > min_stride &&
+             (buffer_len < abs_reported * static_cast<size_t>(src_height) ||
+              buffer_len == contiguous_total)) {
+    effective_stride = min_stride;
+  }
+
+  const bool bottom_up =
+      (reported_stride < 0) &&
+      (subtype == MFVideoFormat_RGB32 || subtype == MFVideoFormat_ARGB32 ||
+       subtype == MFVideoFormat_RGB24);
+
+  const size_t count =
+      static_cast<size_t>(grid_w) * static_cast<size_t>(grid_h);
+  out_grid->assign(count, 0.0f);
+  float lum_sum = 0.0f;
+
+  for (int32_t gy = 0; gy < grid_h; ++gy) {
+    UINT32 sy =
+        (static_cast<UINT32>(gy) * src_height) / static_cast<UINT32>(grid_h);
+    if (bottom_up) {
+      sy = (src_height - 1u) - sy;
+    }
+    const size_t row_offset = static_cast<size_t>(sy) * effective_stride;
+    if (row_offset >= buffer_len) {
+      return false;
+    }
+    const uint8_t* row_ptr = raw_data + row_offset;
+    const size_t remaining_bytes = buffer_len - row_offset;
+
+    for (int32_t gx = 0; gx < grid_w; ++gx) {
+      const UINT32 sx =
+          (static_cast<UINT32>(gx) * src_width) / static_cast<UINT32>(grid_w);
+      const float y_val =
+          SamplePixelLuminanceFromRow(row_ptr, remaining_bytes, subtype, sx);
+      const size_t idx =
+          static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
+          static_cast<size_t>(gx);
+      (*out_grid)[idx] = y_val;
+      lum_sum += y_val;
+    }
+  }
+
+  *out_lum_sum = lum_sum;
+  return true;
+}
+
+bool SampleMediaSampleToGrayscaleGrid(IMFSample* sample, const GUID& subtype,
+                                      UINT32 src_width, UINT32 src_height,
+                                      int32_t reported_stride, int32_t grid_w,
+                                      int32_t grid_h,
+                                      std::vector<float>* out_grid,
+                                      float* out_lum_sum) {
+  if (sample == nullptr) {
+    return false;
+  }
+
+  // 1. Prefer locking native 2D surface directly via IMF2DBuffer::Lock2D so
+  //    GPU surface pitch is honored without copying or row-skewing.
+  DWORD buffer_count = 0;
+  if (SUCCEEDED(sample->GetBufferCount(&buffer_count)) && buffer_count == 1) {
+    ComPtr<IMFMediaBuffer> first_buffer;
+    if (SUCCEEDED(sample->GetBufferByIndex(0, first_buffer.GetAddressOf())) &&
+        first_buffer != nullptr) {
+      ComPtr<IMF2DBuffer> buffer_2d;
+      BYTE* scanline0 = nullptr;
+      LONG pitch = 0;
+      if (SUCCEEDED(first_buffer.As(&buffer_2d)) && buffer_2d != nullptr &&
+          SUCCEEDED(buffer_2d->Lock2D(&scanline0, &pitch))) {
+        const bool ok = Sample2DSurfaceToGrayscaleGrid(
+            scanline0, pitch, subtype, src_width, src_height, grid_w, grid_h,
+            out_grid, out_lum_sum);
+        buffer_2d->Unlock2D();
+        if (ok) {
+          return true;
+        }
+      }
+    }
+  }
+
+  // 2. Fallback: convert to a contiguous 1D buffer (which strips 2D row
+  //    padding via ContiguousCopyTo) and sample using the unpadded row stride.
+  bool had_2d_buffer = false;
+  if (buffer_count == 1) {
+    ComPtr<IMFMediaBuffer> first_buffer;
+    ComPtr<IMF2DBuffer> check_2d;
+    if (SUCCEEDED(sample->GetBufferByIndex(0, first_buffer.GetAddressOf())) &&
+        first_buffer != nullptr && SUCCEEDED(first_buffer.As(&check_2d)) &&
+        check_2d != nullptr) {
+      had_2d_buffer = true;
+    }
+  }
+
+  ComPtr<IMFMediaBuffer> contiguous;
+  if (FAILED(sample->ConvertToContiguousBuffer(contiguous.GetAddressOf())) ||
+      contiguous == nullptr) {
+    return false;
+  }
+
+  BYTE* raw_ptr = nullptr;
+  DWORD max_len = 0;
+  DWORD cur_len = 0;
+  if (FAILED(contiguous->Lock(&raw_ptr, &max_len, &cur_len)) ||
+      raw_ptr == nullptr || cur_len == 0) {
+    return false;
+  }
+
+  const bool sampled = SampleContiguousBufferToGrayscaleGrid(
+      raw_ptr, static_cast<size_t>(cur_len), subtype, src_width, src_height,
+      reported_stride, had_2d_buffer || (buffer_count > 1), grid_w, grid_h,
+      out_grid, out_lum_sum);
+  contiguous->Unlock();
+  return sampled;
+}
+
+bool EstimateLucasKanadeFlow(const std::vector<float>& previous,
+                             const std::vector<float>& current, int32_t grid_w,
+                             int32_t grid_h, double step_mean_shift,
+                             int32_t x0, int32_t y0, int32_t w, int32_t h,
+                             double* out_u, double* out_v) {
+  const int32_t start_x = std::max<int32_t>(1, x0);
+  const int32_t end_x = std::min<int32_t>(grid_w - 1, x0 + w);
+  const int32_t start_y = std::max<int32_t>(1, y0);
+  const int32_t end_y = std::min<int32_t>(grid_h - 1, y0 + h);
+  if (end_x <= start_x + 2 || end_y <= start_y + 2) {
+    return false;
+  }
+
+  double sxx = 0.0;
+  double syy = 0.0;
+  double sxy = 0.0;
+  double bx = 0.0;
+  double by = 0.0;
+  int32_t count = 0;
+
+  for (int32_t y = start_y; y < end_y; ++y) {
+    const size_t row = static_cast<size_t>(y) * static_cast<size_t>(grid_w);
+    const size_t row_up =
+        static_cast<size_t>(y - 1) * static_cast<size_t>(grid_w);
+    const size_t row_down =
+        static_cast<size_t>(y + 1) * static_cast<size_t>(grid_w);
+    for (int32_t x = start_x; x < end_x; ++x) {
+      const size_t sx = static_cast<size_t>(x);
+      const double ix = 0.25 * static_cast<double>(
+                                   (previous[row + sx + 1u] -
+                                    previous[row + sx - 1u]) +
+                                   (current[row + sx + 1u] -
+                                    current[row + sx - 1u]));
+      const double iy = 0.25 * static_cast<double>(
+                                   (previous[row_down + sx] -
+                                    previous[row_up + sx]) +
+                                   (current[row_down + sx] -
+                                    current[row_up + sx]));
+      const double it = static_cast<double>(current[row + sx] -
+                                            previous[row + sx]) -
+                        step_mean_shift;
+
+      sxx += ix * ix;
+      syy += iy * iy;
+      sxy += ix * iy;
+      bx -= ix * it;
+      by -= iy * it;
+      count += 1;
+    }
+  }
+
+  if (count == 0) {
+    return false;
+  }
+  const double trace = sxx + syy;
+  const double det = (sxx * syy) - (sxy * sxy);
+  const double disc = std::max(0.0, (trace * trace) - (4.0 * det));
+  const double min_eigen = 0.5 * (trace - std::sqrt(disc));
+  if (det <= 1e-3 || min_eigen < static_cast<double>(count) * 6.0) {
+    return false;
+  }
+
+  const double u = ((syy * bx) - (sxy * by)) / det;
+  const double v = ((-sxy * bx) + (sxx * by)) / det;
+  const double mag = std::sqrt((u * u) + (v * v));
+  if (mag < 0.32 || mag > 3.8) {
+    return false;
+  }
+  *out_u = u;
+  *out_v = v;
+  return true;
+}
+
+bool EstimateBlockTranslation(const std::vector<float>& previous,
+                              const std::vector<float>& current, int32_t grid_w,
+                              int32_t grid_h, double step_mean_shift,
+                              int32_t x0, int32_t y0, int32_t w, int32_t h,
+                              double* out_u, double* out_v) {
+  constexpr int32_t kMaxShift = 3;
+  const int32_t start_x = std::max<int32_t>(kMaxShift, x0 + 1);
+  const int32_t end_x = std::min<int32_t>(grid_w - kMaxShift, x0 + w - 1);
+  const int32_t start_y = std::max<int32_t>(kMaxShift, y0 + 1);
+  const int32_t end_y = std::min<int32_t>(grid_h - kMaxShift, y0 + h - 1);
+  if (end_x <= start_x + 2 || end_y <= start_y + 2) {
+    return false;
+  }
+
+  auto sad_for_shift = [&](int32_t dx, int32_t dy) -> double {
+    double sad = 0.0;
+    for (int32_t y = start_y; y < end_y; ++y) {
+      const size_t prev_row =
+          static_cast<size_t>(y) * static_cast<size_t>(grid_w);
+      const size_t curr_row =
+          static_cast<size_t>(y + dy) * static_cast<size_t>(grid_w);
+      for (int32_t x = start_x; x < end_x; ++x) {
+        const double prev_val =
+            static_cast<double>(previous[prev_row + static_cast<size_t>(x)]);
+        const double curr_val =
+            static_cast<double>(
+                current[curr_row + static_cast<size_t>(x + dx)]) -
+            step_mean_shift;
+        sad += std::abs(curr_val - prev_val);
+      }
+    }
+    return sad;
+  };
+
+  const double sad_zero = sad_for_shift(0, 0);
+  const int32_t sample_pixels = (end_x - start_x) * (end_y - start_y);
+  if (sad_zero / static_cast<double>(sample_pixels) < 2.2) {
+    return false;
+  }
+
+  double best_sad = sad_zero;
+  int32_t best_dx = 0;
+  int32_t best_dy = 0;
+  for (int32_t dy = -kMaxShift; dy <= kMaxShift; ++dy) {
+    for (int32_t dx = -kMaxShift; dx <= kMaxShift; ++dx) {
+      if (dx == 0 && dy == 0) {
+        continue;
+      }
+      const double sad = sad_for_shift(dx, dy);
+      if (sad < best_sad) {
+        best_sad = sad;
+        best_dx = dx;
+        best_dy = dy;
+      }
+    }
+  }
+
+  if ((best_dx != 0 || best_dy != 0) && best_sad < sad_zero * 0.84) {
+    *out_u = static_cast<double>(best_dx);
+    *out_v = static_cast<double>(best_dy);
+    return true;
+  }
+  return false;
+}
+
+bool IsWindowsCameraBusyHresult(HRESULT hr) {
+  constexpr HRESULT kMfHwFailedStartStreaming =
+      static_cast<HRESULT>(0xC00D3704L);
+  constexpr HRESULT kMfDeviceInvalidated = static_cast<HRESULT>(0xC00D3EA2L);
+  return hr == kMfHwFailedStartStreaming || hr == kMfDeviceInvalidated ||
+         hr == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) ||
+         hr == HRESULT_FROM_WIN32(ERROR_BUSY) ||
+         hr == HRESULT_FROM_WIN32(ERROR_LOCK_VIOLATION);
 }
 
 class WindowsCameraMotionBridge {
@@ -1459,8 +1784,12 @@ class WindowsCameraMotionBridge {
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       session_id = active_session_id_;
+      if (!session_id.empty()) {
+        paused_session_id_ = session_id;
+      }
     }
     if (!session_id.empty()) {
+      StopCapture();
       EmitEvent(flutter::EncodableMap{
           {flutter::EncodableValue("sessionId"),
            flutter::EncodableValue(session_id)},
@@ -1479,7 +1808,9 @@ class WindowsCameraMotionBridge {
     std::string session_id;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      session_id = active_session_id_;
+      session_id =
+          !active_session_id_.empty() ? active_session_id_ : paused_session_id_;
+      paused_session_id_.clear();
     }
     if (!session_id.empty()) {
       EmitEvent(flutter::EncodableMap{
@@ -1489,7 +1820,7 @@ class WindowsCameraMotionBridge {
            flutter::EncodableValue("lifecycleResumed")},
           {flutter::EncodableValue("summary"),
            flutter::EncodableValue(
-               "Windows system woke from sleep; webcam monitoring resumed.")},
+               "Windows system woke from sleep; webcam monitoring ready to resume.")},
           {flutter::EncodableValue("timestampMs"),
            flutter::EncodableValue(CurrentTimeMillis())},
       });
@@ -1568,8 +1899,7 @@ class WindowsCameraMotionBridge {
     const int32_t grid_h =
         std::clamp(GetIntArg(args, "downsampleHeight", 48), 12, 120);
 
-    CameraDeviceProbe probe = ProbeWindowsCamera();
-    if (probe.permission_status != "granted") {
+    if (QueryWindowsCameraPermissionStatus() != "granted") {
       result->Success(flutter::EncodableValue(flutter::EncodableMap{
           {flutter::EncodableValue("started"), flutter::EncodableValue(false)},
           {flutter::EncodableValue("message"),
@@ -1581,35 +1911,110 @@ class WindowsCameraMotionBridge {
       return;
     }
 
-    if (!probe.has_hardware || probe.activate == nullptr) {
-      result->Success(flutter::EncodableValue(flutter::EncodableMap{
-          {flutter::EncodableValue("started"), flutter::EncodableValue(false)},
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      paused_session_id_.clear();
+      active_session_id_ = session_id;
+    }
+    motion_threshold_.store(threshold);
+    running_.store(true);
+
+    auto pending_result = std::make_shared<
+        std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>>(
+        std::move(result));
+    auto pending_mutex = std::make_shared<std::mutex>();
+    auto dispatcher = dispatcher_;
+
+    auto complete_start = [pending_result, pending_mutex, dispatcher](
+                              bool started, const std::string& message,
+                              const std::string& error_code) {
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> owned;
+      {
+        std::lock_guard<std::mutex> lock(*pending_mutex);
+        if (!(*pending_result)) {
+          return;
+        }
+        owned = std::move(*pending_result);
+      }
+      flutter::EncodableMap payload{
+          {flutter::EncodableValue("started"),
+           flutter::EncodableValue(started)},
           {flutter::EncodableValue("message"),
-           flutter::EncodableValue("No Windows camera hardware found.")},
-          {flutter::EncodableValue("errorCode"),
-           flutter::EncodableValue("NO_CAMERA_HARDWARE")},
-      }));
+           flutter::EncodableValue(message)},
+      };
+      if (!error_code.empty()) {
+        payload.emplace(flutter::EncodableValue("errorCode"),
+                        flutter::EncodableValue(error_code));
+      }
+      auto shared_owned = std::make_shared<
+          std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>>(
+          std::move(owned));
+      dispatcher->Post([shared_owned, payload = std::move(payload)]() {
+        if (*shared_owned) {
+          (*shared_owned)->Success(flutter::EncodableValue(payload));
+        }
+      });
+    };
+
+    worker_thread_ = std::thread([this, session_id, calibration_ms,
+                                  persistence_frames, grid_w, grid_h,
+                                  complete_start]() mutable {
+      RunCameraLoop(session_id, calibration_ms, persistence_frames, grid_w,
+                    grid_h, std::move(complete_start));
+    });
+  }
+
+  void RunCameraLoop(
+      const std::string& session_id, int32_t calibration_ms,
+      int32_t persistence_frames, int32_t grid_w, int32_t grid_h,
+      std::function<void(bool, const std::string&, const std::string&)>
+          complete_start) {
+    ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    auto clear_session_if_current = [this, &session_id]() {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (active_session_id_ == session_id) {
+        active_session_id_.clear();
+      }
+    };
+
+    CameraDeviceProbe probe = ProbeWindowsCamera();
+    if (probe.permission_status != "granted") {
+      clear_session_if_current();
+      complete_start(false,
+                     "Windows camera access is disabled in Privacy Settings.",
+                     "PERMISSION_NOT_GRANTED");
+      ::CoUninitialize();
       return;
     }
 
-    // Activate the media source and configure IMFSourceReader before returning
-    // so any hardware/sharing error is reported immediately.
+    if (!probe.has_hardware || probe.activate == nullptr) {
+      clear_session_if_current();
+      complete_start(false, "No Windows camera hardware found.",
+                     "NO_CAMERA_HARDWARE");
+      ::CoUninitialize();
+      return;
+    }
+
     ComPtr<IMFMediaSource> media_source;
     HRESULT hr = probe.activate->ActivateObject(
         IID_PPV_ARGS(media_source.GetAddressOf()));
     if (FAILED(hr) || media_source == nullptr) {
-      const bool access_denied = (hr == E_ACCESSDENIED);
-      result->Success(flutter::EncodableValue(flutter::EncodableMap{
-          {flutter::EncodableValue("started"), flutter::EncodableValue(false)},
-          {flutter::EncodableValue("message"),
-           flutter::EncodableValue(
-               access_denied
-                   ? "Windows blocked camera access. Check Settings > Privacy & security > Camera."
-                   : "Failed to activate Windows camera media source (camera may be in use).")},
-          {flutter::EncodableValue("errorCode"),
-           flutter::EncodableValue(access_denied ? "PERMISSION_DENIED"
-                                                 : "SOURCE_ACTIVATE_FAILED")},
-      }));
+      clear_session_if_current();
+      const bool access_denied =
+          (hr == E_ACCESSDENIED ||
+           hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED));
+      const bool busy = IsWindowsCameraBusyHresult(hr);
+      complete_start(
+          false,
+          access_denied
+              ? "Windows blocked camera access. Check Settings > Privacy & security > Camera."
+              : (busy ? (probe.device_name +
+                         " is currently in use by another application.")
+                      : "Failed to activate Windows camera media source (camera may be in use)."),
+          access_denied ? "PERMISSION_DENIED"
+                        : (busy ? "CAMERA_BUSY" : "SOURCE_ACTIVATE_FAILED"));
+      ::CoUninitialize();
       return;
     }
 
@@ -1617,6 +2022,7 @@ class WindowsCameraMotionBridge {
     ::MFCreateAttributes(reader_attrs.GetAddressOf(), 2);
     if (reader_attrs != nullptr) {
       reader_attrs->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+      reader_attrs->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
     }
 
     ComPtr<IMFSourceReader> reader;
@@ -1624,86 +2030,45 @@ class WindowsCameraMotionBridge {
         media_source.Get(), reader_attrs.Get(), reader.GetAddressOf());
     if (FAILED(hr) || reader == nullptr) {
       media_source->Shutdown();
-      result->Success(flutter::EncodableValue(flutter::EncodableMap{
-          {flutter::EncodableValue("started"), flutter::EncodableValue(false)},
-          {flutter::EncodableValue("message"),
-           flutter::EncodableValue(
-               "Failed to create Media Foundation source reader for camera.")},
-          {flutter::EncodableValue("errorCode"),
-           flutter::EncodableValue("READER_CREATE_FAILED")},
-      }));
+      clear_session_if_current();
+      const bool busy = IsWindowsCameraBusyHresult(hr);
+      complete_start(
+          false,
+          busy ? (probe.device_name +
+                  " is currently in use by another application.")
+               : "Failed to create Media Foundation source reader for camera.",
+          busy ? "CAMERA_BUSY" : "READER_CREATE_FAILED");
+      ::CoUninitialize();
       return;
     }
 
     GUID subtype = GUID_NULL;
-    UINT32 frame_width = 0;
-    UINT32 frame_height = 0;
+    UINT32 src_width = 0;
+    UINT32 src_height = 0;
     int32_t stride = 0;
-    if (!ConfigureSourceReaderVideoFormat(reader.Get(), &subtype, &frame_width,
-                                          &frame_height, &stride)) {
+    if (!ConfigureSourceReaderVideoFormat(reader.Get(), &subtype, &src_width,
+                                          &src_height, &stride)) {
       reader.Reset();
       media_source->Shutdown();
-      result->Success(flutter::EncodableValue(flutter::EncodableMap{
-          {flutter::EncodableValue("started"), flutter::EncodableValue(false)},
-          {flutter::EncodableValue("message"),
-           flutter::EncodableValue(
-               "Could not negotiate a compatible video format with the camera.")},
-          {flutter::EncodableValue("errorCode"),
-           flutter::EncodableValue("UNSUPPORTED_VIDEO_FORMAT")},
-      }));
+      clear_session_if_current();
+      complete_start(
+          false,
+          "Could not negotiate a compatible video format with the camera.",
+          "UNSUPPORTED_VIDEO_FORMAT");
+      ::CoUninitialize();
       return;
     }
 
-    {
-      std::lock_guard<std::mutex> lock(state_mutex_);
-      active_session_id_ = session_id;
-    }
-    motion_threshold_.store(threshold);
-    running_.store(true);
-
     const std::string device_name = probe.device_name;
-    EmitEvent(flutter::EncodableMap{
-        {flutter::EncodableValue("sessionId"),
-         flutter::EncodableValue(session_id)},
-        {flutter::EncodableValue("eventType"),
-         flutter::EncodableValue("calibrationStarted")},
-        {flutter::EncodableValue("summary"),
-         flutter::EncodableValue("Calibrating baseline scene on " +
-                                 device_name + "...")},
-        {flutter::EncodableValue("threshold"),
-         flutter::EncodableValue(threshold)},
-        {flutter::EncodableValue("timestampMs"),
-         flutter::EncodableValue(CurrentTimeMillis())},
-    });
-
-    worker_thread_ = std::thread([this, session_id, calibration_ms,
-                                  persistence_frames, grid_w, grid_h,
-                                  media_source, reader, subtype, frame_width,
-                                  frame_height, stride]() mutable {
-      RunCameraLoop(session_id, calibration_ms, persistence_frames, grid_w,
-                    grid_h, std::move(media_source), std::move(reader), subtype,
-                    frame_width, frame_height, stride);
-    });
-
-    result->Success(flutter::EncodableValue(flutter::EncodableMap{
-        {flutter::EncodableValue("started"), flutter::EncodableValue(true)},
-        {flutter::EncodableValue("message"),
-         flutter::EncodableValue("Monitoring active on " + device_name + ".")},
-    }));
-  }
-
-  void RunCameraLoop(const std::string& session_id, int32_t calibration_ms,
-                     int32_t persistence_frames, int32_t grid_w,
-                     int32_t grid_h, ComPtr<IMFMediaSource> media_source,
-                     ComPtr<IMFSourceReader> reader, GUID subtype,
-                     UINT32 src_width, UINT32 src_height, int32_t stride) {
-    ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-
-    const int64_t session_start_ms = CurrentTimeMillis();
+    const int64_t open_start_ms = CurrentTimeMillis();
+    int64_t session_start_ms = open_start_ms;
     int64_t last_frame_processed_ms = 0;
+    bool has_delivered_first_frame = false;
     bool is_calibration_done = false;
     std::vector<float> reference_grid;
+    std::vector<float> previous_grid;
     std::vector<float> current_grid;
+    float previous_mean_255 = 0.0f;
     int32_t consecutive_above_threshold = 0;
     int32_t consecutive_poor_input = 0;
     bool is_input_degraded = false;
@@ -1715,29 +2080,53 @@ class WindowsCameraMotionBridge {
       LONGLONG sample_timestamp = 0;
       ComPtr<IMFSample> sample;
 
-      HRESULT hr = reader->ReadSample(
+      hr = reader->ReadSample(
           static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0,
           &stream_index, &stream_flags, &sample_timestamp,
           sample.GetAddressOf());
 
       if (!running_.load()) {
+        if (!has_delivered_first_frame) {
+          complete_start(false, "Camera startup cancelled before first frame.",
+                         "STARTUP_CANCELLED");
+        }
         break;
       }
 
       if (FAILED(hr) || (stream_flags & MF_SOURCE_READERF_ERROR)) {
-        EmitEvent(flutter::EncodableMap{
-            {flutter::EncodableValue("sessionId"),
-             flutter::EncodableValue(session_id)},
-            {flutter::EncodableValue("eventType"),
-             flutter::EncodableValue("detectorFailed")},
-            {flutter::EncodableValue("summary"),
-             flutter::EncodableValue(
-                 "Windows webcam stream error or device disconnected.")},
-            {flutter::EncodableValue("errorCode"),
-             flutter::EncodableValue("MF_CAPTURE_ERROR")},
-            {flutter::EncodableValue("timestampMs"),
-             flutter::EncodableValue(CurrentTimeMillis())},
-        });
+        const bool access_denied =
+            (hr == E_ACCESSDENIED ||
+             hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED));
+        const bool busy = IsWindowsCameraBusyHresult(hr);
+        if (!has_delivered_first_frame) {
+          clear_session_if_current();
+          complete_start(
+              false,
+              access_denied
+                  ? "Windows blocked camera access. Check Settings > Privacy & security > Camera."
+                  : (busy ? (device_name +
+                             " is currently in use by another application.")
+                          : "Windows webcam failed to start streaming."),
+              access_denied ? "PERMISSION_DENIED"
+                            : (busy ? "CAMERA_BUSY" : "MF_CAPTURE_ERROR"));
+        } else {
+          EmitEvent(flutter::EncodableMap{
+              {flutter::EncodableValue("sessionId"),
+               flutter::EncodableValue(session_id)},
+              {flutter::EncodableValue("eventType"),
+               flutter::EncodableValue("detectorFailed")},
+              {flutter::EncodableValue("summary"),
+               flutter::EncodableValue(
+                   busy ? (device_name +
+                           " was claimed by another application.")
+                        : "Windows webcam stream error or device disconnected.")},
+              {flutter::EncodableValue("errorCode"),
+               flutter::EncodableValue(busy ? "CAMERA_BUSY"
+                                            : "MF_CAPTURE_ERROR")},
+              {flutter::EncodableValue("timestampMs"),
+               flutter::EncodableValue(CurrentTimeMillis())},
+          });
+        }
         break;
       }
 
@@ -1751,55 +2140,83 @@ class WindowsCameraMotionBridge {
         }
       }
 
-      if (sample == nullptr) {
-        continue;
-      }
-
       const int64_t now_ms = CurrentTimeMillis();
-      // Throttle to ~8 frames per second off the UI thread.
-      if ((now_ms - last_frame_processed_ms) < 120) {
+      if (sample == nullptr) {
+        if (!has_delivered_first_frame && (now_ms - open_start_ms) >= 4000) {
+          clear_session_if_current();
+          complete_start(
+              false,
+              "Camera opened on " + device_name +
+                  ", but no video frames arrived within 4 seconds.",
+              "FRAME_TIMEOUT");
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
         continue;
       }
-      last_frame_processed_ms = now_ms;
 
-      ComPtr<IMFMediaBuffer> buffer;
-      if (FAILED(sample->ConvertToContiguousBuffer(buffer.GetAddressOf())) ||
-          buffer == nullptr) {
-        continue;
-      }
-
-      BYTE* raw_ptr = nullptr;
-      DWORD max_len = 0;
-      DWORD cur_len = 0;
-      if (FAILED(buffer->Lock(&raw_ptr, &max_len, &cur_len)) ||
-          raw_ptr == nullptr || cur_len == 0) {
+      // Throttle to ~8 frames per second off the UI thread (never throttle the
+      // very first frame).
+      if (has_delivered_first_frame &&
+          (now_ms - last_frame_processed_ms) < 120) {
         continue;
       }
 
       float lum_sum = 0.0f;
-      const bool sampled = SampleFrameToGrayscaleGrid(
-          raw_ptr, static_cast<size_t>(cur_len), subtype, src_width, src_height,
-          stride, grid_w, grid_h, &current_grid, &lum_sum);
-      buffer->Unlock();
+      const bool sampled = SampleMediaSampleToGrayscaleGrid(
+          sample.Get(), subtype, src_width, src_height, stride, grid_w, grid_h,
+          &current_grid, &lum_sum);
 
       if (!sampled || current_grid.empty()) {
+        if (!has_delivered_first_frame && (now_ms - open_start_ms) >= 4000) {
+          clear_session_if_current();
+          complete_start(
+              false,
+              "Camera frames from " + device_name +
+                  " could not be decoded into a valid video buffer.",
+              "FRAME_TIMEOUT");
+          break;
+        }
         continue;
       }
 
-      const size_t count = current_grid.size();
-      const float mean_lum_255 = lum_sum / static_cast<float>(count);
-      const double normalized_luminance =
-          static_cast<double>(mean_lum_255 / 255.0f);
+      last_frame_processed_ms = now_ms;
+      const double active_threshold = motion_threshold_.load();
 
-      float variance_sum = 0.0f;
-      for (float val : current_grid) {
-        variance_sum += std::abs(val - mean_lum_255);
+      // Report monitoring started ONLY once frames are actually arriving.
+      if (!has_delivered_first_frame) {
+        has_delivered_first_frame = true;
+        session_start_ms = now_ms;
+        EmitEvent(flutter::EncodableMap{
+            {flutter::EncodableValue("sessionId"),
+             flutter::EncodableValue(session_id)},
+            {flutter::EncodableValue("eventType"),
+             flutter::EncodableValue("calibrationStarted")},
+            {flutter::EncodableValue("summary"),
+             flutter::EncodableValue("Calibrating baseline scene on " +
+                                     device_name + "...")},
+            {flutter::EncodableValue("threshold"),
+             flutter::EncodableValue(active_threshold)},
+            {flutter::EncodableValue("timestampMs"),
+             flutter::EncodableValue(now_ms)},
+        });
+        complete_start(true, "Monitoring active on " + device_name + ".", "");
       }
+
+      const size_t count = current_grid.size();
+      const float curr_mean = lum_sum / static_cast<float>(count);
+      const double normalized_luminance =
+          static_cast<double>(curr_mean / 255.0f);
+
+      float dev_sum = 0.0f;
+      for (float val : current_grid) {
+        dev_sum += std::abs(val - curr_mean);
+      }
+      const float curr_mad = dev_sum / static_cast<float>(count);
       const double normalized_deviation =
-          static_cast<double>((variance_sum / static_cast<float>(count)) / 255.0f);
+          static_cast<double>(curr_mad / 255.0f);
 
       processed_frame_count += 1;
-      const double active_threshold = motion_threshold_.load();
 
       // Check for covered lens or pitch-black poor input
       if (normalized_luminance < 0.025 || normalized_deviation < 0.007) {
@@ -1848,8 +2265,10 @@ class WindowsCameraMotionBridge {
         }
       }
 
-      if (reference_grid.size() != count) {
+      if (reference_grid.size() != count || previous_grid.size() != count) {
         reference_grid = current_grid;
+        previous_grid = current_grid;
+        previous_mean_255 = curr_mean;
         continue;
       }
 
@@ -1858,7 +2277,9 @@ class WindowsCameraMotionBridge {
         for (size_t i = 0; i < count; ++i) {
           reference_grid[i] =
               (0.65f * reference_grid[i]) + (0.35f * current_grid[i]);
+          previous_grid[i] = current_grid[i];
         }
+        previous_mean_255 = curr_mean;
         if (elapsed_ms >= calibration_ms && processed_frame_count >= 4) {
           is_calibration_done = true;
           EmitEvent(flutter::EncodableMap{
@@ -1868,7 +2289,7 @@ class WindowsCameraMotionBridge {
                flutter::EncodableValue("calibrationCompleted")},
               {flutter::EncodableValue("summary"),
                flutter::EncodableValue(
-                   "Scene baseline calibrated. Active scene-motion filtering enabled.")},
+                   "Scene baseline calibrated. Ego-motion optical flow filtering enabled.")},
               {flutter::EncodableValue("motionScore"),
                flutter::EncodableValue(0.0)},
               {flutter::EncodableValue("threshold"),
@@ -1884,89 +2305,339 @@ class WindowsCameraMotionBridge {
         continue;
       }
 
-      float ref_lum_sum = 0.0f;
-      for (size_t i = 0; i < count; ++i) {
-        ref_lum_sum += reference_grid[i];
-      }
-      const float ref_mean_255 = ref_lum_sum / static_cast<float>(count);
-      const float dc_shift =
-          std::clamp(mean_lum_255 - ref_mean_255, -45.0f, 45.0f);
-
+      // Per-block zero-mean & affine illumination normalization + 4x4 Lucas-Kanade ego-motion
       constexpr int32_t kBlocksX = 4;
       constexpr int32_t kBlocksY = 4;
       constexpr int32_t kTotalBlocks = kBlocksX * kBlocksY;
-      float block_diff_sum[kTotalBlocks] = {0.0f};
+      double block_curr_sum[kTotalBlocks] = {0.0};
+      double block_ref_sum[kTotalBlocks] = {0.0};
+      double block_prev_sum[kTotalBlocks] = {0.0};
       int32_t block_pixel_count[kTotalBlocks] = {0};
 
-      float raw_diff_sum = 0.0f;
-      float struct_diff_sum = 0.0f;
       for (int32_t gy = 0; gy < grid_h; ++gy) {
         const int32_t by =
             std::min(kBlocksY - 1, (gy * kBlocksY) / std::max(1, grid_h));
         for (int32_t gx = 0; gx < grid_w; ++gx) {
           const int32_t bx =
               std::min(kBlocksX - 1, (gx * kBlocksX) / std::max(1, grid_w));
-          const int32_t block_idx = by * kBlocksX + bx;
+          const int32_t b_idx = by * kBlocksX + bx;
           const size_t i =
               static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
               static_cast<size_t>(gx);
-
-          const float signed_diff = current_grid[i] - reference_grid[i];
-          const float raw_delta = std::abs(signed_diff);
-          const float struct_delta =
-              std::abs(signed_diff - (0.75f * dc_shift));
-
-          raw_diff_sum += raw_delta;
-          struct_diff_sum += struct_delta;
-          block_diff_sum[block_idx] += struct_delta;
-          block_pixel_count[block_idx] += 1;
-
-          reference_grid[i] =
-              (0.92f * reference_grid[i]) + (0.08f * current_grid[i]);
+          block_curr_sum[b_idx] += static_cast<double>(current_grid[i]);
+          block_ref_sum[b_idx] += static_cast<double>(reference_grid[i]);
+          block_prev_sum[b_idx] += static_cast<double>(previous_grid[i]);
+          block_pixel_count[b_idx] += 1;
         }
       }
 
-      const double block_activity_threshold =
-          std::max(0.018, active_threshold * 0.45);
-      int32_t active_blocks = 0;
+      double block_curr_mean[kTotalBlocks] = {0.0};
+      double block_ref_mean[kTotalBlocks] = {0.0};
+      double block_prev_mean[kTotalBlocks] = {0.0};
       for (int32_t b = 0; b < kTotalBlocks; ++b) {
         if (block_pixel_count[b] > 0) {
-          const double block_score = static_cast<double>(
-              block_diff_sum[b] /
-              static_cast<float>(block_pixel_count[b] * 255));
-          if (block_score >= block_activity_threshold) {
-            active_blocks += 1;
+          const double n = static_cast<double>(block_pixel_count[b]);
+          block_curr_mean[b] = block_curr_sum[b] / n;
+          block_ref_mean[b] = block_ref_sum[b] / n;
+          block_prev_mean[b] = block_prev_sum[b] / n;
+        }
+      }
+
+      double block_curr_dev_sum[kTotalBlocks] = {0.0};
+      double block_ref_dev_sum[kTotalBlocks] = {0.0};
+      for (int32_t gy = 0; gy < grid_h; ++gy) {
+        const int32_t by =
+            std::min(kBlocksY - 1, (gy * kBlocksY) / std::max(1, grid_h));
+        for (int32_t gx = 0; gx < grid_w; ++gx) {
+          const int32_t bx =
+              std::min(kBlocksX - 1, (gx * kBlocksX) / std::max(1, grid_w));
+          const int32_t b_idx = by * kBlocksX + bx;
+          const size_t i =
+              static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
+              static_cast<size_t>(gx);
+          block_curr_dev_sum[b_idx] += std::abs(
+              static_cast<double>(current_grid[i]) - block_curr_mean[b_idx]);
+          block_ref_dev_sum[b_idx] += std::abs(
+              static_cast<double>(reference_grid[i]) - block_ref_mean[b_idx]);
+        }
+      }
+
+      double block_gain_to_ref[kTotalBlocks];
+      for (int32_t b = 0; b < kTotalBlocks; ++b) {
+        block_gain_to_ref[b] = 1.0;
+        if (block_pixel_count[b] > 0) {
+          const double n = static_cast<double>(block_pixel_count[b]);
+          const double c_mad = block_curr_dev_sum[b] / n;
+          const double r_mad = block_ref_dev_sum[b] / n;
+          if (c_mad > 3.0 && r_mad > 3.0) {
+            block_gain_to_ref[b] = std::clamp(r_mad / c_mad, 0.72, 1.38);
           }
         }
       }
 
-      const double raw_motion_score =
-          static_cast<double>(raw_diff_sum / static_cast<float>(count * 255));
-      const double struct_motion_score =
-          static_cast<double>(struct_diff_sum / static_cast<float>(count * 255));
+      double block_ref_diff_sum[kTotalBlocks] = {0.0};
+      double block_step_diff_sum[kTotalBlocks] = {0.0};
+      double block_ref_grad_sum[kTotalBlocks] = {0.0};
+      int32_t block_grad_count[kTotalBlocks] = {0};
 
-      double spatial_weight = 1.0;
-      if (active_blocks >= 7 || raw_motion_score >= (active_threshold * 1.8)) {
-        spatial_weight = 1.0;
-      } else if (active_blocks <= 3) {
-        spatial_weight = 0.35;
-      } else {
-        spatial_weight =
-            0.35 + (static_cast<double>(active_blocks - 3) * (0.65 / 4.0));
+      double norm_ref_diff_sum = 0.0;
+      for (int32_t gy = 0; gy < grid_h; ++gy) {
+        const int32_t by =
+            std::min(kBlocksY - 1, (gy * kBlocksY) / std::max(1, grid_h));
+        for (int32_t gx = 0; gx < grid_w; ++gx) {
+          const int32_t bx =
+              std::min(kBlocksX - 1, (gx * kBlocksX) / std::max(1, grid_w));
+          const int32_t b_idx = by * kBlocksX + bx;
+          const size_t i =
+              static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
+              static_cast<size_t>(gx);
+
+          const double curr_val = static_cast<double>(current_grid[i]);
+          const double ref_val = static_cast<double>(reference_grid[i]);
+          const double prev_val = static_cast<double>(previous_grid[i]);
+
+          const double norm_curr_centered =
+              (curr_val - block_curr_mean[b_idx]) * block_gain_to_ref[b_idx];
+          const double ref_centered = ref_val - block_ref_mean[b_idx];
+          const double ref_delta = std::abs(norm_curr_centered - ref_centered);
+          const double block_step_shift =
+              block_curr_mean[b_idx] - block_prev_mean[b_idx];
+          const double step_delta =
+              std::abs((curr_val - prev_val) - block_step_shift);
+
+          norm_ref_diff_sum += ref_delta;
+          block_ref_diff_sum[b_idx] += ref_delta;
+          block_step_diff_sum[b_idx] += step_delta;
+
+          if (gx + 1 < grid_w && gy + 1 < grid_h) {
+            const double gx_diff = std::abs(
+                ref_val - static_cast<double>(reference_grid[i + 1u]));
+            const double gy_diff = std::abs(
+                ref_val - static_cast<double>(
+                              reference_grid[i + static_cast<size_t>(grid_w)]));
+            block_ref_grad_sum[b_idx] += 0.5 * (gx_diff + gy_diff);
+            block_grad_count[b_idx] += 1;
+          }
+        }
       }
 
-      const double motion_score = struct_motion_score * spatial_weight;
+      const double static_block_threshold =
+          std::max(0.020, active_threshold * 0.36);
+      const double active_block_threshold =
+          std::max(0.024, active_threshold * 0.48);
+      const int32_t block_w = grid_w / kBlocksX;
+      const int32_t block_h = grid_h / kBlocksY;
+
+      int32_t textured_ref_blocks = 0;
+      int32_t anchored_textured_blocks = 0;
+      int32_t changed_blocks = 0;
+      double textured_ref_score_sum = 0.0;
+      std::vector<double> dx_list;
+      std::vector<double> dy_list;
+      std::vector<int32_t> bx_list;
+      std::vector<int32_t> by_list;
+      int32_t quadrant_activity[4] = {0, 0, 0, 0};
+
+      for (int32_t by = 0; by < kBlocksY; ++by) {
+        for (int32_t bx = 0; bx < kBlocksX; ++bx) {
+          const int32_t b = by * kBlocksX + bx;
+          const int32_t px_count = block_pixel_count[b];
+          if (px_count <= 0) {
+            continue;
+          }
+          const double ref_score =
+              block_ref_diff_sum[b] / static_cast<double>(px_count * 255);
+          const double step_score =
+              block_step_diff_sum[b] / static_cast<double>(px_count * 255);
+          const double mean_grad =
+              block_grad_count[b] > 0
+                  ? (block_ref_grad_sum[b] /
+                     static_cast<double>(block_grad_count[b]))
+                  : 0.0;
+          const bool is_textured = mean_grad >= 3.2;
+
+          if (is_textured) {
+            textured_ref_blocks += 1;
+            textured_ref_score_sum += ref_score;
+            if (ref_score < static_block_threshold && step_score < 0.018) {
+              anchored_textured_blocks += 1;
+            }
+          }
+
+          const double block_step_shift =
+              block_curr_mean[b] - block_prev_mean[b];
+          bool block_translated = false;
+          if (is_textured && step_score >= 0.008 && block_w >= 6 &&
+              block_h >= 6) {
+            double flow_u = 0.0;
+            double flow_v = 0.0;
+            if (EstimateLucasKanadeFlow(previous_grid, current_grid, grid_w,
+                                        grid_h, block_step_shift, bx * block_w,
+                                        by * block_h, block_w, block_h, &flow_u,
+                                        &flow_v) ||
+                EstimateBlockTranslation(previous_grid, current_grid, grid_w,
+                                         grid_h, block_step_shift, bx * block_w,
+                                         by * block_h, block_w, block_h,
+                                         &flow_u, &flow_v)) {
+              block_translated = true;
+              dx_list.push_back(flow_u);
+              dy_list.push_back(flow_v);
+              bx_list.push_back(bx);
+              by_list.push_back(by);
+            }
+          }
+
+          if ((ref_score >= active_block_threshold && step_score >= 0.010) ||
+              block_translated) {
+            changed_blocks += 1;
+            const int32_t qx = bx >= 2 ? 1 : 0;
+            const int32_t qy = by >= 2 ? 1 : 0;
+            quadrant_activity[qy * 2 + qx] += 1;
+          }
+        }
+      }
+
+      int32_t active_quadrants = 0;
+      for (int32_t q = 0; q < 4; ++q) {
+        if (quadrant_activity[q] >= 1) {
+          active_quadrants += 1;
+        }
+      }
+
+      int32_t coherent_translated_blocks = 0;
+      if (!dx_list.empty()) {
+        double sum_dx = 0.0;
+        double sum_dy = 0.0;
+        int32_t roll_pos = 0;
+        int32_t roll_neg = 0;
+        for (size_t k = 0; k < dx_list.size(); ++k) {
+          sum_dx += dx_list[k];
+          sum_dy += dy_list[k];
+          const double rx = static_cast<double>(bx_list[k]) - 1.5;
+          const double ry = static_cast<double>(by_list[k]) - 1.5;
+          const double cross = (rx * dy_list[k]) - (ry * dx_list[k]);
+          if (cross > 0.25) {
+            roll_pos += 1;
+          } else if (cross < -0.25) {
+            roll_neg += 1;
+          }
+        }
+        int32_t pan_aligned = 0;
+        for (size_t k = 0; k < dx_list.size(); ++k) {
+          if ((dx_list[k] * sum_dx) + (dy_list[k] * sum_dy) > 0.0) {
+            pan_aligned += 1;
+          }
+        }
+        coherent_translated_blocks =
+            std::max(pan_aligned, std::max(roll_pos, roll_neg));
+      }
+
+      const double full_scene_struct_score =
+          norm_ref_diff_sum / static_cast<double>(count * 255u);
+      const double textured_struct_score =
+          textured_ref_blocks > 0
+              ? (textured_ref_score_sum /
+                 static_cast<double>(textured_ref_blocks))
+              : full_scene_struct_score;
+      const double struct_motion_score =
+          (textured_ref_blocks >= 2 && textured_ref_blocks <= 6 &&
+           anchored_textured_blocks == 0)
+              ? std::max(full_scene_struct_score, textured_struct_score * 0.80)
+              : full_scene_struct_score;
+
+      const double mean_jump =
+          static_cast<double>(std::abs(curr_mean - previous_mean_255));
+      const bool is_lighting_transient =
+          mean_jump >= 20.0 && coherent_translated_blocks <= 2;
+      const int32_t min_anchors = std::max<int32_t>(
+          3, static_cast<int32_t>(
+                 std::ceil(static_cast<double>(textured_ref_blocks) * 0.28)));
+      const bool has_strong_static_anchors =
+          textured_ref_blocks >= 4 && anchored_textured_blocks >= min_anchors;
+      const bool sparse_scene_coherent_ego_motion =
+          textured_ref_blocks >= 2 && textured_ref_blocks <= 6 &&
+          anchored_textured_blocks == 0 &&
+          coherent_translated_blocks >=
+              std::min<int32_t>(3, textured_ref_blocks);
+
+      double ego_weight = 0.45;
+      if (is_lighting_transient) {
+        ego_weight = 0.12;
+      } else if (has_strong_static_anchors) {
+        ego_weight = 0.16;
+      } else if (sparse_scene_coherent_ego_motion) {
+        ego_weight = 1.20;
+      } else if (active_quadrants <= 2 && coherent_translated_blocks < 5) {
+        ego_weight = 0.28;
+      } else if (coherent_translated_blocks >= 5 && active_quadrants >= 3) {
+        ego_weight = 1.25;
+      } else if (textured_ref_blocks > 0 &&
+                 anchored_textured_blocks <=
+                     static_cast<int32_t>(std::floor(
+                         static_cast<double>(textured_ref_blocks) * 0.20)) &&
+                 changed_blocks >= 10 && active_quadrants >= 3) {
+        ego_weight = 1.10;
+      } else if (textured_ref_blocks == 0 && changed_blocks >= 12 &&
+                 active_quadrants == 4) {
+        ego_weight = 1.0;
+      }
+
+      const double flow_contribution =
+          (!has_strong_static_anchors && coherent_translated_blocks >= 5 &&
+           active_quadrants >= 3)
+              ? (static_cast<double>(coherent_translated_blocks) /
+                 static_cast<double>(kTotalBlocks)) *
+                    0.11
+              : (sparse_scene_coherent_ego_motion ? 0.045 : 0.0);
+      double motion_score = std::clamp(
+          (struct_motion_score * ego_weight) + flow_contribution, 0.0, 1.0);
+      if (has_strong_static_anchors) {
+        motion_score = std::min(motion_score, active_threshold * 0.65);
+      }
+
+      const float base_adapt_rate = is_lighting_transient ? 0.30f : 0.08f;
       if (motion_score >= active_threshold) {
         consecutive_above_threshold += 1;
+        for (size_t i = 0; i < count; ++i) {
+          reference_grid[i] =
+              (0.97f * reference_grid[i]) + (0.03f * current_grid[i]);
+          previous_grid[i] = current_grid[i];
+        }
       } else {
         consecutive_above_threshold = 0;
+        for (int32_t gy = 0; gy < grid_h; ++gy) {
+          const int32_t by =
+              std::min(kBlocksY - 1, (gy * kBlocksY) / std::max(1, grid_h));
+          for (int32_t gx = 0; gx < grid_w; ++gx) {
+            const int32_t bx =
+                std::min(kBlocksX - 1, (gx * kBlocksX) / std::max(1, grid_w));
+            const int32_t b_idx = by * kBlocksX + bx;
+            const int32_t px_count = block_pixel_count[b_idx];
+            const double block_ref_score =
+                px_count > 0
+                    ? (block_ref_diff_sum[b_idx] /
+                       static_cast<double>(px_count * 255))
+                    : 0.0;
+            const float alpha = (has_strong_static_anchors &&
+                                 block_ref_score >= static_block_threshold)
+                                    ? 0.01f
+                                    : base_adapt_rate;
+            const size_t i =
+                static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
+                static_cast<size_t>(gx);
+            reference_grid[i] =
+                ((1.0f - alpha) * reference_grid[i]) + (alpha * current_grid[i]);
+            previous_grid[i] = current_grid[i];
+          }
+        }
       }
+      previous_mean_255 = curr_mean;
 
       if (consecutive_above_threshold >= persistence_frames) {
-        char summary_buf[180];
+        char summary_buf[190];
         std::snprintf(
             summary_buf, sizeof(summary_buf),
-            "Sustained scene motion detected (score %.3f >= threshold %.3f across %d frames)",
+            "Sustained camera ego-motion detected (score %.3f >= threshold %.3f across %d frames)",
             motion_score, active_threshold, consecutive_above_threshold);
         EmitEvent(flutter::EncodableMap{
             {flutter::EncodableValue("sessionId"),
@@ -1989,7 +2660,7 @@ class WindowsCameraMotionBridge {
       } else if (processed_frame_count % 3 == 0) {
         char summary_buf[140];
         std::snprintf(summary_buf, sizeof(summary_buf),
-                      "Scene motion score %.3f (threshold %.3f)", motion_score,
+                      "Camera motion score %.3f (threshold %.3f)", motion_score,
                       active_threshold);
         EmitEvent(flutter::EncodableMap{
             {flutter::EncodableValue("sessionId"),
@@ -2047,6 +2718,7 @@ class WindowsCameraMotionBridge {
 
   std::mutex state_mutex_;
   std::string active_session_id_;
+  std::string paused_session_id_;
   std::atomic<bool> running_{false};
   std::atomic<double> motion_threshold_{0.095};
   std::thread worker_thread_;
@@ -2148,6 +2820,18 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // Handle bridge callbacks and OS power broadcasts before Flutter's top-level
+  // window proc can consume them.
+  if (message == kWmFlutterBridgeCallback) {
+    if (bridges_) {
+      bridges_->DrainMainThreadTasks();
+    }
+    return 0;
+  }
+  if (message == WM_POWERBROADCAST && bridges_) {
+    bridges_->OnPowerBroadcast(wparam);
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =
@@ -2161,18 +2845,6 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   switch (message) {
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
-      break;
-
-    case kWmFlutterBridgeCallback:
-      if (bridges_) {
-        bridges_->DrainMainThreadTasks();
-      }
-      return 0;
-
-    case WM_POWERBROADCAST:
-      if (bridges_) {
-        bridges_->OnPowerBroadcast(wparam);
-      }
       break;
   }
 

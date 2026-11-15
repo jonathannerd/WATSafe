@@ -6,11 +6,11 @@ enum DetectorType {
     id: 'macos_camera_scene_motion',
     displayName: 'macOS Webcam Scene-Motion',
     platformLabel: 'macOS',
-    modalityLabel: 'Optical Scene Motion (AVFoundation)',
+    modalityLabel: 'Optical Ego-Motion (AVFoundation)',
     limitationNote:
-        'Analyzes downsampled grayscale camera frames locally for visual scene motion. '
-        'Reacts to people, lighting changes, or laptop movement—not verified physical theft detection. '
-        'Optical-flow camera movement estimation is planned as a future improvement.',
+        'Estimates coherent multi-region camera movement on downsampled 64x48 grayscale frames '
+        'while filtering brief lighting shifts and localized foreground motion (such as people walking past). '
+        'Optical motion remains an estimate of physical laptop movement; never saves or uploads frames.',
   ),
   windowsAccelerometer(
     id: 'windows_accelerometer',
@@ -25,10 +25,10 @@ enum DetectorType {
     id: 'windows_camera_scene_motion',
     displayName: 'Windows Webcam Scene-Motion',
     platformLabel: 'Windows',
-    modalityLabel: 'MediaFoundation Scene Motion',
+    modalityLabel: 'MediaFoundation Ego-Motion',
     limitationNote:
-        'Analyzes downsampled 64x48 grayscale camera frames locally via Windows Media Foundation. '
-        'Reacts to people, lighting changes, or laptop movement—never saves or uploads frames.',
+        'Estimates coherent multi-region camera movement on downsampled 64x48 grayscale frames via Windows Media Foundation '
+        'while filtering brief lighting shifts and people walking past. Never saves or uploads frames.',
   ),
   androidMotionSensors(
     id: 'android_motion_sensors',
@@ -36,8 +36,8 @@ enum DetectorType {
     platformLabel: 'Android',
     modalityLabel: 'SensorManager + Foreground Service',
     limitationNote:
-        'Requires user-initiated foreground monitoring with a persistent notification and '
-        'explicit Android 14+ foreground service declarations.',
+        'Uses an Android 14+ foreground service with a persistent notification to keep monitoring '
+        'accelerometer/linear-acceleration sensors when the screen turns off or the app enters the background.',
   ),
   iosCoreMotionForeground(
     id: 'ios_core_motion_foreground',
@@ -46,7 +46,16 @@ enum DetectorType {
     modalityLabel: 'CMMotionManager Foreground Monitoring',
     limitationNote:
         'iOS restricts continuous background sensor capture. Live motion monitoring operates '
-        'only while WATSafe remains in the foreground; suspended or locked devices rely on paired-device push alerts.',
+        'only while WATSafe remains in the foreground; suspended or locked devices rely on paired-device alerts.',
+  ),
+  browserCameraSceneMotion(
+    id: 'browser_camera_scene_motion',
+    displayName: 'Browser Webcam',
+    platformLabel: 'Browser',
+    modalityLabel: 'Webcam Ego-Motion',
+    limitationNote:
+        'Keep this tab visible and the device awake while monitoring. '
+        'Estimates coherent camera movement across the scene and filters brief lighting shifts or passersby.',
   );
 
   const DetectorType({
@@ -67,7 +76,8 @@ enum DetectorType {
   /// than hardware motion/accelerometer sensors.
   bool get usesCamera =>
       this == DetectorType.macosCameraSceneMotion ||
-      this == DetectorType.windowsCameraSceneMotion;
+      this == DetectorType.windowsCameraSceneMotion ||
+      this == DetectorType.browserCameraSceneMotion;
 
   static DetectorType fromId(String id) {
     for (final value in DetectorType.values) {

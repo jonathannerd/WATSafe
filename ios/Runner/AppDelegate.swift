@@ -55,6 +55,7 @@ final class IOSCoreMotionBridge: NSObject, FlutterStreamHandler {
   private var consecutiveAboveThreshold: Int = 0
   private var sampleCount: Int = 0
 
+  private var pausedSessionId: String?
   private var resignActiveObserver: NSObjectProtocol?
   private var becomeActiveObserver: NSObjectProtocol?
 
@@ -101,29 +102,34 @@ final class IOSCoreMotionBridge: NSObject, FlutterStreamHandler {
 
   private func registerLifecycleObservers() {
     resignActiveObserver = NotificationCenter.default.addObserver(
-      forName: UIApplication.willResignActiveNotification,
+      forName: UIApplication.didEnterBackgroundNotification,
       object: nil,
       queue: .main
     ) { [weak self] _ in
       guard let self = self, let sessionId = self.activeSessionId else { return }
+      self.pausedSessionId = sessionId
+      self.stopUpdates()
       self.emitEvent([
         "sessionId": sessionId,
         "eventType": "lifecyclePaused",
-        "summary": "iOS app left foreground or screen locked; Core Motion monitoring paused.",
+        "summary": "iOS app entered background or screen locked; Core Motion monitoring paused.",
         "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
       ])
     }
 
     becomeActiveObserver = NotificationCenter.default.addObserver(
-      forName: UIApplication.didBecomeActiveNotification,
+      forName: UIApplication.willEnterForegroundNotification,
       object: nil,
       queue: .main
     ) { [weak self] _ in
-      guard let self = self, let sessionId = self.activeSessionId else { return }
+      guard let self = self, let sessionId = self.pausedSessionId ?? self.activeSessionId else {
+        return
+      }
+      self.pausedSessionId = nil
       self.emitEvent([
         "sessionId": sessionId,
         "eventType": "lifecycleResumed",
-        "summary": "iOS app returned to foreground; Core Motion monitoring resumed.",
+        "summary": "iOS app returned to foreground; resuming Core Motion monitoring.",
         "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
       ])
     }

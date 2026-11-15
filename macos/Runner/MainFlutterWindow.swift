@@ -289,6 +289,12 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
   private var eventSink: FlutterEventSink?
   private var captureSession: AVCaptureSession?
   private var activeSessionId: String?
+  private var pausedSessionId: String?
+  private var pendingStartResult: FlutterResult?
+  private var pendingDeviceName: String = "macOS Camera"
+  private var firstFrameTimeoutWorkItem: DispatchWorkItem?
+  private var hasDeliveredFirstFrame: Bool = false
+
   private var motionThreshold: Double = 0.095
   private var calibrationDurationMs: Int = 1500
   private var persistenceFramesRequired: Int = 3
@@ -298,6 +304,8 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
   private var sessionStartTimeMs: Int64 = 0
   private var isCalibrationDone: Bool = false
   private var referenceGrid: [Float] = []
+  private var previousGrid: [Float] = []
+  private var previousMean255: Float = 0
   private var consecutiveAboveThreshold: Int = 0
   private var consecutivePoorInputFrames: Int = 0
   private var isInputDegraded: Bool = false
@@ -358,13 +366,18 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       object: nil,
       queue: .main
     ) { [weak self] _ in
-      guard let self = self, let sessionId = self.activeSessionId else { return }
-      self.emitEvent([
-        "sessionId": sessionId,
-        "eventType": "lifecyclePaused",
-        "summary": "macOS system entering sleep; webcam capture paused.",
-        "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
-      ])
+      guard let self = self else { return }
+      self.processingQueue.async { [weak self] in
+        guard let self = self, let sessionId = self.activeSessionId else { return }
+        self.pausedSessionId = sessionId
+        self.stopCaptureOnQueue()
+        self.emitEvent([
+          "sessionId": sessionId,
+          "eventType": "lifecyclePaused",
+          "summary": "macOS system entering sleep; webcam capture paused.",
+          "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
+        ])
+      }
     }
 
     wakeObserver = center.addObserver(
@@ -372,13 +385,19 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       object: nil,
       queue: .main
     ) { [weak self] _ in
-      guard let self = self, let sessionId = self.activeSessionId else { return }
-      self.emitEvent([
-        "sessionId": sessionId,
-        "eventType": "lifecycleResumed",
-        "summary": "macOS system woke from sleep; webcam monitoring resumed.",
-        "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
-      ])
+      guard let self = self else { return }
+      self.processingQueue.async { [weak self] in
+        guard let self = self else { return }
+        let resumeId = self.activeSessionId ?? self.pausedSessionId
+        self.pausedSessionId = nil
+        guard let sessionId = resumeId else { return }
+        self.emitEvent([
+          "sessionId": sessionId,
+          "eventType": "lifecycleResumed",
+          "summary": "macOS system woke from sleep; webcam monitoring ready to resume.",
+          "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
+        ])
+      }
     }
   }
 
@@ -491,10 +510,13 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
 
     let authStatus = AVCaptureDevice.authorizationStatus(for: .video)
     guard authStatus == .authorized else {
+      let code = authStatus == .denied || authStatus == .restricted
+        ? "PERMISSION_DENIED"
+        : "PERMISSION_NOT_GRANTED"
       result([
         "started": false,
         "message": "Camera permission is not granted (\(permissionStatusString(authStatus))).",
-        "errorCode": "PERMISSION_NOT_GRANTED",
+        "errorCode": code,
       ])
       return
     }
@@ -508,8 +530,18 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       return
     }
 
+    if device.isInUseByAnotherApplication {
+      result([
+        "started": false,
+        "message": "\(device.localizedName) is currently in use by another application.",
+        "errorCode": "CAMERA_BUSY",
+      ])
+      return
+    }
+
     processingQueue.async { [weak self] in
       guard let self = self else { return }
+      self.pausedSessionId = nil
       self.stopCaptureOnQueue()
 
       let session = AVCaptureSession()
@@ -524,11 +556,14 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else {
           session.commitConfiguration()
+          let busy = device.isInUseByAnotherApplication
           DispatchQueue.main.async {
             result([
               "started": false,
-              "message": "Cannot attach camera device input to AVCaptureSession.",
-              "errorCode": "INPUT_ATTACH_FAILED",
+              "message": busy
+                ? "\(device.localizedName) is currently in use by another application."
+                : "Cannot attach camera device input to AVCaptureSession.",
+              "errorCode": busy ? "CAMERA_BUSY" : "INPUT_ATTACH_FAILED",
             ])
           }
           return
@@ -536,11 +571,18 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         session.addInput(input)
       } catch {
         session.commitConfiguration()
+        let desc = error.localizedDescription.lowercased()
+        let busy = device.isInUseByAnotherApplication
+          || desc.contains("in use")
+          || desc.contains("busy")
+          || desc.contains("another application")
         DispatchQueue.main.async {
           result([
             "started": false,
-            "message": "Failed to open camera input: \(error.localizedDescription)",
-            "errorCode": "INPUT_OPEN_ERROR",
+            "message": busy
+              ? "\(device.localizedName) is currently in use by another application."
+              : "Failed to open camera input: \(error.localizedDescription)",
+            "errorCode": busy ? "CAMERA_BUSY" : "INPUT_OPEN_ERROR",
           ])
         }
         return
@@ -568,6 +610,9 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       session.commitConfiguration()
 
       self.activeSessionId = sessionId
+      self.pendingDeviceName = device.localizedName
+      self.pendingStartResult = result
+      self.hasDeliveredFirstFrame = false
       self.motionThreshold = max(0.02, min(0.50, threshold))
       self.calibrationDurationMs = max(500, calibrationMs)
       self.persistenceFramesRequired = max(1, persistenceFrames)
@@ -576,6 +621,8 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       self.sessionStartTimeMs = Int64(Date().timeIntervalSince1970 * 1000)
       self.isCalibrationDone = false
       self.referenceGrid = []
+      self.previousGrid = []
+      self.previousMean255 = 0
       self.consecutiveAboveThreshold = 0
       self.consecutivePoorInputFrames = 0
       self.isInputDegraded = false
@@ -585,53 +632,96 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       self.runtimeErrorObserver = NotificationCenter.default.addObserver(
         forName: .AVCaptureSessionRuntimeError,
         object: session,
-        queue: .main
+        queue: nil
       ) { [weak self] notification in
-        guard let self = self, let activeId = self.activeSessionId else { return }
         let errorObj = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
-        self.emitEvent([
-          "sessionId": activeId,
-          "eventType": "detectorFailed",
-          "summary":
-            "Camera capture runtime error: \(errorObj?.localizedDescription ?? "Unknown AVFoundation error")",
-          "errorCode": "AVCAPTURE_RUNTIME_ERROR",
-          "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
-        ])
+        let messageText = errorObj?.localizedDescription ?? "Unknown AVFoundation error"
+        self?.processingQueue.async { [weak self] in
+          guard let self = self, let activeId = self.activeSessionId else { return }
+          let lower = messageText.lowercased()
+          let isBusy = device.isInUseByAnotherApplication
+            || lower.contains("in use")
+            || lower.contains("busy")
+          if let pending = self.pendingStartResult {
+            self.pendingStartResult = nil
+            self.stopCaptureOnQueue()
+            DispatchQueue.main.async {
+              pending([
+                "started": false,
+                "message": isBusy
+                  ? "\(device.localizedName) is currently in use by another application."
+                  : "Camera capture failed during startup: \(messageText)",
+                "errorCode": isBusy ? "CAMERA_BUSY" : "AVCAPTURE_RUNTIME_ERROR",
+              ])
+            }
+            return
+          }
+          self.stopCaptureOnQueue()
+          self.emitEvent([
+            "sessionId": activeId,
+            "eventType": "detectorFailed",
+            "summary": "Camera capture runtime error: \(messageText)",
+            "errorCode": isBusy ? "CAMERA_BUSY" : "AVCAPTURE_RUNTIME_ERROR",
+            "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
+          ])
+        }
       }
 
       self.captureSession = session
       session.startRunning()
 
       guard session.isRunning else {
+        let pending = self.pendingStartResult
+        self.pendingStartResult = nil
         self.stopCaptureOnQueue()
+        let busy = device.isInUseByAnotherApplication
         DispatchQueue.main.async {
-          result([
+          pending?([
             "started": false,
-            "message": "AVCaptureSession failed to enter running state.",
-            "errorCode": "SESSION_NOT_RUNNING",
+            "message": busy
+              ? "\(device.localizedName) is currently in use by another application."
+              : "AVCaptureSession failed to enter running state.",
+            "errorCode": busy ? "CAMERA_BUSY" : "SESSION_NOT_RUNNING",
           ])
         }
         return
       }
 
-      self.emitEvent([
-        "sessionId": sessionId,
-        "eventType": "calibrationStarted",
-        "summary": "Calibrating baseline scene on \(device.localizedName)...",
-        "threshold": self.motionThreshold,
-        "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
-      ])
-
-      DispatchQueue.main.async {
-        result([
-          "started": true,
-          "message": "Monitoring active on \(device.localizedName).",
-        ])
+      // Only report webcam monitoring as active once video frames are arriving.
+      let timeoutItem = DispatchWorkItem { [weak self] in
+        guard let self = self, !self.hasDeliveredFirstFrame else { return }
+        guard let pending = self.pendingStartResult else { return }
+        self.pendingStartResult = nil
+        let busy = device.isInUseByAnotherApplication
+        self.stopCaptureOnQueue()
+        DispatchQueue.main.async {
+          pending([
+            "started": false,
+            "message": busy
+              ? "\(device.localizedName) is in use by another application and delivered no frames."
+              : "Camera opened on \(device.localizedName), but no video frames arrived within 4 seconds.",
+            "errorCode": busy ? "CAMERA_BUSY" : "FRAME_TIMEOUT",
+          ])
+        }
       }
+      self.firstFrameTimeoutWorkItem = timeoutItem
+      self.processingQueue.asyncAfter(deadline: .now() + 4.0, execute: timeoutItem)
     }
   }
 
   private func stopCaptureOnQueue() {
+    firstFrameTimeoutWorkItem?.cancel()
+    firstFrameTimeoutWorkItem = nil
+    if let pending = pendingStartResult {
+      pendingStartResult = nil
+      DispatchQueue.main.async {
+        pending([
+          "started": false,
+          "message": "Camera startup cancelled before first frame.",
+          "errorCode": "STARTUP_CANCELLED",
+        ])
+      }
+    }
     if let runtimeErrorObserver = runtimeErrorObserver {
       NotificationCenter.default.removeObserver(runtimeErrorObserver)
       self.runtimeErrorObserver = nil
@@ -643,7 +733,10 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     }
     captureSession = nil
     activeSessionId = nil
+    hasDeliveredFirstFrame = false
     referenceGrid = []
+    previousGrid = []
+    previousMean255 = 0
     consecutiveAboveThreshold = 0
   }
 
@@ -655,11 +748,10 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     guard let sessionId = activeSessionId else { return }
 
     let now = CFAbsoluteTimeGetCurrent()
-    // Process ~8 frames per second off the UI thread.
-    if now - lastFrameProcessedTime < 0.12 {
+    // Process ~8 frames per second off the UI thread (never throttle the very first frame).
+    if hasDeliveredFirstFrame && (now - lastFrameProcessedTime < 0.12) {
       return
     }
-    lastFrameProcessedTime = now
 
     guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
       return
@@ -670,17 +762,30 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly)
     }
 
-    let srcWidth = CVPixelBufferGetWidth(pixelBuffer)
-    let srcHeight = CVPixelBufferGetHeight(pixelBuffer)
-    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    let isPlanar = CVPixelBufferIsPlanar(pixelBuffer)
+    let srcWidth = isPlanar
+      ? CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+      : CVPixelBufferGetWidth(pixelBuffer)
+    let srcHeight = isPlanar
+      ? CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+      : CVPixelBufferGetHeight(pixelBuffer)
+    let bytesPerRow = isPlanar
+      ? CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+      : CVPixelBufferGetBytesPerRow(pixelBuffer)
+    let rawBase = isPlanar
+      ? CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0)
+      : CVPixelBufferGetBaseAddress(pixelBuffer)
+
     guard
       srcWidth > 0,
       srcHeight > 0,
-      let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer)
+      bytesPerRow > 0,
+      let baseAddress = rawBase
     else {
       return
     }
 
+    lastFrameProcessedTime = now
     let ptr = baseAddress.assumingMemoryBound(to: UInt8.self)
     let gridW = downsampleWidth
     let gridH = downsampleHeight
@@ -693,27 +798,57 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       let rowOffset = sy * bytesPerRow
       for gx in 0..<gridW {
         let sx = (gx * srcWidth) / gridW
-        let pixelOffset = rowOffset + (sx * 4)
-        let b = Int(ptr[pixelOffset])
-        let g = Int(ptr[pixelOffset + 1])
-        let r = Int(ptr[pixelOffset + 2])
-        let y = Float((77 * r + 150 * g + 29 * b) >> 8)
+        let y: Float
+        if isPlanar {
+          y = Float(ptr[rowOffset + sx])
+        } else {
+          let pixelOffset = rowOffset + (sx * 4)
+          let b = Int(ptr[pixelOffset])
+          let g = Int(ptr[pixelOffset + 1])
+          let r = Int(ptr[pixelOffset + 2])
+          y = Float((77 * r + 150 * g + 29 * b) >> 8)
+        }
         let idx = gy * gridW + gx
         currentGrid[idx] = y
         lumSum += y
       }
     }
 
-    let meanLum255 = lumSum / Float(count)
-    let normalizedLuminance = Double(meanLum255 / 255.0)
-
-    var varianceSum: Float = 0
-    for val in currentGrid {
-      varianceSum += abs(val - meanLum255)
-    }
-    let normalizedDeviation = Double((varianceSum / Float(count)) / 255.0)
-
     let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+    if !hasDeliveredFirstFrame {
+      hasDeliveredFirstFrame = true
+      sessionStartTimeMs = nowMs
+      firstFrameTimeoutWorkItem?.cancel()
+      firstFrameTimeoutWorkItem = nil
+      let deviceLabel = pendingDeviceName
+      emitEvent([
+        "sessionId": sessionId,
+        "eventType": "calibrationStarted",
+        "summary": "Calibrating baseline scene on \(deviceLabel)...",
+        "threshold": motionThreshold,
+        "timestampMs": nowMs,
+      ])
+      if let pending = pendingStartResult {
+        pendingStartResult = nil
+        DispatchQueue.main.async {
+          pending([
+            "started": true,
+            "message": "Monitoring active on \(deviceLabel).",
+          ])
+        }
+      }
+    }
+
+    let currMean = lumSum / Float(count)
+    let normalizedLuminance = Double(currMean / 255.0)
+
+    var currDevSum: Float = 0
+    for val in currentGrid {
+      currDevSum += abs(val - currMean)
+    }
+    let currMad = currDevSum / Float(count)
+    let normalizedDeviation = Double(currMad / 255.0)
+
     processedFrameCount += 1
 
     // Check for covered lens / pitch-black poor input
@@ -747,8 +882,10 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     }
 
     // Initialize or adapt reference baseline during startup calibration interval
-    if referenceGrid.count != count {
+    if referenceGrid.count != count || previousGrid.count != count {
       referenceGrid = currentGrid
+      previousGrid = currentGrid
+      previousMean255 = currMean
       return
     }
 
@@ -756,13 +893,15 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     if !isCalibrationDone {
       for i in 0..<count {
         referenceGrid[i] = (0.65 * referenceGrid[i]) + (0.35 * currentGrid[i])
+        previousGrid[i] = currentGrid[i]
       }
+      previousMean255 = currMean
       if elapsedMs >= Int64(calibrationDurationMs) && processedFrameCount >= 4 {
         isCalibrationDone = true
         emitEvent([
           "sessionId": sessionId,
           "eventType": "calibrationCompleted",
-          "summary": "Scene baseline calibrated. Active scene-motion filtering enabled.",
+          "summary": "Scene baseline calibrated. Ego-motion optical flow filtering enabled.",
           "motionScore": 0.0,
           "threshold": motionThreshold,
           "averageLuminance": normalizedLuminance,
@@ -773,70 +912,281 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       return
     }
 
-    // Compute global ego-motion & illumination-compensated scene-motion score in [0.0, 1.0]
-    var refLumSum: Float = 0
-    for val in referenceGrid {
-      refLumSum += val
-    }
-    let refMean255 = refLumSum / Float(count)
-    let dcShift = max(-45.0, min(45.0, meanLum255 - refMean255))
-
+    // Per-block zero-mean & affine illumination normalization + 4x4 Lucas-Kanade ego-motion
     let blocksX = 4
     let blocksY = 4
     let totalBlocks = blocksX * blocksY
-    var blockDiffSum = [Float](repeating: 0, count: totalBlocks)
+    var blockCurrSum = [Double](repeating: 0, count: totalBlocks)
+    var blockRefSum = [Double](repeating: 0, count: totalBlocks)
+    var blockPrevSum = [Double](repeating: 0, count: totalBlocks)
     var blockPixelCount = [Int](repeating: 0, count: totalBlocks)
 
-    var rawDiffSum: Float = 0
-    var structDiffSum: Float = 0
     for gy in 0..<gridH {
       let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
       for gx in 0..<gridW {
         let bx = min(blocksX - 1, (gx * blocksX) / max(1, gridW))
-        let blockIdx = by * blocksX + bx
+        let bIdx = by * blocksX + bx
+        let i = gy * gridW + gx
+        blockCurrSum[bIdx] += Double(currentGrid[i])
+        blockRefSum[bIdx] += Double(referenceGrid[i])
+        blockPrevSum[bIdx] += Double(previousGrid[i])
+        blockPixelCount[bIdx] += 1
+      }
+    }
+
+    var blockCurrMean = [Double](repeating: 0, count: totalBlocks)
+    var blockRefMean = [Double](repeating: 0, count: totalBlocks)
+    var blockPrevMean = [Double](repeating: 0, count: totalBlocks)
+    for b in 0..<totalBlocks where blockPixelCount[b] > 0 {
+      let n = Double(blockPixelCount[b])
+      blockCurrMean[b] = blockCurrSum[b] / n
+      blockRefMean[b] = blockRefSum[b] / n
+      blockPrevMean[b] = blockPrevSum[b] / n
+    }
+
+    var blockCurrDevSum = [Double](repeating: 0, count: totalBlocks)
+    var blockRefDevSum = [Double](repeating: 0, count: totalBlocks)
+    for gy in 0..<gridH {
+      let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
+      for gx in 0..<gridW {
+        let bx = min(blocksX - 1, (gx * blocksX) / max(1, gridW))
+        let bIdx = by * blocksX + bx
+        let i = gy * gridW + gx
+        blockCurrDevSum[bIdx] += abs(Double(currentGrid[i]) - blockCurrMean[bIdx])
+        blockRefDevSum[bIdx] += abs(Double(referenceGrid[i]) - blockRefMean[bIdx])
+      }
+    }
+
+    var blockGainToRef = [Double](repeating: 1.0, count: totalBlocks)
+    for b in 0..<totalBlocks where blockPixelCount[b] > 0 {
+      let n = Double(blockPixelCount[b])
+      let cMad = blockCurrDevSum[b] / n
+      let rMad = blockRefDevSum[b] / n
+      if cMad > 3.0 && rMad > 3.0 {
+        blockGainToRef[b] = max(0.72, min(1.38, rMad / cMad))
+      }
+    }
+
+    var blockRefDiffSum = [Double](repeating: 0, count: totalBlocks)
+    var blockStepDiffSum = [Double](repeating: 0, count: totalBlocks)
+    var blockRefGradSum = [Double](repeating: 0, count: totalBlocks)
+    var blockGradCount = [Int](repeating: 0, count: totalBlocks)
+
+    var normRefDiffSum: Double = 0
+    for gy in 0..<gridH {
+      let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
+      for gx in 0..<gridW {
+        let bx = min(blocksX - 1, (gx * blocksX) / max(1, gridW))
+        let bIdx = by * blocksX + bx
         let i = gy * gridW + gx
 
-        let signedDiff = currentGrid[i] - referenceGrid[i]
-        let rawDelta = abs(signedDiff)
-        let structDelta = abs(signedDiff - (0.75 * dcShift))
+        let currVal = Double(currentGrid[i])
+        let refVal = Double(referenceGrid[i])
+        let prevVal = Double(previousGrid[i])
 
-        rawDiffSum += rawDelta
-        structDiffSum += structDelta
-        blockDiffSum[blockIdx] += structDelta
-        blockPixelCount[blockIdx] += 1
+        let normCurrCentered = (currVal - blockCurrMean[bIdx]) * blockGainToRef[bIdx]
+        let refCentered = refVal - blockRefMean[bIdx]
+        let refDelta = abs(normCurrCentered - refCentered)
+        let blockStepShift = blockCurrMean[bIdx] - blockPrevMean[bIdx]
+        let stepDelta = abs((currVal - prevVal) - blockStepShift)
 
-        // Exponentially adapt reference frame to gradual ambient lighting shifts
-        referenceGrid[i] = (0.92 * referenceGrid[i]) + (0.08 * currentGrid[i])
+        normRefDiffSum += refDelta
+        blockRefDiffSum[bIdx] += refDelta
+        blockStepDiffSum[bIdx] += stepDelta
+
+        if gx + 1 < gridW && gy + 1 < gridH {
+          let gxDiff = abs(refVal - Double(referenceGrid[i + 1]))
+          let gyDiff = abs(refVal - Double(referenceGrid[i + gridW]))
+          blockRefGradSum[bIdx] += 0.5 * (gxDiff + gyDiff)
+          blockGradCount[bIdx] += 1
+        }
       }
     }
 
-    let blockActivityThreshold = max(0.018, motionThreshold * 0.45)
-    var activeBlocks = 0
-    for b in 0..<totalBlocks where blockPixelCount[b] > 0 {
-      let blockScore = Double(blockDiffSum[b] / Float(blockPixelCount[b] * 255))
-      if blockScore >= blockActivityThreshold {
-        activeBlocks += 1
+    let staticBlockThreshold = max(0.020, motionThreshold * 0.36)
+    let activeBlockThreshold = max(0.024, motionThreshold * 0.48)
+    let blockW = gridW / blocksX
+    let blockH = gridH / blocksY
+
+    var texturedRefBlocks = 0
+    var anchoredTexturedBlocks = 0
+    var changedBlocks = 0
+    var texturedRefScoreSum = 0.0
+    var dxList: [Double] = []
+    var dyList: [Double] = []
+    var bxList: [Int] = []
+    var byList: [Int] = []
+    var quadrantActivity = [Int](repeating: 0, count: 4)
+
+    for by in 0..<blocksY {
+      for bx in 0..<blocksX {
+        let b = by * blocksX + bx
+        let pxCount = blockPixelCount[b]
+        if pxCount <= 0 { continue }
+
+        let refScore = blockRefDiffSum[b] / Double(pxCount * 255)
+        let stepScore = blockStepDiffSum[b] / Double(pxCount * 255)
+        let meanGrad = blockGradCount[b] > 0
+          ? (blockRefGradSum[b] / Double(blockGradCount[b]))
+          : 0.0
+        let isTextured = meanGrad >= 3.2
+
+        if isTextured {
+          texturedRefBlocks += 1
+          texturedRefScoreSum += refScore
+          if refScore < staticBlockThreshold && stepScore < 0.018 {
+            anchoredTexturedBlocks += 1
+          }
+        }
+
+        let blockStepShift = blockCurrMean[b] - blockPrevMean[b]
+        var blockTranslated = false
+        if isTextured && stepScore >= 0.008 && blockW >= 6 && blockH >= 6 {
+          let flow = estimateLucasKanadeFlow(
+            previous: previousGrid,
+            current: currentGrid,
+            gridW: gridW,
+            gridH: gridH,
+            stepMeanShift: blockStepShift,
+            x0: bx * blockW,
+            y0: by * blockH,
+            w: blockW,
+            h: blockH
+          ) ?? estimateBlockTranslation(
+            previous: previousGrid,
+            current: currentGrid,
+            gridW: gridW,
+            gridH: gridH,
+            stepMeanShift: blockStepShift,
+            x0: bx * blockW,
+            y0: by * blockH,
+            w: blockW,
+            h: blockH
+          )
+          if let flow = flow {
+            blockTranslated = true
+            dxList.append(flow.0)
+            dyList.append(flow.1)
+            bxList.append(bx)
+            byList.append(by)
+          }
+        }
+
+        if (refScore >= activeBlockThreshold && stepScore >= 0.010) || blockTranslated {
+          changedBlocks += 1
+          let qx = bx >= 2 ? 1 : 0
+          let qy = by >= 2 ? 1 : 0
+          quadrantActivity[qy * 2 + qx] += 1
+        }
       }
     }
 
-    let rawMotionScore = Double(rawDiffSum / Float(count * 255))
-    let structMotionScore = Double(structDiffSum / Float(count * 255))
+    let activeQuadrants = quadrantActivity.filter { $0 >= 1 }.count
+    var coherentTranslatedBlocks = 0
+    if !dxList.isEmpty {
+      var sumDx = 0.0
+      var sumDy = 0.0
+      var rollPos = 0
+      var rollNeg = 0
+      for k in 0..<dxList.count {
+        sumDx += dxList[k]
+        sumDy += dyList[k]
+        let rx = Double(bxList[k]) - 1.5
+        let ry = Double(byList[k]) - 1.5
+        let cross = (rx * dyList[k]) - (ry * dxList[k])
+        if cross > 0.25 {
+          rollPos += 1
+        } else if cross < -0.25 {
+          rollNeg += 1
+        }
+      }
+      var panAligned = 0
+      for k in 0..<dxList.count {
+        if (dxList[k] * sumDx) + (dyList[k] * sumDy) > 0.0 {
+          panAligned += 1
+        }
+      }
+      coherentTranslatedBlocks = max(panAligned, max(rollPos, rollNeg))
+    }
 
-    let spatialWeight: Double
-    if activeBlocks >= 7 || rawMotionScore >= (motionThreshold * 1.8) {
-      spatialWeight = 1.0
-    } else if activeBlocks <= 3 {
-      spatialWeight = 0.35
+    let fullSceneStructScore = normRefDiffSum / Double(count * 255)
+    let texturedStructScore = texturedRefBlocks > 0
+      ? (texturedRefScoreSum / Double(texturedRefBlocks))
+      : fullSceneStructScore
+    let structMotionScore =
+      (texturedRefBlocks >= 2 && texturedRefBlocks <= 6 && anchoredTexturedBlocks == 0)
+      ? max(fullSceneStructScore, texturedStructScore * 0.80)
+      : fullSceneStructScore
+
+    let meanJump = Double(abs(currMean - previousMean255))
+    let isLightingTransient = meanJump >= 20.0 && coherentTranslatedBlocks <= 2
+    let minAnchors = max(3, Int(ceil(Double(texturedRefBlocks) * 0.28)))
+    let hasStrongStaticAnchors = texturedRefBlocks >= 4 && anchoredTexturedBlocks >= minAnchors
+    let sparseSceneCoherentEgoMotion =
+      texturedRefBlocks >= 2
+      && texturedRefBlocks <= 6
+      && anchoredTexturedBlocks == 0
+      && coherentTranslatedBlocks >= min(3, texturedRefBlocks)
+
+    let egoWeight: Double
+    if isLightingTransient {
+      egoWeight = 0.12
+    } else if hasStrongStaticAnchors {
+      egoWeight = 0.16
+    } else if sparseSceneCoherentEgoMotion {
+      egoWeight = 1.20
+    } else if activeQuadrants <= 2 && coherentTranslatedBlocks < 5 {
+      egoWeight = 0.28
+    } else if coherentTranslatedBlocks >= 5 && activeQuadrants >= 3 {
+      egoWeight = 1.25
+    } else if texturedRefBlocks > 0
+      && anchoredTexturedBlocks <= Int(floor(Double(texturedRefBlocks) * 0.20))
+      && changedBlocks >= 10
+      && activeQuadrants >= 3
+    {
+      egoWeight = 1.10
+    } else if texturedRefBlocks == 0 && changedBlocks >= 12 && activeQuadrants == 4 {
+      egoWeight = 1.0
     } else {
-      spatialWeight = 0.35 + (Double(activeBlocks - 3) * (0.65 / 4.0))
+      egoWeight = 0.45
     }
 
-    let motionScore = structMotionScore * spatialWeight
+    let flowContribution = (!hasStrongStaticAnchors && coherentTranslatedBlocks >= 5 && activeQuadrants >= 3)
+      ? (Double(coherentTranslatedBlocks) / Double(totalBlocks)) * 0.11
+      : (sparseSceneCoherentEgoMotion ? 0.045 : 0.0)
+    var motionScore = min(1.0, max(0.0, (structMotionScore * egoWeight) + flowContribution))
+    if hasStrongStaticAnchors {
+      motionScore = min(motionScore, motionThreshold * 0.65)
+    }
+
+    let baseAdaptRate: Float = isLightingTransient ? 0.30 : 0.08
     if motionScore >= motionThreshold {
       consecutiveAboveThreshold += 1
+      for i in 0..<count {
+        referenceGrid[i] = (0.97 * referenceGrid[i]) + (0.03 * currentGrid[i])
+        previousGrid[i] = currentGrid[i]
+      }
     } else {
       consecutiveAboveThreshold = 0
+      for gy in 0..<gridH {
+        let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
+        for gx in 0..<gridW {
+          let bx = min(blocksX - 1, (gx * blocksX) / max(1, gridW))
+          let bIdx = by * blocksX + bx
+          let pxCount = blockPixelCount[bIdx]
+          let blockRefScore = pxCount > 0
+            ? (blockRefDiffSum[bIdx] / Double(pxCount * 255))
+            : 0.0
+          let alpha: Float = (hasStrongStaticAnchors && blockRefScore >= staticBlockThreshold)
+            ? 0.01
+            : baseAdaptRate
+          let i = gy * gridW + gx
+          referenceGrid[i] = ((1.0 - alpha) * referenceGrid[i]) + (alpha * currentGrid[i])
+          previousGrid[i] = currentGrid[i]
+        }
+      }
     }
+    previousMean255 = currMean
 
     if consecutiveAboveThreshold >= persistenceFramesRequired {
       emitEvent([
@@ -844,7 +1194,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         "eventType": "motionTriggered",
         "summary": String(
           format:
-            "Sustained scene motion detected (score %.3f ≥ threshold %.3f across %d frames)",
+            "Sustained camera ego-motion detected (score %.3f ≥ threshold %.3f across %d frames)",
           motionScore,
           motionThreshold,
           consecutiveAboveThreshold
@@ -860,7 +1210,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         "sessionId": sessionId,
         "eventType": "telemetryFrame",
         "summary": String(
-          format: "Scene motion score %.3f (threshold %.3f)",
+          format: "Camera motion score %.3f (threshold %.3f)",
           motionScore,
           motionThreshold
         ),
@@ -871,6 +1221,134 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         "timestampMs": nowMs,
       ])
     }
+  }
+
+  private func estimateLucasKanadeFlow(
+    previous: [Float],
+    current: [Float],
+    gridW: Int,
+    gridH: Int,
+    stepMeanShift: Double,
+    x0: Int,
+    y0: Int,
+    w: Int,
+    h: Int
+  ) -> (Double, Double)? {
+    let startX = max(1, x0)
+    let endX = min(gridW - 1, x0 + w)
+    let startY = max(1, y0)
+    let endY = min(gridH - 1, y0 + h)
+    if endX <= startX + 2 || endY <= startY + 2 {
+      return nil
+    }
+
+    var sxx = 0.0
+    var syy = 0.0
+    var sxy = 0.0
+    var bx = 0.0
+    var by = 0.0
+    var count = 0
+
+    for y in startY..<endY {
+      let row = y * gridW
+      let rowUp = (y - 1) * gridW
+      let rowDown = (y + 1) * gridW
+      for x in startX..<endX {
+        let ix = 0.25 * Double(
+          (previous[row + x + 1] - previous[row + x - 1])
+            + (current[row + x + 1] - current[row + x - 1])
+        )
+        let iy = 0.25 * Double(
+          (previous[rowDown + x] - previous[rowUp + x])
+            + (current[rowDown + x] - current[rowUp + x])
+        )
+        let it = Double(current[row + x] - previous[row + x]) - stepMeanShift
+
+        sxx += ix * ix
+        syy += iy * iy
+        sxy += ix * iy
+        bx -= ix * it
+        by -= iy * it
+        count += 1
+      }
+    }
+
+    if count == 0 { return nil }
+    let trace = sxx + syy
+    let det = (sxx * syy) - (sxy * sxy)
+    let disc = max(0.0, (trace * trace) - (4.0 * det))
+    let minEigen = 0.5 * (trace - sqrt(disc))
+    if det <= 1e-3 || minEigen < Double(count) * 6.0 {
+      return nil
+    }
+
+    let u = ((syy * bx) - (sxy * by)) / det
+    let v = ((-sxy * bx) + (sxx * by)) / det
+    let mag = sqrt((u * u) + (v * v))
+    if mag < 0.32 || mag > 3.8 {
+      return nil
+    }
+    return (u, v)
+  }
+
+  private func estimateBlockTranslation(
+    previous: [Float],
+    current: [Float],
+    gridW: Int,
+    gridH: Int,
+    stepMeanShift: Double,
+    x0: Int,
+    y0: Int,
+    w: Int,
+    h: Int
+  ) -> (Double, Double)? {
+    let maxShift = 3
+    let startX = max(maxShift, x0 + 1)
+    let endX = min(gridW - maxShift, x0 + w - 1)
+    let startY = max(maxShift, y0 + 1)
+    let endY = min(gridH - maxShift, y0 + h - 1)
+    if endX <= startX + 2 || endY <= startY + 2 {
+      return nil
+    }
+
+    func sadForShift(_ dx: Int, _ dy: Int) -> Double {
+      var sad = 0.0
+      for y in startY..<endY {
+        let prevRow = y * gridW
+        let currRow = (y + dy) * gridW
+        for x in startX..<endX {
+          let prevVal = Double(previous[prevRow + x])
+          let currVal = Double(current[currRow + x + dx]) - stepMeanShift
+          sad += abs(currVal - prevVal)
+        }
+      }
+      return sad
+    }
+
+    let sadZero = sadForShift(0, 0)
+    let samplePixels = (endX - startX) * (endY - startY)
+    if sadZero / Double(samplePixels) < 2.2 {
+      return nil
+    }
+
+    var bestSad = sadZero
+    var bestDx = 0
+    var bestDy = 0
+    for dy in -maxShift...maxShift {
+      for dx in -maxShift...maxShift where !(dx == 0 && dy == 0) {
+        let sad = sadForShift(dx, dy)
+        if sad < bestSad {
+          bestSad = sad
+          bestDx = dx
+          bestDy = dy
+        }
+      }
+    }
+
+    if (bestDx != 0 || bestDy != 0) && bestSad < sadZero * 0.84 {
+      return (Double(bestDx), Double(bestDy))
+    }
+    return nil
   }
 
   private func emitEvent(_ payload: [String: Any]) {

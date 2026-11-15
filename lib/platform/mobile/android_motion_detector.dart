@@ -7,16 +7,18 @@ import 'package:flutter/services.dart';
 import '../../core/contracts/platform_contracts.dart';
 import '../../core/models/detector_models.dart';
 
-/// Real Android motion sensor and foreground monitoring adapter backed by
-/// native Kotlin `SensorManager` (`dev.watsafe/android_motion` and
-/// `dev.watsafe/android_motion_events`).
+/// Real Android motion sensor and background foreground-service adapter backed
+/// by native Kotlin `SensorManager` and `WatSafeMonitoringService`
+/// (`dev.watsafe/android_motion` and `dev.watsafe/android_motion_events`).
 ///
 /// Algorithm notes:
 /// - Queries `SensorManager` for `Sensor.TYPE_LINEAR_ACCELERATION` (or fallback
 ///   `Sensor.TYPE_ACCELEROMETER`).
-/// - Calibrates the resting baseline vector and magnitude during the startup
-///   calibration window, then computes 3D acceleration vector and magnitude
-///   deltas (`motionScore`) with a consecutive-sample persistence filter.
+/// - Starts an Android 14+ (`specialUse`) foreground service with a persistent
+///   notification and bounded partial wake lock so motion monitoring continues
+///   when the screen turns off or WATSafe enters the background.
+/// - Emits `DetectorEventType.detectorFailed` (`FOREGROUND_SERVICE_STOPPED`) if
+///   the foreground service is stopped so `AlarmController` exits `armed`.
 class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
   AndroidMotionDetectorAdapter({
     MethodChannel? methodChannel,
@@ -44,6 +46,9 @@ class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
 
   @override
   DetectorType get detectorType => DetectorType.androidMotionSensors;
+
+  @override
+  bool get supportsBackgroundMonitoring => _isAndroid;
 
   @override
   Stream<DetectorEvent> get events => _eventsController.stream;
@@ -122,17 +127,19 @@ class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
         );
       }
 
-      if (permissionStatus == PermissionStatus.denied ||
+      if (permissionStatus == PermissionStatus.notDetermined ||
+          permissionStatus == PermissionStatus.denied ||
           permissionStatus == PermissionStatus.restricted) {
         return DetectorCapability(
           type: DetectorType.androidMotionSensors,
           status: CapabilityStatus.permissionRequired,
           permissionStatus: permissionStatus,
           hardwareDeviceName: deviceName ?? 'Android Motion Sensor',
-          summary: 'Android sensor or notification permission is required.',
+          summary:
+              'Notification permission is required to show the persistent Android foreground monitoring banner.',
           statusDetail: detail,
           guidance:
-              'Grant sensor permission in Android Settings, then tap Refresh Readiness.',
+              'Tap "Grant Motion Sensor Permission" below to allow the persistent armed-monitoring notification on Android 13+.',
         );
       }
 

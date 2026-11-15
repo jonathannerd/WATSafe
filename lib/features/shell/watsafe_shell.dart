@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/alarm/alarm_controller.dart';
@@ -24,8 +26,26 @@ class WatSafeShell extends StatefulWidget {
   State<WatSafeShell> createState() => _WatSafeShellState();
 }
 
-class _WatSafeShellState extends State<WatSafeShell> {
+class _WatSafeShellState extends State<WatSafeShell>
+    with WidgetsBindingObserver {
   int _selectedIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    unawaited(widget.controller.handleAppLifecycleState(state));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -175,7 +195,89 @@ class _WatSafeShellState extends State<WatSafeShell> {
                     ),
                     const VerticalDivider(width: 1, thickness: 1),
                   ],
-                  Expanded(child: pages[_selectedIndex]),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        if (widget
+                                .controller
+                                .latestUnacknowledgedCompanionAlert !=
+                            null)
+                          Container(
+                            key: const Key('remote_laptop_alarm_banner'),
+                            color: WatSafeTheme.alarmCrimson,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 18,
+                              vertical: 12,
+                            ),
+                            child: Row(
+                              children: <Widget>[
+                                const Icon(
+                                  Icons.notification_important,
+                                  color: Colors.white,
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: <Widget>[
+                                      Text(
+                                        'REMOTE LAPTOP ALARM: ${widget.controller.latestUnacknowledgedCompanionAlert!.hostDisplayName ?? "WATSafe Laptop"}',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w900,
+                                          letterSpacing: 0.4,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        widget
+                                            .controller
+                                            .latestUnacknowledgedCompanionAlert!
+                                            .triggerSummary,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () {
+                                    setState(() {
+                                      _selectedIndex = 2;
+                                    });
+                                  },
+                                  child: const Text(
+                                    'View Alert',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ),
+                                IconButton(
+                                  key: const Key(
+                                    'dismiss_remote_alarm_banner_button',
+                                  ),
+                                  tooltip: 'Dismiss alert banner',
+                                  icon: const Icon(
+                                    Icons.close,
+                                    color: Colors.white,
+                                  ),
+                                  onPressed: widget
+                                      .controller
+                                      .dismissCompanionAlertBanner,
+                                ),
+                              ],
+                            ),
+                          ),
+                        Expanded(child: pages[_selectedIndex]),
+                      ],
+                    ),
+                  ),
                 ],
               ),
               bottomNavigationBar: useRail

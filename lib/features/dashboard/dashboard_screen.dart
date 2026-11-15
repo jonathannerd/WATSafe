@@ -250,6 +250,21 @@ class _ProtectionHeroCard extends StatelessWidget {
                       spacing: 12,
                       runSpacing: 8,
                       children: <Widget>[
+                        if (state == ProtectionState.paused)
+                          FilledButton.tonalIcon(
+                            key: const Key('resume_monitoring_button'),
+                            onPressed: () {
+                              controller.resumePausedMonitoring(
+                                reason: 'User tapped Resume Monitoring',
+                                userInitiated: true,
+                              );
+                            },
+                            icon: const Icon(
+                              Icons.play_circle_outline,
+                              size: 18,
+                            ),
+                            label: const Text('Resume Monitoring'),
+                          ),
                         if (capability != null &&
                             capability!.needsPermissionRequest)
                           FilledButton.tonalIcon(
@@ -268,9 +283,14 @@ class _ProtectionHeroCard extends StatelessWidget {
                             ),
                           ),
                         OutlinedButton.icon(
-                          onPressed: controller.refreshCapabilities,
+                          key: const Key('retry_readiness_button'),
+                          onPressed: controller.retrySelectedDetectorSetup,
                           icon: const Icon(Icons.refresh, size: 18),
-                          label: const Text('Refresh Readiness'),
+                          label: Text(
+                            state == ProtectionState.unavailable
+                                ? 'Retry Detector Check'
+                                : 'Refresh Readiness',
+                          ),
                         ),
                       ],
                     ),
@@ -637,7 +657,7 @@ class _DetectorSelectorCard extends StatelessWidget {
               style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 12.5),
             ),
             const SizedBox(height: 14),
-            ...DetectorType.values.map((type) {
+            ...capabilities.keys.map((type) {
               final cap = capabilities[type];
               final status = cap?.status ?? CapabilityStatus.unsupported;
               final statusColor = WatSafeTheme.colorForCapabilityStatus(status);

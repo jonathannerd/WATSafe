@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 
 import '../../services/pin_security_service.dart';
 import '../contracts/platform_contracts.dart';
@@ -10,8 +10,8 @@ import '../models/settings_models.dart';
 import 'alarm_state.dart';
 
 /// Central protection state machine coordinating detector readiness, arming
-/// countdown, session-scoped event filtering, local siren playback, PIN
-/// verification, incident persistence, and remote alert dispatch.
+/// countdown, session-scoped event filtering, lifecycle pause/resume, local
+/// siren playback, PIN verification, incident persistence, and remote alerts.
 class AlarmController extends ChangeNotifier {
   AlarmController({
     required Map<DetectorType, MotionDetectorAdapter> detectors,
@@ -43,14 +43,23 @@ class AlarmController extends ChangeNotifier {
       <DetectorType, StreamSubscription<DetectorEvent>>{};
   final Map<DetectorType, DetectorCapability> _capabilities =
       <DetectorType, DetectorCapability>{};
+  final Set<DetectorType> _activeAuxiliaryDetectors = <DetectorType>{};
 
   ProtectionState _state = ProtectionState.disarmed;
   ProtectionSettings _settings = const ProtectionSettings();
   bool _isInitialized = false;
   bool _hasPinConfigured = false;
+  bool _isPreparingToArm = false;
   String? _activeSessionId;
   int _sessionSequence = 0;
   int _incidentSequence = 0;
+  int _alarmGeneration = 0;
+  int _lifecycleGeneration = 0;
+  bool _alarmAudioRequested = false;
+  bool _alarmInterruptedByLifecycle = false;
+  bool _isRestartingAlarmAudio = false;
+  Future<PinVerificationResult>? _inFlightDisarm;
+  Future<bool>? _inFlightLifecycleResume;
   int _remainingCountdownSeconds = 0;
   bool _isCalibrating = false;
 
@@ -74,6 +83,8 @@ class AlarmController extends ChangeNotifier {
         'Remote pairing and push notifications are not configured in this local milestone.',
   );
   List<PairedDeviceSummary> _pairedDevices = const <PairedDeviceSummary>[];
+  StreamSubscription<CompanionAlertEvent>? _companionAlertsSubscription;
+  CompanionAlertEvent? _latestUnacknowledgedCompanionAlert;
 
   // Public getters
   ProtectionState get state => _state;
@@ -85,6 +96,9 @@ class AlarmController extends ChangeNotifier {
   bool get isCalibrating => _isCalibrating;
   bool get isTestAlarmRunning => _isTestAlarmRunning;
   bool get isAudioPlaying => _audioAdapter.isPlaying;
+  bool get wasAlarmInterruptedByLifecycle => _alarmInterruptedByLifecycle;
+  Set<DetectorType> get activeAuxiliaryDetectors =>
+      Set<DetectorType>.unmodifiable(_activeAuxiliaryDetectors);
   String get audioLimitationsNote => _audioAdapter.audioLimitationsNote;
   String get pinStorageDescription => _pinService.storageBackendDescription;
   int get failedPinAttempts => _pinService.failedAttempts;
@@ -120,6 +134,37 @@ class AlarmController extends ChangeNotifier {
         : null;
   }
 
+  PairingCodeInvitation? get activePairingInvitation {
+    final adapter = _notificationAdapter;
+    return adapter is MutableRemoteNotificationAdapter
+        ? adapter.activePairingInvitation
+        : null;
+  }
+
+  CompanionSessionState get companionSession {
+    final adapter = _notificationAdapter;
+    return adapter is MutableRemoteNotificationAdapter
+        ? adapter.companionSession
+        : CompanionSessionState.disconnected;
+  }
+
+  List<CompanionAlertEvent> get receivedCompanionAlerts {
+    final adapter = _notificationAdapter;
+    return adapter is MutableRemoteNotificationAdapter
+        ? adapter.receivedCompanionAlerts
+        : const <CompanionAlertEvent>[];
+  }
+
+  CompanionAlertEvent? get latestUnacknowledgedCompanionAlert =>
+      _latestUnacknowledgedCompanionAlert;
+
+  void dismissCompanionAlertBanner() {
+    if (_latestUnacknowledgedCompanionAlert != null) {
+      _latestUnacknowledgedCompanionAlert = null;
+      notifyListeners();
+    }
+  }
+
   /// Initializes settings, PIN state, incident history, detector capabilities,
   /// and event stream subscriptions.
   Future<void> initialize() async {
@@ -127,6 +172,11 @@ class AlarmController extends ChangeNotifier {
       _settings = await _settingsStorage.loadSettings();
     } catch (_) {
       _settings = const ProtectionSettings();
+    }
+
+    if (!_detectors.containsKey(_settings.selectedDetector) &&
+        _detectors.isNotEmpty) {
+      _settings = _settings.copyWith(selectedDetector: _detectors.keys.first);
     }
 
     try {
@@ -146,6 +196,20 @@ class AlarmController extends ChangeNotifier {
       _pairedDevices = await _notificationAdapter.listPairedDevices();
     } catch (_) {
       // Keep default unconfigured status
+    }
+
+    final mutableNotifications = _notificationAdapter;
+    if (mutableNotifications is MutableRemoteNotificationAdapter) {
+      mutableNotifications.onStateChanged = () {
+        unawaited(refreshNotificationStatus());
+      };
+      await _companionAlertsSubscription?.cancel();
+      _companionAlertsSubscription = mutableNotifications
+          .incomingCompanionAlerts
+          .listen((alert) {
+            _latestUnacknowledgedCompanionAlert = alert;
+            notifyListeners();
+          });
     }
 
     for (final entry in _detectors.entries) {
@@ -213,7 +277,30 @@ class AlarmController extends ChangeNotifier {
     }
     final status = await detector.requestPermission();
     await refreshCapabilities();
+    if (_state == ProtectionState.disarmed) {
+      _warningMessage = null;
+      notifyListeners();
+    }
     return status;
+  }
+
+  /// Retries capability inspection and clears stale initialization warnings when
+  /// the detector becomes ready again.
+  Future<bool> retrySelectedDetectorSetup() async {
+    if (_state == ProtectionState.paused) {
+      return resumePausedMonitoring(
+        reason: 'User requested monitoring retry',
+        userInitiated: true,
+      );
+    }
+    await refreshCapabilities();
+    final cap = selectedCapability;
+    if (cap != null && cap.canArm && _state == ProtectionState.disarmed) {
+      _warningMessage = null;
+      notifyListeners();
+      return true;
+    }
+    return false;
   }
 
   /// Selects a detector modality when not actively armed/alarming.
@@ -223,6 +310,11 @@ class AlarmController extends ChangeNotifier {
         _state == ProtectionState.alarming ||
         _state == ProtectionState.paused) {
       _warningMessage = 'Disarm protection before switching detectors.';
+      notifyListeners();
+      return false;
+    }
+    if (!_detectors.containsKey(type)) {
+      _warningMessage = 'Selected detector is not registered on this platform.';
       notifyListeners();
       return false;
     }
@@ -289,6 +381,15 @@ class AlarmController extends ChangeNotifier {
           // Non-fatal
         }
       }
+      for (final auxType in _activeAuxiliaryDetectors) {
+        try {
+          await _detectors[auxType]?.updateSensitivity(
+            _settings.motionSensitivity,
+          );
+        } catch (_) {
+          // Non-fatal
+        }
+      }
     }
     if (alarmVolume != null && _audioAdapter.isPlaying) {
       try {
@@ -302,61 +403,81 @@ class AlarmController extends ChangeNotifier {
 
   /// Verifies detector readiness and starts the arming countdown.
   Future<bool> startArming() async {
-    if (_state == ProtectionState.arming ||
+    if (_isPreparingToArm ||
+        _state == ProtectionState.arming ||
         _state == ProtectionState.armed ||
-        _state == ProtectionState.alarming) {
+        _state == ProtectionState.alarming ||
+        _state == ProtectionState.paused) {
       return false;
     }
 
-    if (_isTestAlarmRunning) {
-      await stopTestAlarm();
-    }
+    _isPreparingToArm = true;
+    try {
+      if (_isTestAlarmRunning) {
+        await stopTestAlarm();
+      }
 
-    _hasPinConfigured = await _pinService.hasConfiguredPin();
-    if (!_hasPinConfigured) {
-      _warningMessage =
-          'Set up a 6-digit (or longer) security PIN before arming protection.';
+      _hasPinConfigured = await _pinService.hasConfiguredPin();
+      if (!_hasPinConfigured) {
+        _warningMessage =
+            'Set up a 6-digit (or longer) security PIN before arming protection.';
+        notifyListeners();
+        return false;
+      }
+
+      final detector = selectedDetector;
+      if (detector == null) {
+        _state = ProtectionState.unavailable;
+        _statusMessage = 'No detector adapter registered for selection.';
+        notifyListeners();
+        return false;
+      }
+
+      final capability = await detector.checkCapability();
+      _capabilities[detector.detectorType] = capability;
+
+      if (!capability.canArm) {
+        _state = ProtectionState.unavailable;
+        _statusMessage = capability.summary;
+        _warningMessage = capability.guidance ?? capability.statusDetail;
+        notifyListeners();
+        return false;
+      }
+
+      String? audioPrepWarning;
+      try {
+        await _audioAdapter.prepareForAlarm();
+      } catch (error) {
+        audioPrepWarning = 'Could not prepare alarm audio output: $error';
+      }
+
+      if (_state != ProtectionState.disarmed &&
+          _state != ProtectionState.unavailable) {
+        return false;
+      }
+
+      _cancelCountdownTimer();
+      final sessionId = _nextSessionId();
+      _activeSessionId = sessionId;
+      _activeAuxiliaryDetectors.clear();
+      _remainingCountdownSeconds = _settings.armingCountdownSeconds;
+      _isCalibrating = false;
+      _lastTelemetryEvent = null;
+      _warningMessage = capability.status == CapabilityStatus.degraded
+          ? capability.statusDetail
+          : audioPrepWarning;
+      _state = ProtectionState.arming;
+      _statusMessage =
+          'Arming in $_remainingCountdownSeconds seconds — step back and stabilize device.';
       notifyListeners();
-      return false;
+
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        unawaited(handleCountdownTickForSession(sessionId));
+      });
+      return true;
+    } finally {
+      _isPreparingToArm = false;
     }
-
-    final detector = selectedDetector;
-    if (detector == null) {
-      _state = ProtectionState.unavailable;
-      _statusMessage = 'No detector adapter registered for selection.';
-      notifyListeners();
-      return false;
-    }
-
-    final capability = await detector.checkCapability();
-    _capabilities[detector.detectorType] = capability;
-
-    if (!capability.canArm) {
-      _state = ProtectionState.unavailable;
-      _statusMessage = capability.summary;
-      _warningMessage = capability.guidance ?? capability.statusDetail;
-      notifyListeners();
-      return false;
-    }
-
-    _cancelCountdownTimer();
-    final sessionId = _nextSessionId();
-    _activeSessionId = sessionId;
-    _remainingCountdownSeconds = _settings.armingCountdownSeconds;
-    _isCalibrating = false;
-    _lastTelemetryEvent = null;
-    _warningMessage = capability.status == CapabilityStatus.degraded
-        ? capability.statusDetail
-        : null;
-    _state = ProtectionState.arming;
-    _statusMessage =
-        'Arming in $_remainingCountdownSeconds seconds — step back and stabilize device.';
-    notifyListeners();
-
-    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      unawaited(handleCountdownTickForSession(sessionId));
-    });
-    return true;
   }
 
   /// Processes a single countdown tick for [sessionId].
@@ -400,14 +521,14 @@ class AlarmController extends ChangeNotifier {
         'Initializing and calibrating ${detector.detectorType.displayName}...';
     notifyListeners();
 
+    final monitorConfig = MonitorConfig(
+      sessionId: sessionId,
+      sensitivity: _settings.motionSensitivity,
+    );
+
     DetectorStartResult startResult;
     try {
-      startResult = await detector.startMonitoring(
-        MonitorConfig(
-          sessionId: sessionId,
-          sensitivity: _settings.motionSensitivity,
-        ),
-      );
+      startResult = await detector.startMonitoring(monitorConfig);
     } catch (error) {
       startResult = DetectorStartResult(
         started: false,
@@ -417,7 +538,7 @@ class AlarmController extends ChangeNotifier {
       );
     }
 
-    // Check if the session was cancelled or superseded while awaiting native startup.
+    // Check if the session was cancelled, paused, or superseded while awaiting native startup.
     if (_activeSessionId != sessionId || _state != ProtectionState.arming) {
       unawaited(detector.stopMonitoring(sessionId: sessionId));
       return;
@@ -425,14 +546,120 @@ class AlarmController extends ChangeNotifier {
 
     _isCalibrating = false;
     if (!startResult.started) {
+      unawaited(detector.stopMonitoring(sessionId: sessionId));
+      _updateCapabilityOnStartFailure(detector.detectorType, startResult);
       _failArmingSession(sessionId: sessionId, reason: startResult.message);
       return;
     }
 
+    await _startSupportedAuxiliaryMotionSensors(
+      primaryType: detector.detectorType,
+      config: monitorConfig,
+    );
+
+    if (_activeSessionId != sessionId || _state != ProtectionState.arming) {
+      await _stopSessionDetectorsSafely(sessionId);
+      return;
+    }
+
     _state = ProtectionState.armed;
+    final auxNote = _activeAuxiliaryDetectors.isEmpty
+        ? ''
+        : ' + ${_activeAuxiliaryDetectors.map((t) => t.displayName).join(", ")}';
     _statusMessage =
-        'Protected — ${detector.detectorType.displayName} is actively monitoring.';
+        'Protected — ${detector.detectorType.displayName}$auxNote actively monitoring.';
     notifyListeners();
+  }
+
+  /// Starts any ready non-camera device-motion sensors alongside a primary
+  /// camera detector as a separate corroborating input.
+  Future<void> _startSupportedAuxiliaryMotionSensors({
+    required DetectorType primaryType,
+    required MonitorConfig config,
+  }) async {
+    _activeAuxiliaryDetectors.clear();
+    if (!primaryType.usesCamera) {
+      return;
+    }
+    for (final entry in _detectors.entries) {
+      if (entry.key == primaryType || entry.key.usesCamera) {
+        continue;
+      }
+      final cap = _capabilities[entry.key];
+      if (cap == null || !cap.canArm) {
+        continue;
+      }
+      try {
+        final res = await entry.value.startMonitoring(config);
+        if (res.started && _activeSessionId == config.sessionId) {
+          _activeAuxiliaryDetectors.add(entry.key);
+        } else {
+          await entry.value.stopMonitoring(sessionId: config.sessionId);
+        }
+      } catch (_) {
+        // Auxiliary sensor failure does not block primary camera monitoring.
+      }
+    }
+  }
+
+  Future<void> _stopSessionDetectorsSafely(String? sessionId) async {
+    final auxToStop = List<DetectorType>.from(_activeAuxiliaryDetectors);
+    _activeAuxiliaryDetectors.clear();
+    final primary = selectedDetector;
+    if (primary != null) {
+      try {
+        await primary.stopMonitoring(sessionId: sessionId);
+      } catch (_) {
+        // Ignore stop errors
+      }
+    }
+    for (final auxType in auxToStop) {
+      try {
+        await _detectors[auxType]?.stopMonitoring(sessionId: sessionId);
+      } catch (_) {
+        // Ignore stop errors
+      }
+    }
+  }
+
+  void _updateCapabilityOnStartFailure(
+    DetectorType type,
+    DetectorStartResult result,
+  ) {
+    final existing = _capabilities[type];
+    final code = result.errorCode ?? '';
+    final isPermDenied =
+        result.status == CapabilityStatus.permissionRequired ||
+        code.contains('PERMISSION');
+    final String guidance;
+    if (isPermDenied) {
+      guidance =
+          'Enable camera/sensor access in your OS or browser privacy settings, then click Retry Detector Check.';
+    } else if (code == 'CAMERA_BUSY' || code == 'SOURCE_ACTIVATE_FAILED') {
+      guidance =
+          'Another application may be holding exclusive access to the camera. Close video/meeting apps and click Retry Detector Check.';
+    } else if (code == 'NO_CAMERA_HARDWARE') {
+      guidance =
+          'Connect a compatible webcam and click Retry Detector Check, or use Test Alarm to verify local siren audio.';
+    } else if (code == 'FRAME_TIMEOUT') {
+      guidance =
+          'No video frames arrived from the camera. Check any hardware privacy switch or USB connection, then click Retry Detector Check.';
+    } else {
+      guidance = '${result.message} Click Retry Detector Check to try again.';
+    }
+    _capabilities[type] = DetectorCapability(
+      type: type,
+      status: isPermDenied
+          ? CapabilityStatus.permissionRequired
+          : CapabilityStatus.unsupported,
+      permissionStatus: isPermDenied
+          ? PermissionStatus.denied
+          : (existing?.permissionStatus ?? PermissionStatus.notDetermined),
+      hardwareDeviceName: existing?.hardwareDeviceName,
+      summary: result.message,
+      statusDetail: result.errorCode,
+      guidance: guidance,
+    );
   }
 
   void _failArmingSession({required String sessionId, required String reason}) {
@@ -441,6 +668,7 @@ class AlarmController extends ChangeNotifier {
     }
     _cancelCountdownTimer();
     _activeSessionId = null;
+    _activeAuxiliaryDetectors.clear();
     _isCalibrating = false;
     _remainingCountdownSeconds = 0;
     _state = ProtectionState.unavailable;
@@ -449,29 +677,20 @@ class AlarmController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Cancels an in-progress arming countdown or disarms with PIN.
-  ///
-  /// For security, once the countdown has started (`arming`), `armed`, `paused`,
-  /// or `alarming`, disarming with `verifyAndDisarm` is preferred; however,
-  /// `cancelArmingWithPin` or `verifyAndDisarm` handles PIN verification, while
-  /// `cancelArming` allows aborting the countdown before the device enters `armed`.
+  /// Cancels an in-progress arming countdown before the device enters `armed`.
   Future<void> cancelArming() async {
     if (_state != ProtectionState.arming) {
       return;
     }
     final oldSessionId = _activeSessionId;
+    ++_lifecycleGeneration;
     _cancelCountdownTimer();
     _activeSessionId = null;
     _isCalibrating = false;
     _remainingCountdownSeconds = 0;
 
-    final detector = selectedDetector;
-    if (detector != null && oldSessionId != null) {
-      try {
-        await detector.stopMonitoring(sessionId: oldSessionId);
-      } catch (_) {
-        // Ignore stop errors on cancel
-      }
+    if (oldSessionId != null) {
+      await _stopSessionDetectorsSafely(oldSessionId);
     }
 
     final cap = selectedCapability;
@@ -486,12 +705,329 @@ class AlarmController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Verifies [pin] and, if valid, stops any active siren, stops detector
-  /// monitoring, resolves the active incident, and transitions to `disarmed`.
+  /// Handles Flutter application lifecycle transitions (`hidden`, `paused`,
+  /// `resumed`, `detached`) across desktop, mobile, and browser targets.
   ///
-  /// If [pin] is wrong or locked out, protection and any active alarm remain
-  /// active without interruption.
+  /// - Distinguishes an active `alarming` state (preserved across minimize and
+  ///   resume; requires PIN disarm) from pre-trigger `arming`/`armed`
+  ///   monitoring (paused when background monitoring is unsupported).
+  /// - Coalesces repeated `resumed` events so duplicate camera streams,
+  ///   detectors, timers, or sirens are never created.
+  Future<void> handleAppLifecycleState(AppLifecycleState lifecycleState) async {
+    switch (lifecycleState) {
+      case AppLifecycleState.inactive:
+        // Transient window focus changes on desktop/mobile do not suspend
+        // visible camera or foreground sensor monitoring.
+        return;
+
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        final mutableNotifications = _notificationAdapter;
+        if (mutableNotifications is MutableRemoteNotificationAdapter) {
+          mutableNotifications.setForegroundActive(false);
+        }
+        final detector = selectedDetector;
+        if (_state != ProtectionState.alarming &&
+            detector != null &&
+            detector.supportsBackgroundMonitoring &&
+            lifecycleState != AppLifecycleState.detached) {
+          // Active Android Foreground Service continues monitoring while backgrounded.
+          return;
+        }
+        final label = lifecycleState == AppLifecycleState.hidden
+            ? 'Application window minimized or hidden'
+            : 'Application suspended to background';
+        await _pauseMonitoringForLifecycle(label);
+        return;
+
+      case AppLifecycleState.resumed:
+        final mutableNotifications = _notificationAdapter;
+        if (mutableNotifications is MutableRemoteNotificationAdapter) {
+          mutableNotifications.setForegroundActive(true);
+        }
+        await _handleAppForegroundResumed(
+          'Application returned to active foreground',
+        );
+        return;
+    }
+  }
+
+  Future<void> _pauseMonitoringForLifecycle(String reason) async {
+    if (_state == ProtectionState.alarming) {
+      _alarmInterruptedByLifecycle = true;
+      final sessionId = _activeSessionId;
+      // Release camera/sensor hardware cleanly while preserving the active alarm.
+      await _stopSessionDetectorsSafely(sessionId);
+      if (_audioAdapter.isPlaying) {
+        _warningMessage =
+            'System lifecycle change during active alarm ($reason). '
+            'Alarm state is preserved — enter your PIN to disarm.';
+      } else {
+        _warningMessage =
+            'OS or browser suspended audio/monitoring during active alarm ($reason). '
+            'Alarm remains active — resume siren or enter your PIN to disarm.';
+      }
+      notifyListeners();
+      return;
+    }
+
+    if (_state == ProtectionState.armed || _state == ProtectionState.arming) {
+      ++_lifecycleGeneration;
+      final sessionId = _activeSessionId;
+      _cancelCountdownTimer();
+      _isCalibrating = false;
+      _remainingCountdownSeconds = 0;
+      _state = ProtectionState.paused;
+      _statusMessage = 'Monitoring paused — $reason';
+      _warningMessage =
+          'Monitoring is paused ($reason). Device is not actively protected while paused.';
+      notifyListeners();
+
+      await _stopSessionDetectorsSafely(sessionId);
+    }
+  }
+
+  Future<void> _handleAppForegroundResumed(String reason) async {
+    if (_state == ProtectionState.alarming) {
+      await _ensureActiveAlarmAudioOnResume(reason);
+      return;
+    }
+    if (_state == ProtectionState.paused) {
+      await resumePausedMonitoring(reason: reason);
+    }
+  }
+
+  Future<void> _ensureActiveAlarmAudioOnResume(String reason) async {
+    if (_state != ProtectionState.alarming) {
+      return;
+    }
+    if (_audioAdapter.isPlaying) {
+      if (_alarmInterruptedByLifecycle) {
+        _warningMessage =
+            'Active alarm preserved across minimize/resume ($reason). Enter your PIN to disarm.';
+        notifyListeners();
+      }
+      return;
+    }
+    if (_isRestartingAlarmAudio) {
+      return;
+    }
+
+    _isRestartingAlarmAudio = true;
+    final gen = _alarmGeneration;
+    try {
+      await _audioAdapter.startLoopingAlarm(volume: _settings.alarmVolume);
+      if (gen != _alarmGeneration || _state != ProtectionState.alarming) {
+        await _audioAdapter.stopAlarm();
+        return;
+      }
+      _warningMessage =
+          'Active alarm restored after suspension. Enter your PIN to disarm.';
+    } catch (_) {
+      if (gen == _alarmGeneration && _state == ProtectionState.alarming) {
+        _warningMessage =
+            'Active alarm preserved, but the OS/browser suspended siren audio. '
+            'Tap "Resume Siren Audio" or enter your PIN to disarm.';
+      }
+    } finally {
+      _isRestartingAlarmAudio = false;
+      notifyListeners();
+    }
+  }
+
+  /// Manually resumes siren playback on user interaction if the OS/browser
+  /// suspended audio during an active alarm.
+  Future<void> resumeInterruptedAlarmAudio() async {
+    if (_state != ProtectionState.alarming || _isRestartingAlarmAudio) {
+      return;
+    }
+    _isRestartingAlarmAudio = true;
+    final gen = _alarmGeneration;
+    try {
+      await _audioAdapter.prepareForAlarm();
+      if (gen != _alarmGeneration || _state != ProtectionState.alarming) {
+        return;
+      }
+      await _audioAdapter.startLoopingAlarm(volume: _settings.alarmVolume);
+      if (gen != _alarmGeneration || _state != ProtectionState.alarming) {
+        await _audioAdapter.stopAlarm();
+        return;
+      }
+      _alarmInterruptedByLifecycle = false;
+      _warningMessage = null;
+    } catch (error) {
+      if (gen == _alarmGeneration && _state == ProtectionState.alarming) {
+        _warningMessage = 'Could not resume siren audio ($error).';
+      }
+    } finally {
+      _isRestartingAlarmAudio = false;
+      notifyListeners();
+    }
+  }
+
+  /// Restores detector monitoring for a `paused` session using a single-flight
+  /// guard so repeated lifecycle resume notifications never spawn duplicate
+  /// camera streams, detectors, or timers.
+  Future<bool> resumePausedMonitoring({
+    String reason = 'Application resumed',
+    bool userInitiated = false,
+  }) {
+    if (_state != ProtectionState.paused) {
+      return Future<bool>.value(_state == ProtectionState.armed);
+    }
+    final existing = _inFlightLifecycleResume;
+    if (existing != null) {
+      return existing;
+    }
+
+    final future = _executeLifecycleResume(
+      reason: reason,
+      userInitiated: userInitiated,
+    );
+    _inFlightLifecycleResume = future;
+    return future.whenComplete(() {
+      if (identical(_inFlightLifecycleResume, future)) {
+        _inFlightLifecycleResume = null;
+      }
+    });
+  }
+
+  Future<bool> _executeLifecycleResume({
+    required String reason,
+    required bool userInitiated,
+  }) async {
+    final sessionId = _activeSessionId;
+    final detector = selectedDetector;
+    if (sessionId == null || detector == null) {
+      _state = ProtectionState.unavailable;
+      _statusMessage = 'Cannot resume monitoring — no active detector session.';
+      notifyListeners();
+      return false;
+    }
+
+    final resumeGen = ++_lifecycleGeneration;
+
+    if (userInitiated) {
+      try {
+        await _audioAdapter.prepareForAlarm();
+      } catch (_) {
+        // Continue attempting detector restart
+      }
+    }
+
+    DetectorCapability capability;
+    try {
+      capability = await detector.checkCapability();
+      _capabilities[detector.detectorType] = capability;
+    } catch (error) {
+      capability = DetectorCapability(
+        type: detector.detectorType,
+        status: CapabilityStatus.unsupported,
+        permissionStatus: PermissionStatus.notApplicable,
+        summary: 'Failed to inspect detector on resume: $error',
+      );
+      _capabilities[detector.detectorType] = capability;
+    }
+
+    if (resumeGen != _lifecycleGeneration ||
+        _activeSessionId != sessionId ||
+        _state != ProtectionState.paused) {
+      return false;
+    }
+
+    if (!capability.canArm) {
+      _statusMessage = 'Monitoring remains paused — ${capability.summary}';
+      _warningMessage =
+          capability.guidance ??
+          capability.statusDetail ??
+          '${capability.summary} Tap "Resume Monitoring" after resolving or disarm with your PIN.';
+      notifyListeners();
+      return false;
+    }
+
+    final monitorConfig = MonitorConfig(
+      sessionId: sessionId,
+      sensitivity: _settings.motionSensitivity,
+    );
+
+    DetectorStartResult startResult;
+    try {
+      startResult = await detector.startMonitoring(monitorConfig);
+    } catch (error) {
+      startResult = DetectorStartResult(
+        started: false,
+        status: CapabilityStatus.unsupported,
+        message: 'Detector failed to restart on resume: $error',
+        errorCode: 'RESUME_START_EXCEPTION',
+      );
+    }
+
+    if (resumeGen != _lifecycleGeneration ||
+        _activeSessionId != sessionId ||
+        _state != ProtectionState.paused) {
+      unawaited(detector.stopMonitoring(sessionId: sessionId));
+      return false;
+    }
+
+    if (!startResult.started) {
+      unawaited(detector.stopMonitoring(sessionId: sessionId));
+      _statusMessage = 'Monitoring paused — ${startResult.message}';
+      _warningMessage =
+          'Could not automatically restore ${detector.detectorType.displayName} (${startResult.message}). '
+          'Tap "Resume Monitoring" to retry or disarm with your PIN.';
+      notifyListeners();
+      return false;
+    }
+
+    await _startSupportedAuxiliaryMotionSensors(
+      primaryType: detector.detectorType,
+      config: monitorConfig,
+    );
+
+    if (resumeGen != _lifecycleGeneration ||
+        _activeSessionId != sessionId ||
+        _state != ProtectionState.paused) {
+      await _stopSessionDetectorsSafely(sessionId);
+      return false;
+    }
+
+    _state = ProtectionState.armed;
+    _warningMessage = null;
+    _statusMessage =
+        'Protected — Monitoring resumed (${detector.detectorType.displayName}).';
+    notifyListeners();
+    return true;
+  }
+
+  /// Verifies [pin] and, if valid, immediately invalidates any active or
+  /// in-flight alarm playback, stops the siren and detector monitoring,
+  /// resolves the active incident, and transitions to `disarmed`.
+  ///
+  /// Concurrent or repeated submissions are serialized so duplicate audio
+  /// operations never occur. If [pin] is wrong or locked out, protection and
+  /// any active alarm remain sounding without interruption.
   Future<PinVerificationResult> verifyAndDisarm(String pin) async {
+    while (_inFlightDisarm != null) {
+      try {
+        await _inFlightDisarm;
+      } catch (_) {
+        break;
+      }
+    }
+
+    final future = _executeVerifyAndDisarm(pin);
+    _inFlightDisarm = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_inFlightDisarm, future)) {
+        _inFlightDisarm = null;
+      }
+    }
+  }
+
+  Future<PinVerificationResult> _executeVerifyAndDisarm(String pin) async {
     final result = await _pinService.verifyPin(pin);
     if (!result.verified) {
       _warningMessage = result.message;
@@ -499,31 +1035,69 @@ class AlarmController extends ChangeNotifier {
       return result;
     }
 
+    final hadActiveProtection =
+        _state == ProtectionState.arming ||
+        _state == ProtectionState.armed ||
+        _state == ProtectionState.alarming ||
+        _state == ProtectionState.paused ||
+        _activeSessionId != null ||
+        _activeIncident != null;
+    final shouldStopAudio =
+        _state == ProtectionState.alarming ||
+        _alarmAudioRequested ||
+        _audioAdapter.isPlaying ||
+        _isTestAlarmRunning;
+
+    // Invalidate any in-flight siren startup, lifecycle resume, or stale callbacks.
+    ++_alarmGeneration;
+    ++_lifecycleGeneration;
+    _alarmAudioRequested = false;
+    _alarmInterruptedByLifecycle = false;
+
     final endedSessionId = _activeSessionId;
     _cancelCountdownTimer();
+    _testAlarmTimer?.cancel();
+    _testAlarmTimer = null;
+    _isTestAlarmRunning = false;
     _activeSessionId = null;
     _isCalibrating = false;
     _remainingCountdownSeconds = 0;
     _warningMessage = null;
 
-    // Stop local audio immediately
-    try {
-      await _audioAdapter.stopAlarm();
-    } catch (_) {
-      // Continue disarming even if audio adapter reports an error
+    if (!hadActiveProtection && !shouldStopAudio) {
+      notifyListeners();
+      return result;
     }
 
-    // Stop active detector capture
-    final detector = selectedDetector;
-    if (detector != null) {
+    final currentCap = selectedCapability;
+    _state = (currentCap != null && currentCap.canArm)
+        ? ProtectionState.disarmed
+        : ProtectionState.unavailable;
+    _statusMessage = 'Disarmed with PIN.';
+
+    if (shouldStopAudio) {
       try {
-        await detector.stopMonitoring(sessionId: endedSessionId);
+        await _audioAdapter.stopAlarm();
       } catch (_) {
-        // Continue disarming
+        // Continue disarming even if audio adapter reports an error
       }
     }
 
-    // Resolve active incident if present
+    if (endedSessionId != null || _activeAuxiliaryDetectors.isNotEmpty) {
+      await _stopSessionDetectorsSafely(endedSessionId);
+    }
+
+    final currentTestIncident = _activeTestIncident;
+    if (currentTestIncident != null) {
+      final resolvedTest = currentTestIncident.copyWith(
+        resolvedAt: _clock(),
+        resolutionSummary: 'Test alarm stopped via PIN disarm',
+      );
+      _activeTestIncident = null;
+      _replaceIncidentInMemory(resolvedTest);
+      unawaited(_updateIncidentSafely(resolvedTest));
+    }
+
     final currentIncident = _activeIncident;
     if (currentIncident != null) {
       final resolved = currentIncident.copyWith(
@@ -566,6 +1140,7 @@ class AlarmController extends ChangeNotifier {
       return true;
     }
 
+    final testGeneration = ++_alarmGeneration;
     _testAlarmTimer?.cancel();
     _isTestAlarmRunning = true;
     final now = _clock();
@@ -591,18 +1166,33 @@ class AlarmController extends ChangeNotifier {
         volume: _settings.alarmVolume,
         maxDuration: const Duration(seconds: 5),
       );
+      if (!_isTestAlarmRunning || testGeneration != _alarmGeneration) {
+        await _audioAdapter.stopAlarm();
+        return false;
+      }
     } catch (error) {
-      _warningMessage = 'Audio playback error during Test Alarm: $error';
+      if (testGeneration == _alarmGeneration) {
+        _warningMessage = 'Audio playback error during Test Alarm: $error';
+      }
     }
 
     try {
       await _incidentStorage.saveIncident(testIncident);
     } catch (error) {
-      _warningMessage = 'Test alarm started, but incident save failed: $error';
+      if (testGeneration == _alarmGeneration) {
+        _warningMessage =
+            'Test alarm started, but incident save failed: $error';
+      }
+    }
+
+    if (!_isTestAlarmRunning || testGeneration != _alarmGeneration) {
+      return true;
     }
 
     _testAlarmTimer = Timer(const Duration(seconds: 5), () {
-      unawaited(stopTestAlarm(autoCompleted: true));
+      if (testGeneration == _alarmGeneration) {
+        unawaited(stopTestAlarm(autoCompleted: true));
+      }
     });
     notifyListeners();
     return true;
@@ -613,6 +1203,7 @@ class AlarmController extends ChangeNotifier {
     if (!_isTestAlarmRunning) {
       return;
     }
+    ++_alarmGeneration;
     _testAlarmTimer?.cancel();
     _testAlarmTimer = null;
     _isTestAlarmRunning = false;
@@ -732,6 +1323,81 @@ class AlarmController extends ChangeNotifier {
     }
   }
 
+  /// Generates a short-lived single-use pairing code and QR payload on the
+  /// configured relay so a companion phone can pair with this laptop session.
+  Future<PairingCodeInvitation> initiateHostPairing({
+    String? hostDisplayName,
+  }) async {
+    final adapter = _notificationAdapter;
+    if (adapter is! MutableRemoteNotificationAdapter) {
+      throw StateError('Pairing is not enabled on this notification adapter.');
+    }
+    final invite = await adapter.initiateHostPairing(
+      hostDisplayName: hostDisplayName,
+    );
+    await refreshNotificationStatus();
+    return invite;
+  }
+
+  /// Queries the relay for companion devices currently paired to this laptop
+  /// session and updates [pairedDevices] / [notificationStatus].
+  Future<List<PairedDeviceSummary>> syncPairedDevicesFromRelay() async {
+    final adapter = _notificationAdapter;
+    if (adapter is! MutableRemoteNotificationAdapter) {
+      return _pairedDevices;
+    }
+    final synced = await adapter.syncPairedDevicesFromRelay();
+    await refreshNotificationStatus();
+    return synced;
+  }
+
+  /// Pairs this app instance as a companion phone using a laptop's short-lived
+  /// pairing code or `watsafe://pair?...` QR payload.
+  Future<CompanionSessionState> pairAsCompanionPhone({
+    required String pairingCodeOrPayload,
+    required String displayName,
+    required String platform,
+    String? endpointUrlOverride,
+  }) async {
+    final adapter = _notificationAdapter;
+    if (adapter is! MutableRemoteNotificationAdapter) {
+      throw StateError('Companion pairing is not supported by this adapter.');
+    }
+    final session = await adapter.pairAsCompanionPhone(
+      pairingCodeOrPayload: pairingCodeOrPayload,
+      displayName: displayName,
+      platform: platform,
+      endpointUrlOverride: endpointUrlOverride,
+    );
+    await refreshNotificationStatus();
+    return session;
+  }
+
+  /// Polls the relay once for any new alerts dispatched by the paired laptop.
+  Future<List<CompanionAlertEvent>> pollCompanionAlertsOnce() async {
+    final adapter = _notificationAdapter;
+    if (adapter is! MutableRemoteNotificationAdapter) {
+      return const <CompanionAlertEvent>[];
+    }
+    final alerts = await adapter.pollCompanionAlertsOnce();
+    if (alerts.isNotEmpty) {
+      _latestUnacknowledgedCompanionAlert = alerts.first;
+    }
+    await refreshNotificationStatus();
+    return alerts;
+  }
+
+  /// Disconnects this phone's active companion session.
+  Future<void> disconnectCompanionSession() async {
+    final adapter = _notificationAdapter;
+    if (adapter is! MutableRemoteNotificationAdapter) {
+      return;
+    }
+    await adapter.disconnectCompanionSession();
+    _latestUnacknowledgedCompanionAlert = null;
+    await refreshNotificationStatus();
+  }
+
   void _handleDetectorEvent(DetectorEvent event) {
     // Strictly ignore any late or foreign events that do not match the current session.
     if (_activeSessionId == null || event.sessionId != _activeSessionId) {
@@ -789,11 +1455,11 @@ class AlarmController extends ChangeNotifier {
         return;
 
       case DetectorEventType.lifecyclePaused:
-        _handleLifecyclePaused(event);
+        unawaited(_pauseMonitoringForLifecycle(event.summary));
         return;
 
       case DetectorEventType.lifecycleResumed:
-        _handleLifecycleResumed(event);
+        unawaited(_handleAppForegroundResumed(event.summary));
         return;
     }
   }
@@ -824,6 +1490,9 @@ class AlarmController extends ChangeNotifier {
       return;
     }
 
+    final alarmGeneration = ++_alarmGeneration;
+    _alarmAudioRequested = true;
+    _alarmInterruptedByLifecycle = false;
     _state = ProtectionState.alarming;
     final incident = IncidentRecord(
       id: 'inc_${++_incidentSequence}_${event.timestamp.millisecondsSinceEpoch}',
@@ -841,55 +1510,92 @@ class AlarmController extends ChangeNotifier {
     notifyListeners();
 
     // Start local audio immediately without waiting for storage or network requests.
-    unawaited(_triggerAudioPersistAndNotify(incident));
+    unawaited(_triggerAudioPersistAndNotify(incident, alarmGeneration));
   }
 
-  Future<void> _triggerAudioPersistAndNotify(IncidentRecord incident) async {
+  Future<void> _triggerAudioPersistAndNotify(
+    IncidentRecord incident,
+    int alarmGeneration,
+  ) async {
     final warnings = <String>[];
 
-    try {
-      await _audioAdapter.startLoopingAlarm(volume: _settings.alarmVolume);
-    } catch (error) {
-      warnings.add('Local audio failed to start ($error).');
+    final isStillActiveAlarm =
+        alarmGeneration == _alarmGeneration &&
+        _state == ProtectionState.alarming &&
+        _activeIncident?.id == incident.id;
+    if (isStillActiveAlarm) {
+      try {
+        await _audioAdapter.startLoopingAlarm(volume: _settings.alarmVolume);
+        if (alarmGeneration != _alarmGeneration ||
+            _state != ProtectionState.alarming ||
+            _activeIncident?.id != incident.id) {
+          try {
+            await _audioAdapter.stopAlarm();
+          } catch (_) {
+            // Ignore stop error
+          }
+        }
+      } catch (error) {
+        if (alarmGeneration == _alarmGeneration &&
+            _state == ProtectionState.alarming) {
+          warnings.add('Local audio failed to start ($error).');
+        }
+      }
     }
 
-    var workingIncident = incident;
-
+    var latestIncident = _findIncidentById(incident.id) ?? incident;
     try {
-      await _incidentStorage.saveIncident(workingIncident);
+      await _incidentStorage.saveIncident(latestIncident);
     } catch (error) {
-      warnings.add('Local incident save failed ($error).');
+      if (alarmGeneration == _alarmGeneration) {
+        warnings.add('Local incident save failed ($error).');
+      }
     }
 
     try {
       final dispatchResult = await _notificationAdapter.sendIncidentAlert(
-        workingIncident,
+        latestIncident,
       );
-      workingIncident = workingIncident.copyWith(
-        remoteNotificationAttempted: true,
-        remoteNotificationStatus: dispatchResult.message,
-      );
-      if (_activeIncident?.id == workingIncident.id) {
-        _activeIncident = workingIncident;
+      latestIncident = (_findIncidentById(incident.id) ?? latestIncident)
+          .copyWith(
+            remoteNotificationAttempted: true,
+            remoteNotificationStatus: dispatchResult.message,
+          );
+      if (_activeIncident?.id == latestIncident.id) {
+        _activeIncident = latestIncident;
       }
-      _replaceIncidentInMemory(workingIncident);
-      await _incidentStorage.updateIncident(workingIncident);
+      _replaceIncidentInMemory(latestIncident);
+      await _incidentStorage.updateIncident(latestIncident);
     } catch (error) {
-      warnings.add('Remote alert dispatch failed ($error).');
-      workingIncident = workingIncident.copyWith(
-        remoteNotificationAttempted: true,
-        remoteNotificationStatus: 'Failed ($error)',
-      );
-      if (_activeIncident?.id == workingIncident.id) {
-        _activeIncident = workingIncident;
+      if (alarmGeneration == _alarmGeneration) {
+        warnings.add('Remote alert dispatch failed ($error).');
       }
-      _replaceIncidentInMemory(workingIncident);
+      latestIncident = (_findIncidentById(incident.id) ?? latestIncident)
+          .copyWith(
+            remoteNotificationAttempted: true,
+            remoteNotificationStatus: 'Failed ($error)',
+          );
+      if (_activeIncident?.id == latestIncident.id) {
+        _activeIncident = latestIncident;
+      }
+      _replaceIncidentInMemory(latestIncident);
     }
 
-    if (warnings.isNotEmpty) {
+    if (warnings.isNotEmpty &&
+        alarmGeneration == _alarmGeneration &&
+        _state == ProtectionState.alarming) {
       _warningMessage = warnings.join(' ');
     }
     notifyListeners();
+  }
+
+  IncidentRecord? _findIncidentById(String id) {
+    for (final item in _incidents) {
+      if (item.id == id) {
+        return item;
+      }
+    }
+    return null;
   }
 
   void _handleDetectorFailure(DetectorEvent event) {
@@ -908,7 +1614,24 @@ class AlarmController extends ChangeNotifier {
       return;
     }
 
+    // If only an auxiliary corroborating sensor failed, keep primary monitoring active.
+    if (event.detectorType != selectedDetectorType &&
+        _activeAuxiliaryDetectors.contains(event.detectorType)) {
+      _activeAuxiliaryDetectors.remove(event.detectorType);
+      unawaited(
+        _detectors[event.detectorType]?.stopMonitoring(
+          sessionId: _activeSessionId,
+        ),
+      );
+      _warningMessage =
+          'Auxiliary sensor (${event.detectorType.displayName}) stopped: ${event.summary}. '
+          'Primary ${selectedDetectorType.displayName} monitoring remains active.';
+      notifyListeners();
+      return;
+    }
+
     // Never show "Protected" when a required detector has failed or stopped.
+    ++_lifecycleGeneration;
     final failedSessionId = _activeSessionId;
     _cancelCountdownTimer();
     _activeSessionId = null;
@@ -928,10 +1651,7 @@ class AlarmController extends ChangeNotifier {
       );
     }
 
-    final detector = _detectors[event.detectorType];
-    if (detector != null && failedSessionId != null) {
-      unawaited(detector.stopMonitoring(sessionId: failedSessionId));
-    }
+    unawaited(_stopSessionDetectorsSafely(failedSessionId));
 
     final failureIncident = IncidentRecord(
       id: 'fail_inc_${++_incidentSequence}_${event.timestamp.millisecondsSinceEpoch}',
@@ -945,36 +1665,6 @@ class AlarmController extends ChangeNotifier {
     );
     _incidents = <IncidentRecord>[failureIncident, ..._incidents];
     unawaited(_saveIncidentSafely(failureIncident));
-    notifyListeners();
-  }
-
-  void _handleLifecyclePaused(DetectorEvent event) {
-    if (_state == ProtectionState.alarming) {
-      // Keep alarm state active if lifecycle pauses during an active alarm.
-      _warningMessage =
-          'System lifecycle change during active alarm: ${event.summary}';
-      notifyListeners();
-      return;
-    }
-    if (_state == ProtectionState.armed || _state == ProtectionState.arming) {
-      _cancelCountdownTimer();
-      _isCalibrating = false;
-      _state = ProtectionState.paused;
-      _statusMessage = 'Monitoring paused — ${event.summary}';
-      _warningMessage =
-          'Monitoring is paused (${event.summary}). Device is not actively protected while paused.';
-      notifyListeners();
-    }
-  }
-
-  void _handleLifecycleResumed(DetectorEvent event) {
-    if (_state != ProtectionState.paused) {
-      return;
-    }
-    _state = ProtectionState.armed;
-    _warningMessage = null;
-    _statusMessage =
-        'Protected — Monitoring resumed (${event.detectorType.displayName}).';
     notifyListeners();
   }
 
@@ -1020,8 +1710,15 @@ class AlarmController extends ChangeNotifier {
 
   @override
   void dispose() {
+    ++_alarmGeneration;
+    ++_lifecycleGeneration;
     _cancelCountdownTimer();
     _testAlarmTimer?.cancel();
+    unawaited(_companionAlertsSubscription?.cancel());
+    final mutableNotifications = _notificationAdapter;
+    if (mutableNotifications is MutableRemoteNotificationAdapter) {
+      mutableNotifications.dispose();
+    }
     for (final sub in _subscriptions.values) {
       unawaited(sub.cancel());
     }
