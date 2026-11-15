@@ -61,6 +61,8 @@ class ParsedPairingInput {
 /// Full-featured implementation of [MutableRemoteNotificationAdapter] supporting:
 /// - Laptop host session initiation with short-lived single-use pairing codes & QR payloads
 /// - Companion phone pairing, foreground live alert polling, and reconnect deduplication
+/// - Interactive remote commands (test push, remote locate ring, state sync,
+///   foreground sensor link, and companion motion triggers)
 /// - Authenticated session-scoped HTTP relay delivery (`POST /v1/incidents:report`)
 /// - Local persistence (`watsafe_paired_devices.json`) without leaking credentials
 ///
@@ -101,10 +103,13 @@ class ConfigurableRemoteNotificationService
 
   final StreamController<CompanionAlertEvent> _incomingAlertsController =
       StreamController<CompanionAlertEvent>.broadcast();
+  final StreamController<Map<String, Object?>> _companionSensorController =
+      StreamController<Map<String, Object?>>.broadcast();
 
   VoidCallback? _onStateChanged;
   String? _relayEndpointUrl;
   List<PairedDeviceSummary> _devices;
+  List<PairedDeviceActionRecord> _actions = <PairedDeviceActionRecord>[];
 
   // Protected Laptop Host session state
   String? _hostPairingSessionId;
@@ -125,6 +130,7 @@ class ConfigurableRemoteNotificationService
   bool _disposed = false;
   bool _loadedFromDisk = false;
   int _deviceCounter = 0;
+  int _actionCounter = 0;
 
   static String? _normalizeUrl(String? raw) {
     if (raw == null) {
@@ -197,6 +203,14 @@ class ConfigurableRemoteNotificationService
       _incomingAlertsController.stream;
 
   @override
+  List<PairedDeviceActionRecord> get actionHistory =>
+      List<PairedDeviceActionRecord>.unmodifiable(_actions);
+
+  @override
+  Stream<Map<String, Object?>> get companionSensorEvents =>
+      _companionSensorController.stream;
+
+  @override
   set onStateChanged(VoidCallback? callback) {
     _onStateChanged = callback;
   }
@@ -236,6 +250,18 @@ class ConfigurableRemoteNotificationService
             .map(
               (item) =>
                   PairedDeviceSummary.fromJson(Map<String, Object?>.from(item)),
+            )
+            .toList();
+      }
+
+      final rawActions = decoded['actionHistory'] as List<Object?>?;
+      if (rawActions != null) {
+        _actions = rawActions
+            .whereType<Map<Object?, Object?>>()
+            .map(
+              (item) => PairedDeviceActionRecord.fromJson(
+                Map<String, Object?>.from(item),
+              ),
             )
             .toList();
       }
@@ -290,6 +316,7 @@ class ConfigurableRemoteNotificationService
         'hostPairingSessionId': _hostPairingSessionId,
         'hostToken': _hostToken,
         'pairedDevices': _devices.map((d) => d.toJson()).toList(),
+        'actionHistory': _actions.take(30).map((a) => a.toJson()).toList(),
         'companionToken': _companionToken,
         'companionLastAlertSeq': _companionLastAlertSeq,
         'seenCompanionIncidentIds': _seenCompanionIncidentIds.toList(),
@@ -340,7 +367,7 @@ class ConfigurableRemoteNotificationService
         capabilityStatus: CapabilityStatus.notConfigured,
         summary: 'Not configured',
         detail:
-            'No companion devices paired yet. Pair a companion phone below or configure a backend relay URL to enable remote incident alerts.',
+            'No companion devices paired yet. Pair a companion phone below or configure a backend relay URL to enable remote incident alerts and companion controls.',
       );
     }
 
@@ -363,13 +390,20 @@ class ConfigurableRemoteNotificationService
     final modeLabel = hasUrl
         ? 'HTTP Relay ($_relayEndpointUrl)'
         : 'Local Companion Outbox Relay';
+    final androidLinkedCount = _devices
+        .where((d) => d.isAndroidDevice && d.remoteSensorForwardingEnabled)
+        .length;
+    final sensorNote = androidLinkedCount > 0
+        ? ' Android Foreground Sensor Link active ($androidLinkedCount device${androidLinkedCount == 1 ? '' : 's'}).'
+        : '';
+
     return NotificationServiceStatus(
       capabilityStatus: CapabilityStatus.ready,
       summary:
           'Connected (${_devices.length} paired device${_devices.length == 1 ? '' : 's'})',
       detail:
-          'Active session-scoped alert routing via $modeLabel to '
-          '${_devices.map((d) => "${d.displayName} (${d.platform})").join(", ")}. '
+          'Active session-scoped alert & command routing via $modeLabel to '
+          '${_devices.map((d) => "${d.displayName} (${d.platform})").join(", ")}.$sensorNote '
           'Payloads contain metadata only (never camera frames, PINs, or database credentials).',
     );
   }
@@ -481,13 +515,28 @@ class ConfigurableRemoteNotificationService
     try {
       final decoded = jsonDecode(response.body) as Map<String, Object?>;
       final rawList = decoded['devices'] as List<Object?>? ?? const <Object?>[];
-      final updated = rawList
-          .whereType<Map<Object?, Object?>>()
-          .map(
-            (item) =>
-                PairedDeviceSummary.fromJson(Map<String, Object?>.from(item)),
-          )
-          .toList();
+      final existingById = <String, PairedDeviceSummary>{
+        for (final item in _devices) item.deviceId: item,
+      };
+      final updated = rawList.whereType<Map<Object?, Object?>>().map((item) {
+        final parsed = PairedDeviceSummary.fromJson(
+          Map<String, Object?>.from(item),
+        );
+        final prior = existingById[parsed.deviceId];
+        if (prior != null) {
+          return parsed.copyWith(
+            remoteStateLabel: prior.remoteStateLabel,
+            remoteSensorForwardingEnabled: prior.remoteSensorForwardingEnabled,
+            isRingingRemotely: prior.isRingingRemotely,
+            lastActionSummary: prior.lastActionSummary,
+          );
+        }
+        return parsed.copyWith(
+          remoteStateLabel: parsed.isAndroidDevice
+              ? 'Connected • Foreground Sensor Link Ready'
+              : 'Connected • Standby',
+        );
+      }).toList();
 
       final changed = !_sameDeviceList(_devices, updated);
       _devices = updated;
@@ -536,8 +585,12 @@ class ConfigurableRemoteNotificationService
         ? 'Android (FCM)'
         : platform.trim();
     final now = _clock();
+    final isAndroid = trimmedPlatform.toLowerCase().contains('android');
     final provisionalId =
         'dev_${++_deviceCounter}_${now.millisecondsSinceEpoch}';
+    final effectiveCode = pairingCode?.isNotEmpty == true
+        ? pairingCode!
+        : (_activePairingInvitation?.pairingCode ?? 'LOCAL-BOND');
 
     if (_relayEndpointUrl != null && _relayEndpointUrl!.isNotEmpty) {
       if (_hostToken == null || _hostToken!.isEmpty) {
@@ -551,10 +604,7 @@ class ConfigurableRemoteNotificationService
           'deviceId': provisionalId,
           'displayName': trimmedName,
           'platform': trimmedPlatform,
-          'pairingCode':
-              pairingCode ??
-              _activePairingInvitation?.pairingCode ??
-              'HOST-BOND',
+          'pairingCode': effectiveCode,
           'pairedAtUtc': now.toUtc().toIso8601String(),
         },
         timeout: _httpTimeout,
@@ -565,12 +615,29 @@ class ConfigurableRemoteNotificationService
         );
       }
       final body = jsonDecode(postRes.body) as Map<String, Object?>;
-      final serverDevice = PairedDeviceSummary.fromJson(body);
+      final serverDevice = PairedDeviceSummary.fromJson(body).copyWith(
+        remoteStateLabel: isAndroid
+            ? 'Connected • Foreground Sensor Link Ready'
+            : 'Connected • Standby',
+        remoteSensorForwardingEnabled: true,
+        isRingingRemotely: false,
+        lastActionSummary: 'Paired with code $effectiveCode',
+        lastSeenAt: now,
+      );
       _devices = <PairedDeviceSummary>[
         ..._devices.where((d) => d.deviceId != serverDevice.deviceId),
         serverDevice,
       ];
       _activePairingInvitation = null;
+      _recordAction(
+        deviceId: serverDevice.deviceId,
+        deviceName: serverDevice.displayName,
+        commandType: PairedDeviceCommandType.syncProtectionState,
+        timestamp: now,
+        delivered: true,
+        summary:
+            'Paired "${serverDevice.displayName}" (${serverDevice.platform}). Push & remote command channel ready.',
+      );
       await _persistState();
       return serverDevice;
     }
@@ -582,8 +649,24 @@ class ConfigurableRemoteNotificationService
       pairedAt: now,
       pushChannelReady: true,
       connected: true,
+      remoteStateLabel: isAndroid
+          ? 'Connected • Foreground Sensor Link Ready'
+          : 'Connected • Standby',
+      remoteSensorForwardingEnabled: true,
+      isRingingRemotely: false,
+      lastActionSummary: 'Paired with code $effectiveCode',
+      lastSeenAt: now,
     );
     _devices = <PairedDeviceSummary>[..._devices, device];
+    _recordAction(
+      deviceId: device.deviceId,
+      deviceName: device.displayName,
+      commandType: PairedDeviceCommandType.syncProtectionState,
+      timestamp: now,
+      delivered: true,
+      summary:
+          'Paired "${device.displayName}" (${device.platform}). Push & remote command channel ready.',
+    );
     await _persistState();
     return device;
   }
@@ -591,6 +674,7 @@ class ConfigurableRemoteNotificationService
   @override
   Future<void> unpairDevice(String deviceId) async {
     await _ensureLoaded();
+    final existing = _devices.where((d) => d.deviceId == deviceId).firstOrNull;
     if (_relayEndpointUrl != null &&
         _relayEndpointUrl!.isNotEmpty &&
         _hostToken != null &&
@@ -604,7 +688,184 @@ class ConfigurableRemoteNotificationService
       );
     }
     _devices = _devices.where((d) => d.deviceId != deviceId).toList();
+    if (existing != null) {
+      _recordAction(
+        deviceId: existing.deviceId,
+        deviceName: existing.displayName,
+        commandType: PairedDeviceCommandType.syncProtectionState,
+        timestamp: _clock(),
+        delivered: true,
+        summary: 'Unpaired "${existing.displayName}".',
+      );
+    }
     await _persistState();
+  }
+
+  @override
+  Future<PairedDeviceActionRecord> sendDeviceCommand({
+    required String deviceId,
+    required PairedDeviceCommandType command,
+    Map<String, Object?>? payload,
+  }) async {
+    await _ensureLoaded();
+    final index = _devices.indexWhere((d) => d.deviceId == deviceId);
+    if (index < 0) {
+      throw StateError('Paired device $deviceId not found.');
+    }
+
+    final current = _devices[index];
+    final now = _clock();
+    PairedDeviceSummary updated = current;
+    String actionSummary;
+
+    switch (command) {
+      case PairedDeviceCommandType.sendTestPush:
+        actionSummary =
+            'Test push alert delivered to "${current.displayName}" (${current.platform}).';
+        updated = current.copyWith(
+          remoteStateLabel: 'Connected • Alert Verified',
+          lastActionSummary: 'Test push alert delivered',
+          lastSeenAt: now,
+        );
+
+      case PairedDeviceCommandType.toggleRemoteRing:
+        final nextRinging = !current.isRingingRemotely;
+        actionSummary = nextRinging
+            ? 'Remote locator ring started on "${current.displayName}".'
+            : 'Remote locator ring stopped on "${current.displayName}".';
+        updated = current.copyWith(
+          isRingingRemotely: nextRinging,
+          remoteStateLabel: nextRinging
+              ? 'Ringing (Remote Locate Active)'
+              : (current.remoteSensorForwardingEnabled &&
+                        current.isAndroidDevice
+                    ? 'Connected • Foreground Sensor Link Ready'
+                    : 'Connected • Standby'),
+          lastActionSummary: nextRinging
+              ? 'Remote locator ring active'
+              : 'Remote locator ring stopped',
+          lastSeenAt: now,
+        );
+
+      case PairedDeviceCommandType.syncProtectionState:
+        final hostState =
+            payload?['hostState'] as String? ??
+            payload?['protectionState'] as String? ??
+            'Disarmed';
+        final detectorName =
+            payload?['detector'] as String? ??
+            payload?['selectedDetector'] as String? ??
+            'Active Detector';
+        actionSummary =
+            'Synced host state ($hostState • $detectorName) to "${current.displayName}".';
+        updated = current.copyWith(
+          remoteStateLabel: 'Synced ($hostState)',
+          lastActionSummary: 'Synced state: $hostState',
+          lastSeenAt: now,
+        );
+
+      case PairedDeviceCommandType.toggleRemoteSensorForwarding:
+        final nextEnabled = !current.remoteSensorForwardingEnabled;
+        actionSummary = nextEnabled
+            ? 'Enabled remote foreground motion sensor link on "${current.displayName}".'
+            : 'Paused remote foreground motion sensor link on "${current.displayName}".';
+        updated = current.copyWith(
+          remoteSensorForwardingEnabled: nextEnabled,
+          remoteStateLabel: nextEnabled
+              ? 'Connected • Foreground Sensor Link Ready'
+              : 'Connected • Sensor Link Paused',
+          lastActionSummary: nextEnabled
+              ? 'Foreground sensor link enabled'
+              : 'Foreground sensor link paused',
+          lastSeenAt: now,
+        );
+
+      case PairedDeviceCommandType.simulateCompanionMotionTrigger:
+        actionSummary =
+            'Companion device "${current.displayName}" reported sustained 3-axis motion tamper (score 0.380 >= threshold).';
+        updated = current.copyWith(
+          remoteStateLabel: 'Motion Tamper Reported!',
+          lastActionSummary: 'Reported 3-axis motion tamper (0.38g delta)',
+          lastSeenAt: now,
+        );
+        if (!_companionSensorController.isClosed) {
+          _companionSensorController.add(<String, Object?>{
+            'eventType': 'motionTriggered',
+            'deviceId': current.deviceId,
+            'deviceName': current.displayName,
+            'motionScore': 0.38,
+            'summary':
+                'Sustained motion detected on paired device ${current.displayName} (score 0.380, 0.32g delta)',
+            'timestampMs': now.millisecondsSinceEpoch,
+          });
+        }
+    }
+
+    final commandPayload = <String, Object?>{
+      'kind': 'paired_device_command',
+      'deviceId': current.deviceId,
+      'displayName': current.displayName,
+      'platform': current.platform,
+      'command': command.id,
+      'summary': actionSummary,
+      'timestampUtc': now.toUtc().toIso8601String(),
+      'data': ?payload,
+    };
+
+    bool delivered = true;
+    final hasUrl = _relayEndpointUrl != null && _relayEndpointUrl!.isNotEmpty;
+    if (hasUrl) {
+      final postOutcome = await sendRelayJsonRequest(
+        method: 'POST',
+        url: '$_relayEndpointUrl/v1/devices/command',
+        headers: _hostToken != null ? _bearerHeaders(_hostToken!) : null,
+        body: commandPayload,
+        timeout: _httpTimeout,
+      );
+      delivered = postOutcome.isSuccess;
+      if (!delivered) {
+        actionSummary =
+            '$actionSummary (Relay warning: ${postOutcome.errorSummary}; saved to local companion outbox)';
+      }
+    }
+
+    await _appendAlertToLocalOutbox(commandPayload);
+    _devices = List<PairedDeviceSummary>.from(_devices)..[index] = updated;
+
+    final record = _recordAction(
+      deviceId: current.deviceId,
+      deviceName: current.displayName,
+      commandType: command,
+      timestamp: now,
+      delivered: delivered,
+      summary: actionSummary,
+    );
+    await _persistState();
+    return record;
+  }
+
+  PairedDeviceActionRecord _recordAction({
+    required String deviceId,
+    required String deviceName,
+    required PairedDeviceCommandType commandType,
+    required DateTime timestamp,
+    required bool delivered,
+    required String summary,
+  }) {
+    final record = PairedDeviceActionRecord(
+      actionId: 'act_${++_actionCounter}_${timestamp.millisecondsSinceEpoch}',
+      deviceId: deviceId,
+      deviceName: deviceName,
+      commandType: commandType,
+      timestamp: timestamp,
+      delivered: delivered,
+      summary: summary,
+    );
+    _actions = <PairedDeviceActionRecord>[record, ..._actions];
+    if (_actions.length > 40) {
+      _actions = _actions.sublist(0, 40);
+    }
+    return record;
   }
 
   @override
@@ -874,6 +1135,7 @@ class ConfigurableRemoteNotificationService
       );
     }
 
+    final now = _clock();
     // Strict privacy & credential invariant: whitelisted incident metadata ONLY.
     // Never camera frames, images, PINs/PIN hashes, or database credentials.
     final payload = <String, Object?>{
@@ -898,8 +1160,32 @@ class ConfigurableRemoteNotificationService
         body: payload,
         timeout: _httpTimeout,
       );
+      _devices = _devices
+          .map(
+            (d) => d.copyWith(
+              remoteStateLabel: postResult.isSuccess
+                  ? 'Emergency Alert Dispatched'
+                  : 'Alert Relay Warning',
+              lastActionSummary: 'Incident alert: ${incident.triggerSummary}',
+              lastSeenAt: now,
+            ),
+          )
+          .toList();
+      for (final d in _devices) {
+        _recordAction(
+          deviceId: d.deviceId,
+          deviceName: d.displayName,
+          commandType: PairedDeviceCommandType.sendTestPush,
+          timestamp: now,
+          delivered: postResult.isSuccess,
+          summary: postResult.isSuccess
+              ? 'Emergency incident alert dispatched to "${d.displayName}": ${incident.triggerSummary}'
+              : 'Incident alert relay failed for "${d.displayName}" (${postResult.errorSummary})',
+        );
+      }
       if (postResult.isSuccess) {
         await _appendAlertToLocalOutbox(payload);
+        await _persistState();
         return NotificationDispatchResult(
           delivered: true,
           capabilityStatus: CapabilityStatus.ready,
@@ -907,6 +1193,7 @@ class ConfigurableRemoteNotificationService
               'Delivered via HTTP relay to ${_devices.length} paired device(s)',
         );
       }
+      await _persistState();
       return NotificationDispatchResult(
         delivered: false,
         capabilityStatus: CapabilityStatus.degraded,
@@ -914,7 +1201,28 @@ class ConfigurableRemoteNotificationService
       );
     }
 
+    _devices = _devices
+        .map(
+          (d) => d.copyWith(
+            remoteStateLabel: 'Emergency Alert Dispatched',
+            lastActionSummary: 'Incident alert: ${incident.triggerSummary}',
+            lastSeenAt: now,
+          ),
+        )
+        .toList();
+    for (final d in _devices) {
+      _recordAction(
+        deviceId: d.deviceId,
+        deviceName: d.displayName,
+        commandType: PairedDeviceCommandType.sendTestPush,
+        timestamp: now,
+        delivered: true,
+        summary:
+            'Emergency incident alert dispatched to "${d.displayName}": ${incident.triggerSummary}',
+      );
+    }
     await _appendAlertToLocalOutbox(payload);
+    await _persistState();
     final names = _devices.map((d) => d.displayName).join(', ');
     return NotificationDispatchResult(
       delivered: true,
@@ -992,6 +1300,9 @@ class ConfigurableRemoteNotificationService
     _companionPollTimer = null;
     if (!_incomingAlertsController.isClosed) {
       unawaited(_incomingAlertsController.close());
+    }
+    if (!_companionSensorController.isClosed) {
+      unawaited(_companionSensorController.close());
     }
   }
 

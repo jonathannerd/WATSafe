@@ -5,14 +5,20 @@ import '../services/secure_pin_storage_service.dart';
 import 'app_services.dart';
 import 'platform_detector_registry.dart';
 
-AppServices createAppServices() => (
-  detectors: PlatformDetectorRegistry.createDefaultDetectors(),
-  defaultDetector: PlatformDetectorRegistry.defaultDetectorForCurrentPlatform(),
-  audio: PlatformAudioAlarmService(),
-  pinStorage: PlatformSecurePinStorage(),
-  incidents: FileIncidentStorage(),
-  settings: FileSettingsStorage(),
-  notifications: ConfigurableRemoteNotificationService(
+AppServices createAppServices() {
+  final notifications = ConfigurableRemoteNotificationService(
     enableBackgroundPolling: true,
-  ),
-);
+  );
+  return (
+    detectors: PlatformDetectorRegistry.createDefaultDetectors(
+      notificationAdapter: notifications,
+    ),
+    defaultDetector:
+        PlatformDetectorRegistry.defaultDetectorForCurrentPlatform(),
+    audio: PlatformAudioAlarmService(),
+    pinStorage: PlatformSecurePinStorage(),
+    incidents: FileIncidentStorage(),
+    settings: FileSettingsStorage(),
+    notifications: notifications,
+  );
+}

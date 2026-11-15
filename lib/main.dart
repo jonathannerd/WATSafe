@@ -30,7 +30,7 @@ Future<void> main() async {
     notificationAdapter: services.notifications,
   );
 
-  await controller.initialize();
+  unawaited(controller.initialize());
   runApp(WatSafeApp(controller: controller));
 }
 

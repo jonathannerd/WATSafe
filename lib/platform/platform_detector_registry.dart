@@ -12,13 +12,17 @@ import 'mobile/ios_motion_detector.dart';
 /// Builds the registry of all platform detector adapters and selects the
 /// appropriate default detector for the current host OS.
 class PlatformDetectorRegistry {
-  static Map<DetectorType, MotionDetectorAdapter> createDefaultDetectors() {
+  static Map<DetectorType, MotionDetectorAdapter> createDefaultDetectors({
+    RemoteNotificationAdapter? notificationAdapter,
+  }) {
     return <DetectorType, MotionDetectorAdapter>{
       DetectorType.macosCameraSceneMotion: MacOSCameraSceneMotionDetector(),
       DetectorType.windowsAccelerometer: WindowsAccelerometerDetectorAdapter(),
       DetectorType.windowsCameraSceneMotion:
           WindowsCameraSceneMotionDetectorAdapter(),
-      DetectorType.androidMotionSensors: AndroidMotionDetectorAdapter(),
+      DetectorType.androidMotionSensors: AndroidMotionDetectorAdapter(
+        notificationAdapter: notificationAdapter,
+      ),
       DetectorType.iosCoreMotionForeground: IosCoreMotionDetectorAdapter(),
     };
   }

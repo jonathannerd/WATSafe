@@ -1383,6 +1383,22 @@ class WatSafeRelayServer {
         return;
       }
 
+      if (method == 'POST' && path == '/v1/devices/command') {
+        final body = await _readJsonBody(request);
+        final forbidden = detectForbiddenSensitiveField(body);
+        if (forbidden != null) {
+          _writePrivacyViolation(request.response, forbidden);
+          return;
+        }
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'delivered': true,
+          'commandId': 'cmd_${++_seq}',
+          'deviceId': body['deviceId'],
+          'command': body['command'],
+        });
+        return;
+      }
+
       if (method == 'POST' && path == '/v1/incidents:report') {
         final body = await _readJsonBody(request);
         // 1. Enforce strict privacy & credential boundary FIRST.

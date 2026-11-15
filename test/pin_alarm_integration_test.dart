@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -233,6 +234,145 @@ void main() {
       // PlatformAudioAlarmService must remain stopped and send a compensating stopAlarm
       expect(audioService.isPlaying, isFalse);
       expect(calls.last, 'stopAlarm');
+    },
+  );
+
+  test(
+    'PlatformSecurePinStorage preserves native secure channel + fallback file behavior across onboarding and alarm disarm',
+    () async {
+      const secureChannel = MethodChannel('dev.watsafe/test_secure_storage');
+      final tempDir = await Directory.systemTemp.createTemp(
+        'watsafe_pin_merge_test_',
+      );
+      String? nativeStoredPayload;
+      var simulateNativeChannelUnavailableOnRead = false;
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(secureChannel, (MethodCall call) async {
+            switch (call.method) {
+              case 'writePinRecord':
+                final args = call.arguments as Map<Object?, Object?>?;
+                nativeStoredPayload = args?['payload'] as String?;
+                return 'Native Keychain/Keystore Test Adapter';
+              case 'readPinRecord':
+                if (simulateNativeChannelUnavailableOnRead) {
+                  return null;
+                }
+                return nativeStoredPayload;
+              case 'deletePinRecord':
+                nativeStoredPayload = null;
+                return null;
+            }
+            return null;
+          });
+
+      addTearDown(() async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(secureChannel, null);
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+
+      final pinStorage = PlatformSecurePinStorage(
+        channel: secureChannel,
+        fallbackDirectory: tempDir,
+      );
+      final pinService = PinSecurityService(
+        storage: pinStorage,
+        pbkdf2Iterations: 500,
+      );
+      final fakeDetector = FakeMotionDetector(
+        type: DetectorType.macosCameraSceneMotion,
+      );
+      final fakeAudio = FakeAudioAlarmAdapter();
+      final controller = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.macosCameraSceneMotion: fakeDetector,
+        },
+        audioAdapter: fakeAudio,
+        pinService: pinService,
+        incidentStorage: InMemoryIncidentStorage(),
+        settingsStorage: InMemorySettingsStorage(
+          const ProtectionSettings(
+            selectedDetector: DetectorType.macosCameraSceneMotion,
+            armingCountdownSeconds: 1,
+          ),
+        ),
+        notificationAdapter: const UnconfiguredRemoteNotificationService(),
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await fakeDetector.dispose();
+      });
+
+      await controller.initialize();
+      expect(controller.hasPinConfigured, isFalse);
+
+      // 1. Onboarding PIN setup writes to native channel AND fallback file
+      final setupRes = await controller.setupInitialPin(
+        pin: '314159',
+        confirmPin: '314159',
+      );
+      expect(setupRes.isValid, isTrue);
+      expect(controller.hasPinConfigured, isTrue);
+      expect(nativeStoredPayload, isNotNull);
+
+      // 2. Arm and trigger alarm, then disarm via native channel read
+      await controller.startArming();
+      final sid1 = controller.activeSessionId!;
+      while (controller.state == ProtectionState.arming &&
+          controller.activeSessionId == sid1) {
+        await controller.handleCountdownTickForSession(sid1);
+      }
+      expect(controller.state, ProtectionState.armed);
+      fakeDetector.emit(
+        DetectorEvent(
+          eventId: 'pin_store_trig_1',
+          sessionId: sid1,
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: DateTime.utc(2026, 11, 15, 18, 0, 0),
+          summary: 'Tamper trigger 1',
+          motionScore: 0.42,
+          threshold: 0.095,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(controller.state, ProtectionState.alarming);
+
+      final disarm1 = await controller.verifyAndDisarm('314159');
+      expect(disarm1.verified, isTrue);
+      expect(controller.state, ProtectionState.disarmed);
+      expect(fakeAudio.stopCount, greaterThanOrEqualTo(1));
+
+      // 3. Simulate ad-hoc build where native channel returns null on read -> fallback file seamlessly verifies disarm
+      simulateNativeChannelUnavailableOnRead = true;
+      await controller.startArming();
+      final sid2 = controller.activeSessionId!;
+      while (controller.state == ProtectionState.arming &&
+          controller.activeSessionId == sid2) {
+        await controller.handleCountdownTickForSession(sid2);
+      }
+      expect(controller.state, ProtectionState.armed);
+      fakeDetector.emit(
+        DetectorEvent(
+          eventId: 'pin_store_trig_2',
+          sessionId: sid2,
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: DateTime.utc(2026, 11, 15, 18, 5, 0),
+          summary: 'Tamper trigger 2',
+          motionScore: 0.45,
+          threshold: 0.095,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(controller.state, ProtectionState.alarming);
+
+      final disarm2 = await controller.verifyAndDisarm('314159');
+      expect(disarm2.verified, isTrue);
+      expect(controller.state, ProtectionState.disarmed);
     },
   );
 }

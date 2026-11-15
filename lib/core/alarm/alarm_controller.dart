@@ -125,6 +125,14 @@ class AlarmController extends ChangeNotifier {
   NotificationServiceStatus get notificationStatus => _notificationStatus;
   List<PairedDeviceSummary> get pairedDevices =>
       List<PairedDeviceSummary>.unmodifiable(_pairedDevices);
+  List<PairedDeviceActionRecord> get pairedDeviceActions {
+    final adapter = _notificationAdapter;
+    if (adapter is MutableRemoteNotificationAdapter) {
+      return adapter.actionHistory;
+    }
+    return const <PairedDeviceActionRecord>[];
+  }
+
   bool get canManagePairing =>
       _notificationAdapter is MutableRemoteNotificationAdapter;
   String? get relayEndpointUrl {
@@ -582,7 +590,10 @@ class AlarmController extends ChangeNotifier {
       return;
     }
     for (final entry in _detectors.entries) {
-      if (entry.key == primaryType || entry.key.usesCamera) {
+      if (entry.key == primaryType ||
+          entry.key.usesCamera ||
+          entry.key == DetectorType.androidMotionSensors ||
+          entry.key == DetectorType.iosCoreMotionForeground) {
         continue;
       }
       final cap = _capabilities[entry.key];
@@ -1298,6 +1309,7 @@ class AlarmController extends ChangeNotifier {
         pairingCode: pairingCode,
       );
       await refreshNotificationStatus();
+      await refreshCapabilities();
       return device;
     } catch (error) {
       _warningMessage = 'Failed to pair companion device: $error';
@@ -1315,6 +1327,7 @@ class AlarmController extends ChangeNotifier {
     try {
       await adapter.unpairDevice(deviceId);
       await refreshNotificationStatus();
+      await refreshCapabilities();
       return true;
     } catch (error) {
       _warningMessage = 'Failed to unpair companion device: $error';
@@ -1340,7 +1353,8 @@ class AlarmController extends ChangeNotifier {
   }
 
   /// Queries the relay for companion devices currently paired to this laptop
-  /// session and updates [pairedDevices] / [notificationStatus].
+  /// session and updates [pairedDevices], [notificationStatus], and detector
+  /// capabilities (such as Paired Android Companion Sensor Bridging).
   Future<List<PairedDeviceSummary>> syncPairedDevicesFromRelay() async {
     final adapter = _notificationAdapter;
     if (adapter is! MutableRemoteNotificationAdapter) {
@@ -1348,6 +1362,7 @@ class AlarmController extends ChangeNotifier {
     }
     final synced = await adapter.syncPairedDevicesFromRelay();
     await refreshNotificationStatus();
+    await refreshCapabilities();
     return synced;
   }
 
@@ -1396,6 +1411,64 @@ class AlarmController extends ChangeNotifier {
     await adapter.disconnectCompanionSession();
     _latestUnacknowledgedCompanionAlert = null;
     await refreshNotificationStatus();
+  }
+
+  /// Dispatches an interactive command to a paired companion device (such as
+  /// sending a test push alert, ringing/locating the phone, syncing protection
+  /// state, toggling its remote foreground sensor link, or triggering a
+  /// companion motion tamper alert).
+  Future<PairedDeviceActionRecord?> executePairedDeviceCommand({
+    required String deviceId,
+    required PairedDeviceCommandType command,
+  }) async {
+    final adapter = _notificationAdapter;
+    if (adapter is! MutableRemoteNotificationAdapter) {
+      return null;
+    }
+    try {
+      final record = await adapter.sendDeviceCommand(
+        deviceId: deviceId,
+        command: command,
+        payload: <String, Object?>{
+          'hostState': _state.badgeLabel,
+          'protectionState': _state.badgeLabel,
+          'detector': selectedDetectorType.displayName,
+          'selectedDetector': selectedDetectorType.displayName,
+          'motionSensitivity': _settings.motionSensitivity,
+          'activeSessionId': _activeSessionId,
+        },
+      );
+      await refreshNotificationStatus();
+      await refreshCapabilities();
+
+      if (command == PairedDeviceCommandType.simulateCompanionMotionTrigger &&
+          _state == ProtectionState.armed &&
+          _activeSessionId != null) {
+        _handleMotionTrigger(
+          DetectorEvent(
+            eventId:
+                'companion_tamper_${_clock().millisecondsSinceEpoch}_$deviceId',
+            sessionId: _activeSessionId!,
+            detectorType: selectedDetectorType,
+            eventType: DetectorEventType.motionTriggered,
+            timestamp: _clock(),
+            summary: record.summary,
+            motionScore: 0.88,
+            threshold: MonitorConfig(
+              sessionId: _activeSessionId!,
+              sensitivity: _settings.motionSensitivity,
+            ).motionScoreThreshold,
+            consecutiveAboveThresholdFrames: 3,
+          ),
+        );
+      }
+
+      return record;
+    } catch (error) {
+      _warningMessage = 'Paired device command failed: $error';
+      notifyListeners();
+      return null;
+    }
   }
 
   void _handleDetectorEvent(DetectorEvent event) {
