@@ -30,16 +30,13 @@ Or when opening `WATSafe.app` directly without a terminal, `LocalRelaySupervisor
 
 Deployment files are ready at the repository root (`Dockerfile` and `render.yaml` on the **Free** plan):
 
-1. Generate a persistent VAPID keypair locally (keys stay out of Git):
+1. On [Render](https://dashboard.render.com) (Free tier, automatic Let's Encrypt HTTPS certificate), click **New -> Blueprint** and select `jonathannerd/WATSafe`. `render.yaml` provisions `watsafe-companion` + a managed PostgreSQL database (`watsafe-companion-db`) and persists pairing sessions, Web Push subscriptions, and VAPID keys automatically in `watsafe_server_secrets` (or you may optionally supply `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` from `dart run tool/generate_vapid_keys.dart`).
+2. Save your permanent HTTPS URL once on your Mac (no rebuild required):
    ```bash
-   dart run tool/generate_vapid_keys.dart
+   ./scripts/run_watsafe.sh --save-permanent-url=https://watsafe-companion.onrender.com --save-only
    ```
-2. On [Render](https://dashboard.render.com) (Free tier, automatic Let's Encrypt HTTPS certificate), click **New -> Blueprint**, select `jonathannerd/WATSafe`, and paste `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (plus optional `AIVEN_DATABASE_URL`) into the environment prompt.
-3. Build or run WATSafe once with your HTTPS relay URL baked in:
-   ```bash
-   flutter build macos --dart-define=WATSAFE_API_URL=https://watsafe-relay.onrender.com
-   ```
-   Opening `WATSafe.app` then connects directly over HTTPS every time with zero local terminals or tunnels required.
+   *(Or build with `--dart-define=WATSAFE_API_URL=https://watsafe-companion.onrender.com`.)*
+   Opening `WATSafe.app` or running `./scripts/run_watsafe.sh` then connects directly over HTTPS every time with zero temporary tunnels.
 
 ---
 
@@ -48,10 +45,11 @@ Deployment files are ready at the repository root (`Dockerfile` and `render.yaml
 | Variable | Purpose |
 | :--- | :--- |
 | `PORT` / `WATSAFE_BIND_HOST` | Listen port (default `8787`) and bind address (default `0.0.0.0`) |
-| `WATSAFE_PUBLIC_URL` | Public HTTPS base URL encoded into QR pairing links |
-| `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | NIST P-256 VAPID keypair (base64url) for direct Web Push (`ES256`); auto-generated in `.watsafe-runtime/vapid_keys.json` during local runs when unset |
+| `WATSAFE_PUBLIC_URL` | Permanent public HTTPS base URL encoded into QR pairing links (auto-detected on Render via `RENDER_EXTERNAL_URL`) |
+| `WATSAFE_DATA_DIR` | Directory for durable `FileRelayStore` (`relay_store.json`) and `vapid_keys.json` when PostgreSQL is not configured (defaults to `~/.watsafe/relay`) |
+| `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | Optional explicit NIST P-256 VAPID keypair (base64url); otherwise generated once and persisted durably in PostgreSQL (`watsafe_server_secrets`) or `WATSAFE_DATA_DIR/vapid_keys.json` |
 | `VAPID_SUBJECT` | Contact URI for VAPID JWT `sub` claim (default `mailto:alerts@watsafe.app`) |
-| `AIVEN_DATABASE_URL` / `DATABASE_URL` | Optional PostgreSQL URI (`postgres://...`); falls back to in-memory store when unset |
+| `AIVEN_DATABASE_URL` / `DATABASE_URL` | Optional PostgreSQL URI (`postgres://...`); falls back to durable `FileRelayStore` on disk when unset |
 | `AIVEN_CA_CERT_PATH` / `PGSSLROOTCERT` | Optional CA certificate path for `SslMode.verifyFull` |
 | `FCM_PROJECT_ID` + `FCM_BEARER_TOKEN` / `FCM_SERVER_KEY` | Optional Firebase Cloud Messaging credentials for native Android/iOS push tokens |
 | `APNS_BUNDLE_ID` + `APNS_AUTH_TOKEN` | Optional Apple Push Notification service HTTP/2 credentials for native iOS builds |
@@ -63,17 +61,20 @@ Deployment files are ready at the repository root (`Dockerfile` and `render.yaml
 
 | Endpoint | Auth | Description |
 | :--- | :--- | :--- |
-| `GET /`, `GET /pair`, `GET /companion` | Public HTML | Guided 5-state iPhone & Android Web Companion PWA |
-| `GET /manifest.webmanifest`, `GET /sw.js`, `GET /icons/*` | Public PWA | Web App Manifest (`standalone`), icons (`192`, `512`, `180` Apple touch), and Service Worker |
-| `GET /v1/health` | Public JSON | Readiness check, VAPID public key, and active `publicHttpsOrigin` |
+| `GET /`, `GET /pair`, `GET /companion` | Public HTML | Permanent-shell iPhone & Android Web Companion PWA (`X-WATSafe-Companion: 1`) |
+| `GET /manifest.webmanifest`, `GET /sw.js`, `GET /icons/*` | Public PWA | Stable Web App Manifest (`id: '/companion'`, `start_url: '/companion?source=homescreen'`, `scope: '/'`, `standalone`), icons, and offline-caching Service Worker |
+| `GET /v1/health` | Public JSON | Readiness check, storage backend, VAPID public key, `permanentHttpsOrigin`, and `publicHttpsOrigin` |
 | `POST /v1/pairing/initiate` | Optional `Bearer <hostToken>` | Generates a 5-minute single-use code and HTTPS `/pair?code=...` QR URL |
+| `POST /v1/host/heartbeat` | `Bearer <hostToken>` | Marks protected laptop online (`hostOnline: true`, `hostLastSeenAtUtc`) and returns active paired devices |
+| `POST /v1/host/offline` | `Bearer <hostToken>` | Marks protected laptop offline on clean app exit while keeping pairing intact |
 | `GET /v1/pairing/lookup?code=...` | Rate-limited | Non-consuming code preview returning `hostDisplayName` and `vapidPublicKey` |
-| `POST /v1/pairing/complete` | Rate-limited `pairingCode` | Consumes single-use code, binds phone, and returns `companionToken` |
+| `POST /v1/pairing/complete` | Rate-limited `pairingCode` | Consumes single-use code, deduplicates by `deviceId`, and returns `companionToken` |
 | `POST /v1/companion/handoff-code` | `Bearer <companionToken>` | Mints 10-minute single-use 6-char code to move pairing from iOS Safari into Home Screen web app |
-| `POST /v1/companion/claim-handoff` | Rate-limited `handoffCode` | Transfers existing paired bond into Home Screen app and rotates `companionToken` |
+| `POST /v1/companion/claim-handoff` | Rate-limited `handoffCode` | Transfers existing paired bond into Home Screen app and immediately invalidates the browser token |
+| `POST /v1/companion/token/refresh` | `Bearer <companionToken>` | Rotates `companionToken` in-place with a 60-second grace window on the previous token |
 | `POST /v1/companion/push-subscription` | `Bearer <companionToken>` | Validates & stores RFC 8291 Web Push subscription (`endpoint`, `p256dh`, `auth`) |
 | `DELETE /v1/companion/push-subscription` | `Bearer <companionToken>` | Removes Web Push subscription and marks notifications disabled |
-| `POST /v1/companion/status` | `Bearer <companionToken>` | Updates 5-state readiness and enforces honest `notificationsEnabled` status |
+| `POST /v1/companion/status` | `Bearer <companionToken>` | Updates 5-state readiness and returns `hostOnline` + `hostLastSeenAtUtc` |
 | `POST /v1/companion/test-alert` | `Bearer <companionToken>` | Dispatches immediate or delayed (`delaySeconds` `0..10`) real Web Push test alert |
 | `POST /v1/companion/disconnect` | `Bearer <companionToken>` | Revokes companion bond from the phone |
 | `POST /v1/pairing/session/revoke` | `Bearer <hostToken>` | Revokes only this host installation's session, bonds, push registrations, and alerts |
@@ -81,5 +82,5 @@ Deployment files are ready at the repository root (`Dockerfile` and `render.yaml
 | `DELETE /v1/pairing/devices/<id>` | `Bearer <hostToken>` | Disconnects a phone and revokes its `companionToken` |
 | `POST /v1/incidents:report` | `Bearer <hostToken>` | Records real or test alarm (`incidentId` deduplicated) and dispatches real Web Push |
 | `POST /v1/incidents/location` | `Bearer <hostToken>` | Attaches asynchronous device location to an existing `incidentId` |
-| `GET /v1/companion/alerts?afterSeq=<n>` | `Bearer <companionToken>` | Streams new and location-updated session alerts |
+| `GET /v1/companion/alerts?afterSeq=<n>` | `Bearer <companionToken>` | Streams new and location-updated session alerts plus `hostOnline` / `hostLastSeenAtUtc` |
 | `GET /v1/companion/events/<incidentId>` | `Bearer <companionToken \| hostToken>` | Authenticated single-event + location lookup |

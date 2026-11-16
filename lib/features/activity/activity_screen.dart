@@ -509,10 +509,7 @@ class _LocationPreviewSection extends StatelessWidget {
         Text(
           'Recorded ${_formatEventTime(location.capturedAt)}',
           key: const Key('location_recorded_time_label'),
-          style: const TextStyle(
-            fontSize: 12.5,
-            color: WatSafeTheme.warmMuted,
-          ),
+          style: const TextStyle(fontSize: 12.5, color: WatSafeTheme.warmMuted),
         ),
         const SizedBox(height: 14),
         FilledButton.icon(
@@ -577,16 +574,8 @@ class _MapGridPreviewPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );
-    canvas.drawCircle(
-      center,
-      7,
-      Paint()..color = WatSafeTheme.warmOffWhite,
-    );
-    canvas.drawCircle(
-      center,
-      5,
-      Paint()..color = WatSafeTheme.alarmCrimson,
-    );
+    canvas.drawCircle(center, 7, Paint()..color = WatSafeTheme.warmOffWhite);
+    canvas.drawCircle(center, 5, Paint()..color = WatSafeTheme.alarmCrimson);
   }
 
   @override

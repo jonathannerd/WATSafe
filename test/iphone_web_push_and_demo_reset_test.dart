@@ -24,10 +24,7 @@ import '../backend/server.dart';
 import 'alarm_controller_test.dart';
 
 class _CapturedPushRequest {
-  _CapturedPushRequest({
-    required this.headers,
-    required this.body,
-  });
+  _CapturedPushRequest({required this.headers, required this.body});
 
   final Map<String, String> headers;
   final Uint8List body;
@@ -285,9 +282,9 @@ void main() {
           final authHeader = alarmPush.headers['authorization'] ?? '';
           expect(authHeader, startsWith('vapid t='));
 
-          final jwtMatch = RegExp(r't=([^,\s]+),\s*k=([^,\s]+)').firstMatch(
-            authHeader,
-          );
+          final jwtMatch = RegExp(
+            r't=([^,\s]+),\s*k=([^,\s]+)',
+          ).firstMatch(authHeader);
           expect(jwtMatch, isNotNull);
           final jwtToken = jwtMatch!.group(1)!;
           final vapidK = jwtMatch.group(2)!;
@@ -307,9 +304,9 @@ void main() {
             reason:
                 'VAPID JWT ES256 signature must verify against server public key',
           );
-          final jwtClaims = jsonDecode(
-            utf8.decode(base64FlexibleDecode(jwtParts[1])),
-          ) as Map<String, dynamic>;
+          final jwtClaims =
+              jsonDecode(utf8.decode(base64FlexibleDecode(jwtParts[1])))
+                  as Map<String, dynamic>;
           expect(jwtClaims['aud'], 'http://127.0.0.1:$pushPort');
 
           final decryptedBytes = await WebPushCrypto.decryptAes128Gcm(
@@ -509,10 +506,7 @@ void main() {
             pageHtml,
             contains('rel="manifest" href="/manifest.webmanifest"'),
           );
-          expect(
-            pageHtml,
-            contains('href="/icons/apple-touch-icon.png"'),
-          );
+          expect(pageHtml, contains('href="/icons/apple-touch-icon.png"'));
           expect(
             pageHtml,
             isNot(
@@ -525,9 +519,7 @@ void main() {
             client: client,
             method: 'POST',
             uri: Uri.parse('$base/v1/admin/public-url'),
-            body: const <String, Object?>{
-              'publicUrl': 'ftp://invalid-scheme',
-            },
+            body: const <String, Object?>{'publicUrl': 'ftp://invalid-scheme'},
             expectedStatuses: const <int>[400],
           );
           await _jsonRequest(
@@ -778,7 +770,10 @@ void main() {
             enableBackgroundPolling: false,
           );
           // Cached paired device survives temporary outage without crashing or wiping tokens
-          expect((await remoteDuringOutage.syncPairedDevicesFromRelay()), hasLength(1));
+          expect(
+            (await remoteDuringOutage.syncPairedDevicesFromRelay()),
+            hasLength(1),
+          );
           final cachedDevices = await remoteDuringOutage.listPairedDevices();
           expect(cachedDevices, hasLength(1));
           remoteDuringOutage.dispose();
@@ -801,10 +796,7 @@ void main() {
             storage: pinStorage,
             pbkdf2Iterations: 500,
           );
-          await pinService.setupInitialPin(
-            pin: '135790',
-            confirmPin: '135790',
-          );
+          await pinService.setupInitialPin(pin: '135790', confirmPin: '135790');
 
           final reopenedController = AlarmController(
             detectors: <DetectorType, MotionDetectorAdapter>{

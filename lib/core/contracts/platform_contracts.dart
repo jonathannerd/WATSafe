@@ -449,9 +449,8 @@ class CompanionAlertEvent {
   final DeviceLocationSnapshot? location;
   final IncidentLocationStatus locationStatus;
 
-  int get effectiveCursorSeq => updatedSeq != null && updatedSeq! > alertSeq
-      ? updatedSeq!
-      : alertSeq;
+  int get effectiveCursorSeq =>
+      updatedSeq != null && updatedSeq! > alertSeq ? updatedSeq! : alertSeq;
 
   CompanionAlertEvent copyWith({
     int? alertSeq,
@@ -510,7 +509,9 @@ class CompanionAlertEvent {
     final triggeredRaw = json['triggeredAtUtc'] as String? ?? '';
     final rawLocation = json['location'];
     final parsedLocation = rawLocation is Map
-        ? DeviceLocationSnapshot.fromJson(Map<String, Object?>.from(rawLocation))
+        ? DeviceLocationSnapshot.fromJson(
+            Map<String, Object?>.from(rawLocation),
+          )
         : null;
     final parsedLocStatus = IncidentLocationStatus.fromName(
       json['locationStatus'] as String?,
@@ -529,7 +530,8 @@ class CompanionAlertEvent {
       hostDisplayName: json['hostDisplayName'] as String?,
       isTest: json['isTest'] as bool? ?? false,
       location: parsedLocation,
-      locationStatus: parsedLocation != null &&
+      locationStatus:
+          parsedLocation != null &&
               parsedLocStatus == IncidentLocationStatus.notRequested
           ? IncidentLocationStatus.attached
           : parsedLocStatus,

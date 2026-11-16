@@ -194,15 +194,13 @@ class PlatformLocalNotificationService implements LocalNotificationAdapter {
       return false;
     }
     try {
-      final ok = await _channel.invokeMethod<bool>(
-        'showAlertNotification',
-        <String, Object?>{
-          'incidentId': incidentId,
-          'title': deviceName,
-          'body': message,
-          'isTest': isTest,
-        },
-      );
+      final ok = await _channel
+          .invokeMethod<bool>('showAlertNotification', <String, Object?>{
+            'incidentId': incidentId,
+            'title': deviceName,
+            'body': message,
+            'isTest': isTest,
+          });
       return ok ?? false;
     } on MissingPluginException {
       _supported = false;

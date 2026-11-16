@@ -1,0 +1,11 @@
+{
+  "permanentRelayUrl": "",
+  "companionManifestId": "/companion",
+  "companionStartUrl": "/companion?source=homescreen",
+  "companionScope": "/",
+  "serviceWorkerPath": "/sw.js",
+  "serviceWorkerScope": "/",
+  "renderBlueprintPath": "render.yaml",
+  "deploymentStatus": "pending_one_time_cloud_deploy",
+  "setupInstructions": "Deploy render.yaml once to obtain a stable https://<service>.onrender.com origin (or configure a named Cloudflare Tunnel), then run `./scripts/run_watsafe.sh --save-permanent-url=https://<your-relay-domain>` or set it in WATSafe Settings -> Permanent companion address."
+}

@@ -28,9 +28,11 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=build /app/bin/watsafe-relay /app/bin/watsafe-relay
+RUN mkdir -p /var/lib/watsafe && chmod 700 /var/lib/watsafe
 
 ENV PORT=8787
 ENV WATSAFE_BIND_HOST=0.0.0.0
+ENV WATSAFE_DATA_DIR=/var/lib/watsafe
 EXPOSE 8787
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

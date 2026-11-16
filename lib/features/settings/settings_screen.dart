@@ -23,6 +23,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _deviceNameController;
+  late final TextEditingController _permanentRelayUrlController;
   late final TextEditingController _relayUrlController;
   final TextEditingController _currentPinController = TextEditingController();
   final TextEditingController _newPinController = TextEditingController();
@@ -32,22 +33,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _pinSuccess = false;
   bool _isUpdatingPin = false;
   String? _deviceNameSavedNote;
+  String? _permanentUrlNote;
+  bool _permanentUrlIsError = false;
   String? _advancedNote;
 
   @override
   void initState() {
     super.initState();
+    widget.controller.addListener(_onControllerUpdated);
     _deviceNameController = TextEditingController(
       text: widget.controller.effectiveDeviceName,
+    );
+    _permanentRelayUrlController = TextEditingController(
+      text: widget.controller.isPermanentRelayConfigured
+          ? (widget.controller.relayEndpointUrl ?? '')
+          : '',
     );
     _relayUrlController = TextEditingController(
       text: widget.controller.relayEndpointUrl ?? '',
     );
   }
 
+  void _onControllerUpdated() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   @override
   void dispose() {
+    widget.controller.removeListener(_onControllerUpdated);
     _deviceNameController.dispose();
+    _permanentRelayUrlController.dispose();
     _relayUrlController.dispose();
     _currentPinController.dispose();
     _newPinController.dispose();
@@ -203,11 +220,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _buildPermissionsCard(context, controller),
               const SizedBox(height: 16),
 
-              // 4. Change PIN
+              // 4. Permanent Phone Companion Address & One-Time Migration
+              if (controller.canManagePairing) ...<Widget>[
+                _buildPermanentCompanionCard(context, controller),
+                const SizedBox(height: 16),
+              ],
+
+              // 5. Change PIN
               _buildChangePinCard(context),
               const SizedBox(height: 16),
 
-              // 5. Collapsed Advanced Section (relay override & clear history out of normal flow)
+              // 6. Collapsed Advanced Section (relay override & clear history out of normal flow)
               _buildAdvancedSection(context, controller, isLockedByProtection),
             ],
           ),
@@ -547,6 +570,167 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildPermanentCompanionCard(
+    BuildContext context,
+    AlarmController controller,
+  ) {
+    final currentUrl = controller.relayEndpointUrl ?? '';
+    final isPermanent = controller.isPermanentRelayConfigured;
+    final isEphemeral = controller.isEphemeralTunnelRelay;
+
+    return Card(
+      key: const Key('permanent_companion_settings_card'),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    'Phone companion address & migration',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color:
+                        (isPermanent
+                                ? WatSafeTheme.readyEmerald
+                                : WatSafeTheme.amberAccent)
+                            .withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color:
+                          (isPermanent
+                                  ? WatSafeTheme.readyEmerald
+                                  : WatSafeTheme.amberAccent)
+                              .withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: Text(
+                    isPermanent ? 'Permanent HTTPS' : 'Temporary / Local',
+                    style: TextStyle(
+                      color: isPermanent
+                          ? WatSafeTheme.readyEmerald
+                          : WatSafeTheme.amberAccent,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              isPermanent
+                  ? 'Active companion URL: $currentUrl/companion. Both WATSafe on this laptop and your installed iPhone Home Screen app reconnect automatically on startup.'
+                  : (isEphemeral
+                        ? 'Currently using a temporary tunnel ($currentUrl). Temporary tunnels generate a new domain after restarts, causing old Home Screen bookmarks to open white tunnel error pages. Deploy the permanent relay once (render.yaml or Named Cloudflare Tunnel) and save its https:// address below.'
+                        : 'Deploy the permanent HTTPS relay once (render.yaml or Named Cloudflare Tunnel) and save its https:// address below so your iPhone Home Screen icon and pairing survive every restart.'),
+              style: const TextStyle(
+                color: WatSafeTheme.warmMuted,
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextField(
+                    key: const Key('permanent_relay_url_input'),
+                    controller: _permanentRelayUrlController,
+                    decoration: const InputDecoration(
+                      labelText: 'Permanent HTTPS companion URL',
+                      hintText: 'https://watsafe-companion.onrender.com',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                OutlinedButton(
+                  key: const Key('save_permanent_relay_url_button'),
+                  onPressed: () async {
+                    final ok = await controller.savePermanentRelayEndpoint(
+                      _permanentRelayUrlController.text,
+                    );
+                    if (!mounted) {
+                      return;
+                    }
+                    setState(() {
+                      _permanentUrlIsError = !ok;
+                      if (ok) {
+                        _relayUrlController.text =
+                            controller.relayEndpointUrl ?? '';
+                        _permanentUrlNote =
+                            _permanentRelayUrlController.text.trim().isEmpty
+                            ? 'Cleared permanent URL override.'
+                            : 'Permanent HTTPS address saved for all future launches.';
+                      } else {
+                        _permanentUrlNote =
+                            controller.warningMessage ??
+                            'Enter a valid permanent https:// domain.';
+                      }
+                    });
+                  },
+                  child: const Text('Save'),
+                ),
+              ],
+            ),
+            if (_permanentUrlNote != null) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                _permanentUrlNote!,
+                style: TextStyle(
+                  color: _permanentUrlIsError
+                      ? WatSafeTheme.alarmCrimson
+                      : WatSafeTheme.readyEmerald,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            Theme(
+              data: Theme.of(
+                context,
+              ).copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                key: const Key('iphone_migration_steps_tile'),
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(top: 4, bottom: 8),
+                title: const Text(
+                  'Migrating from an old Home Screen icon (one-time steps)',
+                  style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+                ),
+                children: const <Widget>[
+                  Text(
+                    'Why one final install is required: iOS isolates Home Screen web apps, Service Workers, saved credentials, and Web Push subscriptions strictly by domain. Moving off an expired *.trycloudflare.com domain to your permanent https:// address requires replacing the bookmark once:\n\n'
+                    '1. On your iPhone Home Screen, touch and hold the old WATSafe icon and tap Delete Bookmark.\n'
+                    '2. Save your permanent https:// URL above, then open Pair your phone on Home and scan the QR code once in Safari.\n'
+                    '3. Follow the guided Add to Home Screen + Enable notifications steps one final time. After that, closing/reopening WATSafe or restarting either device reconnects automatically.',
+                    style: TextStyle(
+                      color: WatSafeTheme.warmMuted,
+                      fontSize: 12.5,
+                      height: 1.45,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildChangePinCard(BuildContext context) {
     return Card(
       child: Padding(
@@ -647,7 +831,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller.enableDeveloperControls
                 ? 'First-use demo reset, activity cleanup, and custom alert server settings'
                 : 'Activity history cleanup and custom alert server settings',
-            style: const TextStyle(color: WatSafeTheme.warmMuted, fontSize: 12.5),
+            style: const TextStyle(
+              color: WatSafeTheme.warmMuted,
+              fontSize: 12.5,
+            ),
           ),
           childrenPadding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
           expandedCrossAxisAlignment: CrossAxisAlignment.stretch,

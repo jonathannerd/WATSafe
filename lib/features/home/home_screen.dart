@@ -118,9 +118,7 @@ class _ProtectionHeroCard extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: stateColor.withValues(alpha: 0.16),
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(
-                    color: stateColor.withValues(alpha: 0.55),
-                  ),
+                  border: Border.all(color: stateColor.withValues(alpha: 0.55)),
                 ),
                 child: Text(
                   state.badgeLabel,
@@ -201,8 +199,8 @@ class _ProtectionHeroCard extends StatelessWidget {
   }
 
   String _subtitleForState(ProtectionState s, DetectorCapability? cap) {
-    final methodLabel =
-        controller.selectedDetectorType.userFacingMethodName.toLowerCase();
+    final methodLabel = controller.selectedDetectorType.userFacingMethodName
+        .toLowerCase();
     switch (s) {
       case ProtectionState.disarmed:
         return 'Arm protection before stepping away. WATSafe will watch for movement using your $methodLabel and sound an alarm if this device is disturbed.';
@@ -368,10 +366,7 @@ class _PhoneConnectionRow extends StatelessWidget {
                     color: accentColor.withValues(alpha: 0.16),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Icon(
-                    Icons.smartphone_rounded,
-                    color: accentColor,
-                  ),
+                  child: Icon(Icons.smartphone_rounded, color: accentColor),
                 ),
                 const SizedBox(width: 14),
                 Expanded(

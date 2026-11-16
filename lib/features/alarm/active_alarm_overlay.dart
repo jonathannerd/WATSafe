@@ -158,9 +158,9 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                       ),
                     ),
                     if (!widget.controller.isAudioPlaying &&
-                        widget.controller.wasAlarmInterruptedByLifecycle) ...<
-                      Widget
-                    >[
+                        widget
+                            .controller
+                            .wasAlarmInterruptedByLifecycle) ...<Widget>[
                       const SizedBox(height: 14),
                       OutlinedButton.icon(
                         key: const Key('resume_alarm_audio_button'),

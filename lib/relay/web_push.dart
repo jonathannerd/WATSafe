@@ -389,6 +389,32 @@ class VapidKeyPair {
     return pair;
   }
 
+  static File resolveDefaultVapidKeyFile([Map<String, String>? environment]) {
+    final env = environment ?? Platform.environment;
+    final explicitDir = (env['WATSAFE_DATA_DIR'] ?? '').trim();
+    if (explicitDir.isNotEmpty) {
+      return File('$explicitDir/vapid_keys.json');
+    }
+    final legacyFile = File('.watsafe-runtime/vapid_keys.json');
+    final home = (env['HOME'] ?? env['USERPROFILE'] ?? '').trim();
+    if (home.isNotEmpty) {
+      final durableFile = File('$home/.watsafe/relay/vapid_keys.json');
+      if (!durableFile.existsSync() && legacyFile.existsSync()) {
+        try {
+          durableFile.parent.createSync(recursive: true);
+          legacyFile.copySync(durableFile.path);
+          if (!Platform.isWindows) {
+            Process.runSync('chmod', <String>['600', durableFile.path]);
+          }
+        } catch (_) {
+          return legacyFile;
+        }
+      }
+      return durableFile;
+    }
+    return legacyFile;
+  }
+
   /// Loads VAPID keys from `VAPID_PRIVATE_KEY` (+ optional `VAPID_PUBLIC_KEY`)
   /// in [environment], or loads/creates a persistent local keypair in [keyFile]
   /// when [persistToDisk] is true.
@@ -408,8 +434,7 @@ class VapidKeyPair {
       );
     }
 
-    final targetFile =
-        keyFile ?? File('.watsafe-runtime/vapid_keys.json');
+    final targetFile = keyFile ?? resolveDefaultVapidKeyFile(env);
     if (persistToDisk && targetFile.existsSync()) {
       try {
         final decoded = jsonDecode(targetFile.readAsStringSync());
@@ -459,7 +484,8 @@ class VapidKeyPair {
     final origin = '${endpoint.scheme}://${endpoint.authority}';
     final now = (nowUtc ?? DateTime.now()).toUtc();
     final exp =
-        now.add(validity).millisecondsSinceEpoch ~/ Duration.millisecondsPerSecond;
+        now.add(validity).millisecondsSinceEpoch ~/
+        Duration.millisecondsPerSecond;
 
     final headerJson = jsonEncode(const <String, String>{
       'typ': 'JWT',
@@ -548,7 +574,9 @@ class WebPushCrypto {
   static final AesGcm _aes128Gcm = AesGcm.with128bits();
 
   static Uint8List _hmacSha256(List<int> key, List<int> data) {
-    return Uint8List.fromList(crypto.Hmac(crypto.sha256, key).convert(data).bytes);
+    return Uint8List.fromList(
+      crypto.Hmac(crypto.sha256, key).convert(data).bytes,
+    );
   }
 
   /// Encrypts [plaintext] using RFC 8291 (`Content-Encoding: aes128gcm`).
@@ -572,7 +600,8 @@ class WebPushCrypto {
         ephemeralServerKeyOverride ?? VapidKeyPair.generate(rng);
     final asPublicBytes = serverEphemeral.publicKeyBytes;
 
-    final salt = saltOverride ??
+    final salt =
+        saltOverride ??
         Uint8List.fromList(List<int>.generate(16, (_) => rng.nextInt(256)));
     if (salt.length != 16) {
       throw ArgumentError('RFC 8291 salt must be 16 bytes.');
@@ -643,7 +672,9 @@ class WebPushCrypto {
     final salt = Uint8List.sublistView(encryptedBody, 0, 16);
     final idLen = encryptedBody[20];
     if (idLen != 65 || encryptedBody.length < 21 + idLen + 17) {
-      throw const FormatException('Unsupported keyid length in aes128gcm header.');
+      throw const FormatException(
+        'Unsupported keyid length in aes128gcm header.',
+      );
     }
     final asPublicBytes = Uint8List.sublistView(encryptedBody, 21, 21 + idLen);
     final asPublicPoint = P256Curve.decodeUncompressedPoint(asPublicBytes);
@@ -705,9 +736,17 @@ class WebPushCrypto {
     keyInfoAndOne.setRange(offset, offset + prefix.length, prefix);
     offset += prefix.length;
     keyInfoAndOne[offset++] = 0x00;
-    keyInfoAndOne.setRange(offset, offset + uaPublicBytes.length, uaPublicBytes);
+    keyInfoAndOne.setRange(
+      offset,
+      offset + uaPublicBytes.length,
+      uaPublicBytes,
+    );
     offset += uaPublicBytes.length;
-    keyInfoAndOne.setRange(offset, offset + asPublicBytes.length, asPublicBytes);
+    keyInfoAndOne.setRange(
+      offset,
+      offset + asPublicBytes.length,
+      asPublicBytes,
+    );
     offset += asPublicBytes.length;
     keyInfoAndOne[offset] = 0x01;
 
@@ -764,7 +803,9 @@ class DirectWebPushSender {
 
   static String derivePushTopic(String incidentId) {
     final digest = crypto.sha256.convert(utf8.encode(incidentId)).bytes;
-    return base64UrlNoPadEncode(digest.sublist(0, 18)); // 24 base64url chars (<= 32)
+    return base64UrlNoPadEncode(
+      digest.sublist(0, 18),
+    ); // 24 base64url chars (<= 32)
   }
 
   Future<WebPushDeliveryResult> sendJsonNotification({
@@ -810,7 +851,8 @@ class DirectWebPushSender {
       return WebPushDeliveryResult(
         delivered: code >= 200 && code < 300,
         statusCode: code,
-        subscriptionExpired: code == HttpStatus.notFound || code == HttpStatus.gone,
+        subscriptionExpired:
+            code == HttpStatus.notFound || code == HttpStatus.gone,
       );
     } catch (error) {
       return WebPushDeliveryResult(

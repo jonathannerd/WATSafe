@@ -48,10 +48,7 @@ class QrCodeWidget extends StatelessWidget {
 }
 
 class _RealQrPainter extends CustomPainter {
-  _RealQrPainter({
-    required this.qrImage,
-    required this.foregroundColor,
-  });
+  _RealQrPainter({required this.qrImage, required this.foregroundColor});
 
   final QrImage qrImage;
   final Color foregroundColor;

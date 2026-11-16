@@ -1009,7 +1009,9 @@ void main() {
         );
 
         // Tap "View event" on the banner -> opens the exact event in Activity
-        await tester.tap(find.byKey(const Key('view_alert_in_activity_button')));
+        await tester.tap(
+          find.byKey(const Key('view_alert_in_activity_button')),
+        );
         await tester.pumpAndSettle();
         expect(
           find.byKey(const Key('activity_selected_event_card')),

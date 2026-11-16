@@ -90,9 +90,11 @@ class _PhonePairingSheetBody extends StatefulWidget {
 class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
   late _PairingStep _step;
   final TextEditingController _codeController = TextEditingController();
+  final TextEditingController _permanentUrlController = TextEditingController();
   late final TextEditingController _phoneNameController;
 
   bool _isBusy = false;
+  bool _showPermanentUrlEditor = false;
   String? _errorMessage;
   String? _infoMessage;
 
@@ -107,9 +109,10 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
   void initState() {
     super.initState();
     _initialPairedCount = widget.controller.pairedDevices.length;
-    _phoneNameController = TextEditingController(
-      text: _defaultPhoneLabel(),
-    );
+    _phoneNameController = TextEditingController(text: _defaultPhoneLabel());
+    if (widget.controller.isPermanentRelayConfigured) {
+      _permanentUrlController.text = widget.controller.relayEndpointUrl ?? '';
+    }
     widget.controller.addListener(_onControllerChanged);
 
     final initialPayload = widget.initialPhonePairingPayload?.trim();
@@ -164,6 +167,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
     _pollTimer?.cancel();
     widget.controller.removeListener(_onControllerChanged);
     _codeController.dispose();
+    _permanentUrlController.dispose();
     _phoneNameController.dispose();
     super.dispose();
   }
@@ -505,7 +509,9 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
             fontWeight: FontWeight.w600,
           ),
         ),
-        const SizedBox(height: 18),
+        const SizedBox(height: 12),
+        _buildCompanionAddressBanner(context),
+        const SizedBox(height: 16),
         if (_isBusy && invite == null)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 44),
@@ -543,12 +549,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
             label: const Text('Get new code'),
           ),
         ] else if (invite != null) ...<Widget>[
-          Center(
-            child: QrCodeWidget(
-              data: invite.effectiveScanUrl,
-              size: 216,
-            ),
-          ),
+          Center(child: QrCodeWidget(data: invite.effectiveScanUrl, size: 216)),
           const SizedBox(height: 18),
           Container(
             padding: const EdgeInsets.all(14),
@@ -813,6 +814,179 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
           child: Text(_infoMessage == null ? 'Not now' : 'Done'),
         ),
       ],
+    );
+  }
+
+  Future<void> _savePermanentUrlFromSheet() async {
+    final trimmed = _permanentUrlController.text.trim();
+    setState(() {
+      _isBusy = true;
+      _errorMessage = null;
+      _infoMessage = null;
+    });
+    final ok = await widget.controller.savePermanentRelayEndpoint(trimmed);
+    if (!mounted) {
+      return;
+    }
+    if (!ok) {
+      setState(() {
+        _isBusy = false;
+        _errorMessage =
+            widget.controller.warningMessage ??
+            'Enter a permanent https:// address (not a temporary tunnel).';
+      });
+      return;
+    }
+    setState(() {
+      _showPermanentUrlEditor = false;
+      _infoMessage =
+          'Permanent companion address saved. Scan this new QR code once in Safari and replace any old Home Screen icon.';
+    });
+    await _ensureHostInvitation(forceRefresh: true);
+  }
+
+  Widget _buildCompanionAddressBanner(BuildContext context) {
+    final currentUrl = widget.controller.relayEndpointUrl ?? '';
+    final isPermanent = widget.controller.isPermanentRelayConfigured;
+    final isEphemeral = widget.controller.isEphemeralTunnelRelay;
+
+    if (isPermanent) {
+      return Container(
+        key: const Key('companion_address_status_banner'),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: WatSafeTheme.readyEmerald.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: WatSafeTheme.readyEmerald.withValues(alpha: 0.45),
+          ),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Icon(
+              Icons.verified_rounded,
+              color: WatSafeTheme.readyEmerald,
+              size: 18,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'Permanent HTTPS companion ($currentUrl/companion) — one-time Home Screen install and pairing survive restarts.',
+                style: const TextStyle(
+                  color: WatSafeTheme.warmOffWhite,
+                  fontSize: 12.5,
+                  height: 1.35,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final headline = isEphemeral
+        ? 'Temporary tunnel address — one-time cloud deploy needed for permanent Home Screen icon'
+        : 'Local address — deploy or set a permanent HTTPS address for iPhone Home Screen install';
+    final detail = isEphemeral
+        ? 'Temporary *.trycloudflare.com tunnels expire when restarted, causing an old Home Screen bookmark to open a white error page. Deploy the permanent relay once (render.yaml or Named Cloudflare Tunnel), save its https:// address below, remove the old iPhone bookmark, and pair one final time.'
+        : 'iPhone Home Screen notifications require a permanent HTTPS domain. Deploy the free Render Blueprint (render.yaml) or Named Cloudflare Tunnel once, then save its https:// address here.';
+
+    return Container(
+      key: const Key('companion_address_status_banner'),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: WatSafeTheme.amberAccent.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: WatSafeTheme.amberAccent.withValues(alpha: 0.45),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Icon(
+                Icons.cloud_queue_rounded,
+                color: WatSafeTheme.amberAccent,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  headline,
+                  style: const TextStyle(
+                    color: WatSafeTheme.amberAccent,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            detail,
+            style: const TextStyle(
+              color: WatSafeTheme.warmMuted,
+              fontSize: 12,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              key: const Key('toggle_permanent_url_editor_button'),
+              style: TextButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              ),
+              onPressed: _isBusy
+                  ? null
+                  : () {
+                      setState(() {
+                        _showPermanentUrlEditor = !_showPermanentUrlEditor;
+                      });
+                    },
+              icon: Icon(
+                _showPermanentUrlEditor
+                    ? Icons.expand_less_rounded
+                    : Icons.link_rounded,
+                size: 16,
+              ),
+              label: Text(
+                _showPermanentUrlEditor
+                    ? 'Hide permanent address setup'
+                    : 'Set permanent HTTPS address',
+                style: const TextStyle(fontSize: 12.5),
+              ),
+            ),
+          ),
+          if (_showPermanentUrlEditor) ...<Widget>[
+            const SizedBox(height: 8),
+            TextField(
+              key: const Key('pairing_permanent_url_input'),
+              controller: _permanentUrlController,
+              decoration: const InputDecoration(
+                labelText: 'Permanent HTTPS address',
+                hintText: 'https://watsafe-companion.onrender.com',
+                isDense: true,
+              ),
+              onSubmitted: (_) => _savePermanentUrlFromSheet(),
+            ),
+            const SizedBox(height: 8),
+            FilledButton.tonalIcon(
+              key: const Key('pairing_save_permanent_url_button'),
+              onPressed: _isBusy ? null : _savePermanentUrlFromSheet,
+              icon: const Icon(Icons.save_outlined, size: 16),
+              label: const Text('Save permanent address & refresh QR'),
+            ),
+          ],
+        ],
+      ),
     );
   }
 

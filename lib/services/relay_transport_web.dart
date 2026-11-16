@@ -33,11 +33,21 @@ Future<RelayHttpResponse> sendRelayJsonRequest({
         .fetch(url.toJS, init)
         .toDart
         .timeout(timeout);
+    final responseHeaders = <String, String>{};
+    final companionHeader = response.headers.get('x-watsafe-companion');
+    if (companionHeader != null && companionHeader.isNotEmpty) {
+      responseHeaders['x-watsafe-companion'] = companionHeader;
+    }
+    final swVersion = response.headers.get('x-watsafe-sw-version');
+    if (swVersion != null && swVersion.isNotEmpty) {
+      responseHeaders['x-watsafe-sw-version'] = swVersion;
+    }
     final textJs = await response.text().toDart.timeout(timeout);
     final text = textJs.toDart;
     return RelayHttpResponse(
       statusCode: response.status,
       body: text,
+      headers: responseHeaders,
       errorSummary: response.status >= 200 && response.status < 300
           ? null
           : 'HTTP ${response.status}',
@@ -60,4 +70,26 @@ Future<void> writePersistedJson(
   Object? storageDirectory,
 }) async {
   web.window.localStorage.setItem('watsafe.file.$filename', content);
+}
+
+Future<String?> readSecurePersistedSecret(
+  String key, {
+  Object? storageDirectory,
+}) async {
+  return web.window.localStorage.getItem('watsafe.secure.$key');
+}
+
+Future<void> writeSecurePersistedSecret(
+  String key,
+  String content, {
+  Object? storageDirectory,
+}) async {
+  web.window.localStorage.setItem('watsafe.secure.$key', content);
+}
+
+Future<void> deleteSecurePersistedSecret(
+  String key, {
+  Object? storageDirectory,
+}) async {
+  web.window.localStorage.removeItem('watsafe.secure.$key');
 }

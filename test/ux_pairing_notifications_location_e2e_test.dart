@@ -338,14 +338,9 @@ void main() {
         );
 
         // Open phone row details -> verify "Send test alert" and "Disconnect phone"
-        await tester.tap(
-          find.byKey(const Key('paired_phone_details_trigger')),
-        );
+        await tester.tap(find.byKey(const Key('paired_phone_details_trigger')));
         await pumpRealHttp();
-        expect(
-          find.byKey(const Key('send_test_alert_button')),
-          findsOneWidget,
-        );
+        expect(find.byKey(const Key('send_test_alert_button')), findsOneWidget);
         expect(
           find.byKey(const Key('disconnect_phone_button')),
           findsOneWidget,
@@ -472,7 +467,8 @@ void main() {
         );
 
         await tester.runAsync(() async {
-          final testDispatch = await laptopController.sendTestAlertToPairedPhone();
+          final testDispatch = await laptopController
+              .sendTestAlertToPairedPhone();
           expect(testDispatch.delivered, isTrue);
           await Future<void>.delayed(const Duration(milliseconds: 80));
           await phoneController.pollCompanionAlertsOnce();
@@ -527,10 +523,7 @@ void main() {
           phoneLocalNotifs.displayedNotifications.last.incidentId,
           realAlarmIncidentId,
         );
-        expect(
-          phoneController.receivedCompanionAlerts.first.location,
-          isNull,
-        );
+        expect(phoneController.receivedCompanionAlerts.first.location, isNull);
 
         // 3. Resolve async location lookup -> attaches to laptop & relay & phone WITHOUT duplicate notification!
         final capturedFix = DeviceLocationSnapshot(
@@ -651,7 +644,10 @@ void main() {
               storage: InMemorySecurePinStorage(),
               pbkdf2Iterations: 500,
             );
-            await laptopPin.setupInitialPin(pin: '654321', confirmPin: '654321');
+            await laptopPin.setupInitialPin(
+              pin: '654321',
+              confirmPin: '654321',
+            );
 
             final laptopRemote = ConfigurableRemoteNotificationService(
               persistToDisk: true,

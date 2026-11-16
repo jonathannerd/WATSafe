@@ -1,5 +1,8 @@
-# Free-tier Render Blueprint for a persistent HTTPS WATSafe Relay
-# (Automatic Let's Encrypt TLS certificate — zero paid services required)
+# Free-tier Render Blueprint for a permanent HTTPS WATSafe Companion & Relay
+# - Automatic Let's Encrypt TLS certificate at a permanent https://<name>.onrender.com origin
+# - Render automatically injects RENDER_EXTERNAL_URL, which WATSafe uses as permanentHttpsOrigin
+# - Pairing records, push subscriptions, and VAPID keys persist automatically in PostgreSQL
+#   when DATABASE_URL / AIVEN_DATABASE_URL is set (or in WATSAFE_DATA_DIR when a disk is attached)
 services:
   - type: web
     name: watsafe-relay
@@ -12,14 +15,20 @@ services:
         value: "8787"
       - key: WATSAFE_BIND_HOST
         value: "0.0.0.0"
+      - key: WATSAFE_DATA_DIR
+        value: "/var/lib/watsafe"
       - key: VAPID_SUBJECT
         value: "mailto:alerts@watsafe.app"
-      # Generate once locally via `dart run tool/generate_vapid_keys.dart`
-      # and paste into Render Dashboard so push subscriptions survive restarts:
+      # Optional if DATABASE_URL / AIVEN_DATABASE_URL is configured (WATSafe persists
+      # generated VAPID keys inside watsafe_server_secrets automatically). Set explicitly
+      # via `dart run tool/generate_vapid_keys.dart` when running without a database:
       - key: VAPID_PUBLIC_KEY
         sync: false
       - key: VAPID_PRIVATE_KEY
         sync: false
-      # Optional persistent PostgreSQL database URI:
+      # Durable PostgreSQL connection URI (recommended so pairings, events, push
+      # subscriptions, and VAPID keys survive container restarts and redeployments):
       - key: AIVEN_DATABASE_URL
+        sync: false
+      - key: DATABASE_URL
         sync: false

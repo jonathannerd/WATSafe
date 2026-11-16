@@ -2,7 +2,7 @@
 
 **WATSafe** is a cross-platform device protection application built with Flutter and native platform adapters for **macOS**, **Windows**, **iOS**, **Android**, and **Web**.
 
-Desktop builds protect laptops against unauthorized physical movement while armed. Companion phones (iPhone and Android via the guided HTTPS Home Screen web app or native mobile builds) pair by scanning one QR code, receive real RFC 8291/8292 Web Push notifications even when locked, and open the exact event with the protected laptop’s recorded location in **Activity**.
+Desktop builds protect laptops against unauthorized physical movement while armed. Companion phones (iPhone and Android via the permanent HTTPS Home Screen web app or native mobile builds) pair **once**, receive real RFC 8291/8292 Web Push notifications even when locked, survive laptop/phone/relay restarts with offline shell caching, and open the exact event with the protected laptop’s recorded location in **Activity**.
 
 ---
 
@@ -11,92 +11,97 @@ Desktop builds protect laptops against unauthorized physical movement while arme
 | Capability | Status | Details |
 |---|---|---|
 | **3-Task Adaptive UI (`Home`, `Activity`, `Settings`)** | **Implemented & Tested** | Consistent Material 3 navigation (`NavigationRail` on desktop, `NavigationBar` on phone) with plain-language statuses (`Off`, `Arming`, `Protected`, `Monitoring paused`, `Alarm triggered`), one primary action per state, and accessible contrast. |
-| **Guided iPhone & Android HTTPS Pairing + PWA** | **Implemented & Tested** | Tapping **Pair your phone** displays an HTTPS QR code (`/pair?code=...`) and 6-character fallback code. Serves `/manifest.webmanifest`, `apple-touch-icon` (`180x180`), `192x192` & `512x512` icons, and `/sw.js`. Separately checks HTTPS, iOS Home Screen standalone mode, notification permission, `PushManager` subscription, and backend registration—guiding Safari -> Home Screen handoff without ever putting tokens in URLs or showing dead notification buttons. |
-| **Real RFC 8291/8292 Web Push & Event Deep-Links** | **Implemented & Tested** | Built-in pure-Dart VAPID (`ES256`) + `aes128gcm` Web Push sender plus verified `FCM` / `APNs` / webhook adapters. Unified delivery path for **Send test alert** (instant or 5-second lock-phone test) and real alarms; marks **Notifications on** only after permission + subscription + backend registration succeed; deduplicates by `incidentId` and opens the exact event in **Activity**. |
-| **Single-Command Dev Launch & Zero-Terminal App Startup** | **Implemented & Tested** | Opening `WATSafe.app` directly works with zero terminals (reconnecting automatically to a configured HTTPS relay or running an embedded loopback relay). `./scripts/run_watsafe.sh` starts the local relay + valid-certificate HTTPS tunnel + macOS app in one command, verifies TLS `/v1/health`, and cleans up child processes on exit. |
+| **Permanent HTTPS Companion & Offline PWA Shell** | **Implemented & Tested** | Stable Web App Manifest (`id: '/companion'`, `start_url: '/companion?source=homescreen'`, `scope: '/'`, `display: 'standalone'`) and Service Worker (`/sw.js`) pre-caching the companion shell. Opening the Home Screen icon while offline or during proxy/tunnel outages always renders WATSafe (**Laptop offline** / **Connecting…** / **Service temporarily unavailable** with last-seen time and **Retry**)—never white proxy error pages (`HTTP 530` / Error `1033`). |
+| **Durable One-Time Pairing & Auto-Reconnect** | **Implemented & Tested** | Device identities and pairing credentials persist securely (macOS Keychain + `0600` Application Support on desktop; mirrored `localStorage` + `IndexedDB` on PWA) and survive relay restarts via `PostgresRelayStore` (with durable VAPID keys in `watsafe_server_secrets`) or durable `FileRelayStore`. Reconnects automatically on app launch, foreground resume, and Wi-Fi/cellular switches; handles token rotation (`POST /v1/companion/token/refresh`) and `pushsubscriptionchange` renewal without re-pairing. |
+| **Real RFC 8291/8292 Web Push & Event Deep-Links** | **Implemented & Tested** | Built-in pure-Dart VAPID (`ES256`) + `aes128gcm` Web Push sender plus verified `FCM` / `APNs` / webhook adapters. Unified delivery path for **Send test alert** and real alarms; marks **Notifications on** only after permission + subscription + backend registration succeed; deduplicates by `incidentId` and opens `/companion?event=<incidentId>`. |
 | **Protected Device Location on Alarm** | **Implemented & Tested** | Non-blocking location capture (`CoreLocation` on macOS/iOS, Android `LocationManager`, Browser Geolocation) so location lookup never delays the local siren or initial phone alert; map preview, recorded timestamp, precision badge (`Precise` / `Approximate` / `Last known`), and **Open in Maps**. |
 | **Central Alarm, PIN & First-Use Demo Controls** | **Implemented & Tested** | Generation-guarded state machine, immediate siren stop on verified 6+ digit PIN, PBKDF2-HMAC-SHA256 salted PIN storage, and development-only **Preview onboarding** & **Reset demo and restart onboarding** controls in **Settings -> Advanced**. |
 | **Camera & Motion Sensor Detection** | **Implemented & Tested** | macOS `AVFoundation`, Windows Media Foundation + WinRT `Accelerometer`, Android Foreground Service motion sensors, iOS `CMMotionManager`, and Web camera scene-motion analysis (`64x48` 4x4 optical flow in volatile memory). |
 
 ---
 
-## Launching WATSafe Easily
+## One-Time Setup: Giving the Phone Companion a Permanent HTTPS Address
 
-### Option A — Single Command for Local Mac + Real iPhone HTTPS Testing (Recommended for Demos)
-From the repository root, run **one command**:
+### Why Temporary Quick Tunnels Caused White Error Pages After Restarts
+Running an anonymous quick tunnel (`*.trycloudflare.com`, `*.lhr.life`, or free dynamic `ngrok`) creates a **brand-new random hostname** every time the launcher restarts. Because iOS Safari pins an installed Home Screen bookmark strictly to the domain it was installed from, closing and reopening the laptop launcher retired the previous `*.trycloudflare.com` tunnel—causing the old Home Screen icon to hit Cloudflare’s retired-tunnel page (`HTTP 530` / Error `1033` with a white page and *“Was this helpful?”*) instead of WATSafe.
+
+To make Home Screen installation and pairing **true one-time setup steps**, point WATSafe at a permanent HTTPS origin once using either option below. *(Account sign-in to Render or Cloudflare is required once by you because cloud deployment requires your account authorization.)*
+
+### Option 1 — Free Render Cloud Blueprint (`render.yaml`, Recommended)
+1. In your Render dashboard, choose **New -> Blueprint** and connect `jonathannerd/WATSafe` (uses [`render.yaml`](render.yaml) and [`Dockerfile`](Dockerfile) to provision the HTTPS `watsafe-companion` service + managed PostgreSQL database so pairings, push subscriptions, and VAPID keys survive every redeploy).
+2. Copy your permanent Render HTTPS URL (for example `https://watsafe-companion.onrender.com`).
+3. Save it once on your Mac (persists to `~/.watsafe/relay_service.json` so every future launch reconnects automatically):
+   ```bash
+   ./scripts/run_watsafe.sh --save-permanent-url=https://watsafe-companion.onrender.com --save-only
+   ```
+   *(Or paste it directly inside **WATSafe -> Settings -> Phone companion address & migration** -> **Save**.)*
+
+### Option 2 — Permanent Named Cloudflare Tunnel (Zero Cloud Hosting)
+If you own a Cloudflare domain and create a Named Tunnel pointing to `http://127.0.0.1:8787`:
 ```bash
-./scripts/run_watsafe.sh
+export WATSAFE_CLOUDFLARE_TUNNEL_TOKEN="<your-named-tunnel-token>"
+./scripts/run_watsafe.sh --save-permanent-url=https://watsafe.yourdomain.com
 ```
-What this does automatically:
-1. Picks port `8787` (or the next free port if occupied) and starts the local WATSafe relay with persistent VAPID Web Push keys (`.watsafe-runtime/vapid_keys.json`).
-2. Opens a valid-certificate public HTTPS tunnel (`cloudflared`, `ngrok`, or built-in macOS `ssh` via `localhost.run` — no account or payment required) and verifies `/v1/health` over TLS.
-3. Passes the verified `https://...` origin to both the QR generator and `flutter run -d macos` (`WATSAFE_API_URL`) so scanning the laptop QR on an iPhone 13 opens an HTTPS URL with a trusted certificate.
-4. Stops all child processes cleanly when you exit or press `Ctrl+C`.
-
-Useful launcher flags:
-```bash
-./scripts/run_watsafe.sh --check-only   # Verify relay + public HTTPS tunnel readiness and exit cleanly
-./scripts/run_watsafe.sh --relay-only   # Run relay + HTTPS tunnel only (for pairing with a prebuilt WATSafe.app)
-```
-
-### Option B — Normal App Launch (No Terminals Required)
-Once built (`flutter build macos`), double-clicking `build/macos/Build/Products/Debug/WATSafe.app` (or `Release/WATSafe.app`) works immediately without opening any terminal:
-- If built with `--dart-define=WATSAFE_API_URL=https://<your-cloud-relay>` (or previously paired against a cloud HTTPS relay), `WATSafe.app` reconnects automatically on launch.
-- If no external relay is configured, `WATSafe.app` automatically starts an embedded local relay in-process. (Note: Apple requires a valid HTTPS origin—via `./scripts/run_watsafe.sh` or a deployed cloud relay—for iPhone Home Screen Web Push.)
-- Free-tier persistent HTTPS deployment files (`Dockerfile`, `render.yaml`, and `tool/generate_vapid_keys.dart`) are ready in [`backend/README.md`](backend/README.md).
+Your local Mac relay stores pairings and VAPID keys durably in `~/.watsafe/relay/`, and the hostname never changes across restarts.
 
 ---
 
-## Step-by-Step iPhone 13 Companion Setup
+## Normal Everyday Launch (After One-Time Setup)
 
-Apple requires iOS web apps to be served over **HTTPS** and opened from the **Home Screen** before system notifications and Web Push are exposed (WebKit Web Push policy for iOS 16.4+). WATSafe detects every requirement separately and guides you step by step:
+Once your permanent HTTPS URL is saved in `~/.watsafe/relay_service.json` (or [`config/relay_service.json`](config/relay_service.json)):
 
-1. Launch WATSafe with `./scripts/run_watsafe.sh` (or against your HTTPS cloud relay) and click **Pair your phone** on your Mac.
-2. Scan the QR code with the **iPhone Camera** app and tap **Connect to \<Your Mac\>**.
-3. On iPhone Safari, WATSafe detects that Home Screen installation is needed next:
-   - Tap **Copy setup code** (a short 6-character single-use handoff code; no tokens are placed in the URL).
-   - Tap the Safari **Share** button -> **Add to Home Screen** -> **Add**.
-4. Open the **WATSafe** icon from your iPhone **Home Screen** and enter the 6-character code to link your paired session inside the installed app.
-5. Tap **Enable notifications** and tap **Allow** on the iOS system prompt. Both your iPhone and Mac will update to **Notifications on** only after permission, `PushManager` subscription, and backend registration all succeed.
-6. Tap **Test in 5s (lock phone now)**, lock your iPhone, verify the lock-screen notification arrives, and tap it to open the exact event in **Activity**.
+- **Double-click `WATSafe.app`** (`build/macos/Build/Products/Debug/WATSafe.app` or `Release/WATSafe.app`) — **no terminal required**. The Mac app automatically reconnects to your permanent HTTPS service, restores your paired iPhone, and sends a host presence heartbeat (`hostOnline: true`).
+- **Or launch from source with one command:**
+  ```bash
+  ./scripts/run_watsafe.sh
+  ```
+  When a permanent HTTPS URL is saved, `run_watsafe.sh` connects directly to that permanent origin instead of spawning a temporary tunnel.
+
+*(If you run `./scripts/run_watsafe.sh` before deploying a permanent URL, it still falls back to a temporary dev tunnel for quick local testing and prints a clear `[WATSafe] PERMANENT ADDRESS DEPENDENCY` notice in the terminal and pairing UI.)*
+
+---
+
+## One-Time Migration for Existing iPhone 13 Home Screen Installations
+
+### Why One Final Home Screen Install & Pairing Is Required When Changing Domains
+Apple WebKit strictly isolates Home Screen web apps, Service Workers, `CacheStorage`, `IndexedDB`/`localStorage` credentials, and `PushManager` Web Push subscriptions **per web origin** (`scheme + host + port`). Credentials and push subscriptions created under an old `https://random-words.trycloudflare.com` origin cannot be read by `https://watsafe-companion.onrender.com`.
+
+Perform this migration **once**:
+1. **Remove the old temporary bookmark on iPhone 13:** Touch and hold the old **WATSafe** icon on your iPhone Home Screen -> **Delete Bookmark**.
+2. **Save your permanent HTTPS URL on your Mac:** Run `./scripts/run_watsafe.sh --save-permanent-url=https://<your-permanent-domain> --save-only` (or save it in **Settings -> Phone companion address & migration**), then open **WATSafe** and click **Pair your phone**.
+3. **Install & pair once on the permanent address (`https://<your-permanent-domain>/companion`):**
+   - Scan the QR code with the iPhone Camera app and tap **Connect to \<Your Mac\>**.
+   - Tap **Copy setup code**, tap Safari **Share -> Add to Home Screen -> Add**, open the new **WATSafe** Home Screen icon, paste the 6-character setup code, and tap **Enable notifications -> Allow**.
+4. **Done permanently:** From now on:
+   - Closing and reopening WATSafe on your Mac or iPhone reconnects automatically.
+   - If your Mac is closed or asleep, opening the iPhone Home Screen icon always opens WATSafe immediately (via the cached Service Worker shell) and displays **Laptop offline** with the last-seen time and a **Retry** button—never a white tunnel page.
+   - Reopening WATSafe on your Mac automatically transitions the iPhone back to **Connected**.
 
 ---
 
 ## First-Use & Fresh-Start Testing
 
-### Why Relaunching Keeps Your Data
-Relaunching `WATSafe.app` or pressing `R` (hot restart) in `flutter run` intentionally preserves your saved PIN, paired phone session, device name, settings, and **Activity** history so protection settings survive normal restarts.
-
-### Resetting to a Clean First Launch (Mac + Phone)
 In debug/development builds, open **Settings -> Advanced** (`First-use & demo testing`):
-- **Preview onboarding:** Opens the welcome & PIN setup walkthrough immediately while keeping your saved PIN, paired phone, settings, and Activity history intact. Click **Exit preview** at the top to return.
-- **Reset demo and restart onboarding:** After confirmation, stops any active monitoring and silences siren audio immediately, revokes **only** this installation’s paired phone session and Web Push subscription on the relay, clears this device’s saved PIN, resets settings and Activity history, and returns immediately to `Welcome to WATSafe`.
-- **Resetting on iPhone:** Delete the **WATSafe** icon from the iPhone Home Screen (touch and hold -> **Remove App** -> **Delete Bookmark**).
-
-### Resetting OS & Browser Permissions Separately
-App resets cannot revoke OS-level privacy grants. To re-test first-time OS permission prompts:
-- **macOS Camera / Location / Notifications:** Open **System Settings -> Privacy & Security** (`Camera`, `Location Services`, or `Notifications`) and toggle **WATSafe**, or reset Camera permission in Terminal with:
-  ```bash
-  tccutil reset Camera dev.watsafe.temp.watsafe
-  ```
-- **iPhone Web App Notifications:** Open **iOS Settings -> Notifications -> WATSafe** and toggle **Allow Notifications** off (or delete and re-add the Home Screen icon).
-- **Desktop / Android Browser Permissions:** Tap the site lock/tune icon in the address bar -> **Permissions** -> **Reset permissions**.
+- **Preview onboarding:** Inspects the welcome & PIN setup walkthrough without modifying saved PIN, paired phone, settings, or Activity history.
+- **Reset demo and restart onboarding:** Stops active monitoring and silences siren audio immediately, revokes **only** this installation’s paired session and Web Push subscription on the relay, clears this device’s saved PIN and secure pairing credentials, and returns to `Welcome to WATSafe`.
 
 ---
 
 ## Verification Commands
 ```bash
-flutter pub get
+dart format --output=none --set-exit-if-changed .
 flutter analyze
+dart analyze tool/ backend/ lib/
 flutter test
 flutter build web
 flutter build macos --debug
-./scripts/run_watsafe.sh --check-only
+./scripts/run_watsafe.sh --check-only --no-tunnel
 ```
 
 ---
 
 ## Privacy & Security Invariants
 - **Volatile Camera Frames & Local PINs:** Camera frames are analyzed strictly in memory and never saved or uploaded; PINs and PBKDF2 hashes never leave the device.
-- **No Credentials in URLs or Logs:** Session tokens (`hostToken`, `companionToken`), VAPID private keys, and database URLs are never placed in query strings, handoff URLs, client bundles, or logs.
-- **Authenticated Coordinates & Private Lock-Screen Push Text:** Precise coordinates are returned only to authenticated session tokens; lock-screen Web Push payloads contain only the device name and plain alarm message.
+- **Secure Credential Persistence, Never in URLs or Logs:** Session tokens (`hostToken`, `companionToken`), VAPID private keys, and database URLs are stored in restricted/Keychain storage (`0600` on POSIX, macOS Keychain, and origin-scoped PWA storage) and are never placed in query strings, handoff URLs, plain device list files, client bundles, or logs.
+- **Authentic-Origin Revocation Guard:** Saved pairings are cleared only on explicit user disconnect/reset or an authentic WATSafe `401` (`X-WATSafe-Companion: 1`), never on transient network errors or third-party proxy error pages.
+- **Authenticated Coordinates & Private Lock-Screen Push Text:** Precise coordinates are returned only to authenticated session tokens; lock-screen Web Push payloads contain only the device name, plain alarm message, and opaque `incidentId`.

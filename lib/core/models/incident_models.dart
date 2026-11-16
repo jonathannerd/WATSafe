@@ -206,7 +206,9 @@ class IncidentRecord {
     final detectorId = json['detectorType'] as String?;
     final rawLocation = json['location'];
     final parsedLocation = rawLocation is Map
-        ? DeviceLocationSnapshot.fromJson(Map<String, Object?>.from(rawLocation))
+        ? DeviceLocationSnapshot.fromJson(
+            Map<String, Object?>.from(rawLocation),
+          )
         : null;
     final parsedStatus = IncidentLocationStatus.fromName(
       json['locationStatus'] as String?,
@@ -232,7 +234,8 @@ class IncidentRecord {
       remoteNotificationStatus:
           json['remoteNotificationStatus'] as String? ?? 'Not sent',
       location: parsedLocation,
-      locationStatus: parsedLocation != null &&
+      locationStatus:
+          parsedLocation != null &&
               parsedStatus == IncidentLocationStatus.notRequested
           ? IncidentLocationStatus.attached
           : parsedStatus,

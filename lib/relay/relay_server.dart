@@ -16,18 +16,102 @@ class RelaySessionRecord {
     required this.hostDisplayName,
     required this.hostToken,
     required this.createdAtUtc,
+    this.hostDeviceId,
     this.activePairingCode,
     this.codeExpiresAtUtc,
     this.failedCodeAttempts = 0,
+    this.hostLastSeenAtUtc,
+    this.hostDisconnectedAtUtc,
+    this.hostProtectionState = 'off',
   });
 
   final String pairingSessionId;
   String hostDisplayName;
   final String hostToken;
   final DateTime createdAtUtc;
+  String? hostDeviceId;
   String? activePairingCode;
   DateTime? codeExpiresAtUtc;
   int failedCodeAttempts;
+  DateTime? hostLastSeenAtUtc;
+  DateTime? hostDisconnectedAtUtc;
+  String hostProtectionState;
+
+  bool isHostOnlineAt(
+    DateTime nowUtc, {
+    Duration ttl = const Duration(seconds: 45),
+  }) {
+    if (hostDisconnectedAtUtc != null) {
+      return false;
+    }
+    final seen = hostLastSeenAtUtc;
+    if (seen == null) {
+      return false;
+    }
+    return nowUtc.difference(seen) <= ttl;
+  }
+
+  void markHostSeen(
+    DateTime nowUtc, {
+    String? displayName,
+    String? deviceId,
+    String? protectionState,
+  }) {
+    hostLastSeenAtUtc = nowUtc;
+    hostDisconnectedAtUtc = null;
+    if (displayName != null && displayName.trim().isNotEmpty) {
+      hostDisplayName = displayName.trim();
+    }
+    if (deviceId != null && deviceId.trim().isNotEmpty) {
+      hostDeviceId = deviceId.trim();
+    }
+    if (protectionState != null && protectionState.trim().isNotEmpty) {
+      hostProtectionState = protectionState.trim();
+    }
+  }
+
+  Map<String, Object?> toStorageJson() {
+    return <String, Object?>{
+      'pairingSessionId': pairingSessionId,
+      'hostDisplayName': hostDisplayName,
+      'hostToken': hostToken,
+      'createdAtUtc': createdAtUtc.toIso8601String(),
+      'hostDeviceId': ?hostDeviceId,
+      'activePairingCode': ?activePairingCode,
+      'codeExpiresAtUtc': ?codeExpiresAtUtc?.toIso8601String(),
+      'failedCodeAttempts': failedCodeAttempts,
+      'hostLastSeenAtUtc': ?hostLastSeenAtUtc?.toIso8601String(),
+      'hostDisconnectedAtUtc': ?hostDisconnectedAtUtc?.toIso8601String(),
+      'hostProtectionState': hostProtectionState,
+    };
+  }
+
+  factory RelaySessionRecord.fromStorageJson(Map<String, Object?> json) {
+    final createdRaw = json['createdAtUtc'] as String? ?? '';
+    final expiresRaw = json['codeExpiresAtUtc'] as String?;
+    final lastSeenRaw = json['hostLastSeenAtUtc'] as String?;
+    final disconnectedRaw = json['hostDisconnectedAtUtc'] as String?;
+    return RelaySessionRecord(
+      pairingSessionId: json['pairingSessionId'] as String? ?? '',
+      hostDisplayName: json['hostDisplayName'] as String? ?? 'My Laptop',
+      hostToken: json['hostToken'] as String? ?? '',
+      createdAtUtc:
+          DateTime.tryParse(createdRaw)?.toUtc() ?? DateTime.now().toUtc(),
+      hostDeviceId: json['hostDeviceId'] as String?,
+      activePairingCode: json['activePairingCode'] as String?,
+      codeExpiresAtUtc: expiresRaw != null
+          ? DateTime.tryParse(expiresRaw)?.toUtc()
+          : null,
+      failedCodeAttempts: (json['failedCodeAttempts'] as num?)?.toInt() ?? 0,
+      hostLastSeenAtUtc: lastSeenRaw != null
+          ? DateTime.tryParse(lastSeenRaw)?.toUtc()
+          : null,
+      hostDisconnectedAtUtc: disconnectedRaw != null
+          ? DateTime.tryParse(disconnectedRaw)?.toUtc()
+          : null,
+      hostProtectionState: json['hostProtectionState'] as String? ?? 'off',
+    );
+  }
 }
 
 /// Companion phone bond linked to a specific [pairingSessionId].
@@ -40,6 +124,9 @@ class CompanionBondRecord {
     required this.platform,
     required this.companionToken,
     required this.pairedAtUtcIso,
+    this.previousCompanionToken,
+    this.previousTokenGraceUntilUtc,
+    this.tokenRefreshedAtUtcIso,
     this.connected = true,
     this.pushChannelReady = false,
     this.notificationsEnabled = false,
@@ -66,6 +153,9 @@ class CompanionBondRecord {
   String platform;
   String companionToken;
   final String pairedAtUtcIso;
+  String? previousCompanionToken;
+  DateTime? previousTokenGraceUntilUtc;
+  String? tokenRefreshedAtUtcIso;
   bool connected;
   bool pushChannelReady;
   bool notificationsEnabled;
@@ -85,6 +175,24 @@ class CompanionBondRecord {
   String? lastSeenAtUtcIso;
 
   bool get isRevoked => revokedAtUtcIso != null;
+
+  bool matchesCompanionToken(String candidate, DateTime nowUtc) {
+    if (isRevoked || candidate.isEmpty) {
+      return false;
+    }
+    if (companionToken == candidate) {
+      return true;
+    }
+    final prev = previousCompanionToken;
+    final graceUntil = previousTokenGraceUntilUtc;
+    if (prev != null &&
+        prev == candidate &&
+        graceUntil != null &&
+        nowUtc.isBefore(graceUntil)) {
+      return true;
+    }
+    return false;
+  }
 
   bool get hasValidWebPushSubscription =>
       webPushEndpoint != null &&
@@ -128,6 +236,79 @@ class CompanionBondRecord {
       'backendPushRegistered': backendPushRegistered,
       'lastSeenAtUtcIso': ?lastSeenAtUtcIso,
     };
+  }
+
+  Map<String, Object?> toStorageJson() {
+    return <String, Object?>{
+      'bondId': bondId,
+      'pairingSessionId': pairingSessionId,
+      'deviceId': deviceId,
+      'displayName': displayName,
+      'platform': platform,
+      'companionToken': companionToken,
+      'pairedAtUtcIso': pairedAtUtcIso,
+      'previousCompanionToken': ?previousCompanionToken,
+      'previousTokenGraceUntilUtc': ?previousTokenGraceUntilUtc
+          ?.toIso8601String(),
+      'tokenRefreshedAtUtcIso': ?tokenRefreshedAtUtcIso,
+      'connected': connected,
+      'pushChannelReady': pushChannelReady,
+      'notificationsEnabled': notificationsEnabled,
+      'notificationChannel': notificationChannel,
+      'httpsReady': httpsReady,
+      'homeScreenInstalled': homeScreenInstalled,
+      'notificationPermission': notificationPermission,
+      'pushSubscribed': pushSubscribed,
+      'backendPushRegistered': backendPushRegistered,
+      'pushToken': ?pushToken,
+      'webPushEndpoint': ?webPushEndpoint,
+      'webPushP256dh': ?webPushP256dh,
+      'webPushAuth': ?webPushAuth,
+      'activeHandoffCode': ?activeHandoffCode,
+      'handoffExpiresAtUtc': ?handoffExpiresAtUtc?.toIso8601String(),
+      'revokedAtUtcIso': ?revokedAtUtcIso,
+      'lastSeenAtUtcIso': ?lastSeenAtUtcIso,
+    };
+  }
+
+  factory CompanionBondRecord.fromStorageJson(Map<String, Object?> json) {
+    final graceRaw = json['previousTokenGraceUntilUtc'] as String?;
+    final handoffRaw = json['handoffExpiresAtUtc'] as String?;
+    return CompanionBondRecord(
+      bondId: json['bondId'] as String? ?? '',
+      pairingSessionId: json['pairingSessionId'] as String? ?? '',
+      deviceId: json['deviceId'] as String? ?? '',
+      displayName: json['displayName'] as String? ?? 'My Phone',
+      platform: json['platform'] as String? ?? 'Phone',
+      companionToken: json['companionToken'] as String? ?? '',
+      pairedAtUtcIso: json['pairedAtUtcIso'] as String? ?? '',
+      previousCompanionToken: json['previousCompanionToken'] as String?,
+      previousTokenGraceUntilUtc: graceRaw != null
+          ? DateTime.tryParse(graceRaw)?.toUtc()
+          : null,
+      tokenRefreshedAtUtcIso: json['tokenRefreshedAtUtcIso'] as String?,
+      connected: json['connected'] as bool? ?? true,
+      pushChannelReady: json['pushChannelReady'] as bool? ?? false,
+      notificationsEnabled: json['notificationsEnabled'] as bool? ?? false,
+      notificationChannel:
+          json['notificationChannel'] as String? ?? 'foreground_only',
+      httpsReady: json['httpsReady'] as bool? ?? false,
+      homeScreenInstalled: json['homeScreenInstalled'] as bool? ?? false,
+      notificationPermission:
+          json['notificationPermission'] as String? ?? 'default',
+      pushSubscribed: json['pushSubscribed'] as bool? ?? false,
+      backendPushRegistered: json['backendPushRegistered'] as bool? ?? false,
+      pushToken: json['pushToken'] as String?,
+      webPushEndpoint: json['webPushEndpoint'] as String?,
+      webPushP256dh: json['webPushP256dh'] as String?,
+      webPushAuth: json['webPushAuth'] as String?,
+      activeHandoffCode: json['activeHandoffCode'] as String?,
+      handoffExpiresAtUtc: handoffRaw != null
+          ? DateTime.tryParse(handoffRaw)?.toUtc()
+          : null,
+      revokedAtUtcIso: json['revokedAtUtcIso'] as String?,
+      lastSeenAtUtcIso: json['lastSeenAtUtcIso'] as String?,
+    );
   }
 }
 
@@ -254,6 +435,31 @@ class SessionAlertRecord {
       'locationStatus': locationStatus,
     };
   }
+
+  factory SessionAlertRecord.fromJson(Map<String, Object?> json) {
+    AlertLocationData? loc;
+    final rawLoc = json['location'];
+    if (rawLoc is Map) {
+      loc = AlertLocationData.fromJson(Map<String, Object?>.from(rawLoc));
+    }
+    return SessionAlertRecord(
+      alertSeq: (json['alertSeq'] as num?)?.toInt() ?? 0,
+      updatedSeq: (json['updatedSeq'] as num?)?.toInt(),
+      pairingSessionId: json['pairingSessionId'] as String? ?? '',
+      incidentId: json['incidentId'] as String? ?? '',
+      sessionId: json['sessionId'] as String? ?? '',
+      kind: json['kind'] as String? ?? 'realDetectorTrigger',
+      detectorType: json['detectorType'] as String? ?? 'unknown',
+      triggeredAtUtc: json['triggeredAtUtc'] as String? ?? '',
+      triggerSummary: json['triggerSummary'] as String? ?? '',
+      createdAtUtc: json['createdAtUtc'] as String? ?? '',
+      peakMotionScore: (json['peakMotionScore'] as num?)?.toDouble(),
+      hostDisplayName: json['hostDisplayName'] as String?,
+      isTest: json['isTest'] as bool? ?? false,
+      location: loc,
+      locationStatus: json['locationStatus'] as String? ?? 'notRequested',
+    );
+  }
 }
 
 /// Outbound lock-screen push payload (strictly device name + alarm message + incidentId;
@@ -336,6 +542,7 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
        _customSender = customSender {
     final envPriv = (_env['VAPID_PRIVATE_KEY'] ?? '').trim();
     final envPub = (_env['VAPID_PUBLIC_KEY'] ?? '').trim();
+    _hasExplicitEnvVapidKey = envPriv.isNotEmpty || envPub.isNotEmpty;
     if (envPriv.isNotEmpty) {
       _vapidKeyPair = VapidKeyPair.fromBase64Url(
         privateKeyBase64Url: envPriv,
@@ -363,10 +570,47 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
 
   final Map<String, String> _env;
   final Future<bool> Function(OutboundPushEnvelope envelope)? _customSender;
-  late final VapidKeyPair _vapidKeyPair;
+  late final bool _hasExplicitEnvVapidKey;
+  late VapidKeyPair _vapidKeyPair;
   late final String? _publicKeyOverride;
-  late final DirectWebPushSender _webPushSender;
+  late DirectWebPushSender _webPushSender;
   final List<OutboundPushEnvelope> _sentEnvelopes = <OutboundPushEnvelope>[];
+
+  /// Ensures VAPID keys survive container redeployments and backend restarts by
+  /// synchronizing with [store] whenever env overrides are not set.
+  Future<void> syncDurableVapidKeys(RelayStore store) async {
+    if (_hasExplicitEnvVapidKey) {
+      await store.savePersistedVapidKeys(
+        publicKeyBase64Url: vapidPublicKey ?? _vapidKeyPair.publicKeyBase64Url,
+        privateKeyBase64Url: _vapidKeyPair.privateKeyBase64Url,
+      );
+      return;
+    }
+    try {
+      final stored = await store.loadPersistedVapidKeys();
+      final storedPriv = stored?['privateKey']?.trim() ?? '';
+      final storedPub = stored?['publicKey']?.trim();
+      if (storedPriv.isNotEmpty) {
+        _vapidKeyPair = VapidKeyPair.fromBase64Url(
+          privateKeyBase64Url: storedPriv,
+          publicKeyBase64Url: (storedPub != null && storedPub.isNotEmpty)
+              ? storedPub
+              : null,
+        );
+        _webPushSender = DirectWebPushSender(
+          vapidKeyPair: _vapidKeyPair,
+          vapidSubject: _vapidSubject,
+        );
+        return;
+      }
+      await store.savePersistedVapidKeys(
+        publicKeyBase64Url: _vapidKeyPair.publicKeyBase64Url,
+        privateKeyBase64Url: _vapidKeyPair.privateKeyBase64Url,
+      );
+    } catch (_) {
+      // Non-fatal: keep loaded/generated VAPID keypair
+    }
+  }
 
   bool? _webhookSenderVerified;
 
@@ -521,6 +765,8 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
                 'incidentId': envelope.incidentId,
                 'pairingSessionId': envelope.pairingSessionId,
                 'isTest': envelope.isTest,
+                'url':
+                    '/companion?event=${Uri.encodeComponent(envelope.incidentId)}',
               },
             },
             incidentId: envelope.incidentId,
@@ -761,10 +1007,21 @@ abstract class RelayStore {
   });
 
   Future<int> latestAlertSeq(String pairingSessionId);
+
+  Future<Map<String, String>?> loadPersistedVapidKeys() async => null;
+
+  Future<void> savePersistedVapidKeys({
+    required String publicKeyBase64Url,
+    required String privateKeyBase64Url,
+  }) async {}
 }
 
-/// Default zero-configuration in-memory store for local runs and offline CI.
+/// Default zero-configuration in-memory store for isolated unit tests.
 class InMemoryRelayStore implements RelayStore {
+  InMemoryRelayStore({DateTime Function()? clock})
+    : _clock = clock ?? DateTime.now;
+
+  final DateTime Function() _clock;
   final Map<String, RelaySessionRecord> _sessionsById =
       <String, RelaySessionRecord>{};
   final Map<String, CompanionBondRecord> _bondsById =
@@ -772,6 +1029,7 @@ class InMemoryRelayStore implements RelayStore {
   final Map<String, List<SessionAlertRecord>> _alertsBySession =
       <String, List<SessionAlertRecord>>{};
   final Map<String, int> _seqBySession = <String, int>{};
+  Map<String, String>? _vapidKeys;
 
   @override
   String get backendName => 'memory';
@@ -784,6 +1042,20 @@ class InMemoryRelayStore implements RelayStore {
 
   @override
   Future<void> close() async {}
+
+  @override
+  Future<Map<String, String>?> loadPersistedVapidKeys() async => _vapidKeys;
+
+  @override
+  Future<void> savePersistedVapidKeys({
+    required String publicKeyBase64Url,
+    required String privateKeyBase64Url,
+  }) async {
+    _vapidKeys = <String, String>{
+      'publicKey': publicKeyBase64Url,
+      'privateKey': privateKeyBase64Url,
+    };
+  }
 
   @override
   Future<void> saveSession(RelaySessionRecord session) async {
@@ -826,8 +1098,9 @@ class InMemoryRelayStore implements RelayStore {
   Future<CompanionBondRecord?> findActiveBondByCompanionToken(
     String companionToken,
   ) async {
+    final nowUtc = _clock().toUtc();
     for (final bond in _bondsById.values) {
-      if (!bond.isRevoked && bond.companionToken == companionToken) {
+      if (bond.matchesCompanionToken(companionToken, nowUtc)) {
         return bond;
       }
     }
@@ -861,13 +1134,15 @@ class InMemoryRelayStore implements RelayStore {
     required String deviceId,
   }) async {
     var revokedAny = false;
-    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final nowIso = _clock().toUtc().toIso8601String();
     for (final bond in _bondsById.values) {
       if (!bond.isRevoked &&
           bond.pairingSessionId == pairingSessionId &&
           bond.deviceId == deviceId) {
         bond.clearWebPushSubscription();
         bond.pushToken = null;
+        bond.previousCompanionToken = null;
+        bond.previousTokenGraceUntilUtc = null;
         bond.activeHandoffCode = null;
         bond.handoffExpiresAtUtc = null;
         bond.revokedAtUtcIso = nowIso;
@@ -880,11 +1155,13 @@ class InMemoryRelayStore implements RelayStore {
 
   @override
   Future<void> revokeSessionAndBonds(String pairingSessionId) async {
-    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final nowIso = _clock().toUtc().toIso8601String();
     for (final bond in _bondsById.values) {
       if (!bond.isRevoked && bond.pairingSessionId == pairingSessionId) {
         bond.clearWebPushSubscription();
         bond.pushToken = null;
+        bond.previousCompanionToken = null;
+        bond.previousTokenGraceUntilUtc = null;
         bond.activeHandoffCode = null;
         bond.handoffExpiresAtUtc = null;
         bond.revokedAtUtcIso = nowIso;
@@ -994,14 +1271,420 @@ class InMemoryRelayStore implements RelayStore {
   }) async {
     final list =
         _alertsBySession[pairingSessionId] ?? const <SessionAlertRecord>[];
-    return list
-        .where((a) => a.effectiveSeq > afterSeq)
-        .toList(growable: false);
+    return list.where((a) => a.effectiveSeq > afterSeq).toList(growable: false);
   }
 
   @override
   Future<int> latestAlertSeq(String pairingSessionId) async {
     return _seqBySession[pairingSessionId] ?? 0;
+  }
+}
+
+/// Durable atomic JSON file store (`relay_store.json` + `vapid_keys.json` with
+/// `0600` POSIX permissions) so pairing sessions, companion bonds, Web Push
+/// subscriptions, VAPID keys, and incident alerts survive backend restarts and
+/// updates even when PostgreSQL is not configured.
+class FileRelayStore implements RelayStore {
+  FileRelayStore({required Directory directory, DateTime Function()? clock})
+    : _directory = directory,
+      _inner = InMemoryRelayStore(clock: clock);
+
+  factory FileRelayStore.fromEnvironment([
+    Map<String, String>? environment,
+    DateTime Function()? clock,
+  ]) {
+    final env = environment ?? Platform.environment;
+    final explicit = (env['WATSAFE_DATA_DIR'] ?? '').trim();
+    Directory dir;
+    if (explicit.isNotEmpty) {
+      dir = Directory(explicit);
+    } else {
+      final home = (env['HOME'] ?? env['USERPROFILE'] ?? env['APPDATA'] ?? '')
+          .trim();
+      if (home.isNotEmpty) {
+        dir = Directory(
+          '$home${Platform.pathSeparator}.watsafe${Platform.pathSeparator}relay',
+        );
+      } else {
+        dir = Directory(
+          '${Directory.systemTemp.path}${Platform.pathSeparator}watsafe_relay',
+        );
+      }
+    }
+    return FileRelayStore(directory: dir, clock: clock);
+  }
+
+  static const int _maxAlertsPerSession = 200;
+
+  final Directory _directory;
+  final InMemoryRelayStore _inner;
+  Future<void> _writeChain = Future<void>.value();
+  bool _initialized = false;
+
+  File get _storeFile =>
+      File('${_directory.path}${Platform.pathSeparator}relay_store.json');
+  File get _vapidFile =>
+      File('${_directory.path}${Platform.pathSeparator}vapid_keys.json');
+
+  @override
+  String get backendName => 'durable_file';
+
+  @override
+  String get redactedDescription => 'durable local file store';
+
+  Future<void> _tightenFilePermissions(File file) async {
+    if (!Platform.isWindows) {
+      try {
+        await Process.run('chmod', <String>['600', file.path]);
+      } catch (_) {}
+    }
+  }
+
+  @override
+  Future<void> initialize() async {
+    if (_initialized) {
+      return;
+    }
+    _initialized = true;
+    await _directory.create(recursive: true);
+    if (!await _storeFile.exists()) {
+      return;
+    }
+    try {
+      final raw = await _storeFile.readAsString();
+      if (raw.trim().isEmpty) {
+        return;
+      }
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        return;
+      }
+      final root = Map<String, Object?>.from(decoded);
+      final sessionsRaw =
+          root['sessions'] as List<Object?>? ?? const <Object?>[];
+      for (final item in sessionsRaw.whereType<Map<Object?, Object?>>()) {
+        final record = RelaySessionRecord.fromStorageJson(
+          Map<String, Object?>.from(item),
+        );
+        if (record.pairingSessionId.isNotEmpty && record.hostToken.isNotEmpty) {
+          _inner._sessionsById[record.pairingSessionId] = record;
+        }
+      }
+      final bondsRaw = root['bonds'] as List<Object?>? ?? const <Object?>[];
+      for (final item in bondsRaw.whereType<Map<Object?, Object?>>()) {
+        final bond = CompanionBondRecord.fromStorageJson(
+          Map<String, Object?>.from(item),
+        );
+        if (bond.bondId.isNotEmpty) {
+          _inner._bondsById[bond.bondId] = bond;
+        }
+      }
+      final seqRaw = root['seqBySession'];
+      if (seqRaw is Map) {
+        for (final entry in seqRaw.entries) {
+          final v = entry.value;
+          if (v is num) {
+            _inner._seqBySession['${entry.key}'] = v.toInt();
+          }
+        }
+      }
+      final alertsRaw = root['alertsBySession'];
+      if (alertsRaw is Map) {
+        for (final entry in alertsRaw.entries) {
+          final sessionId = '${entry.key}';
+          final listRaw = entry.value;
+          if (listRaw is List) {
+            final parsed = listRaw
+                .whereType<Map<Object?, Object?>>()
+                .map(
+                  (m) =>
+                      SessionAlertRecord.fromJson(Map<String, Object?>.from(m)),
+                )
+                .toList();
+            _inner._alertsBySession[sessionId] = parsed;
+            for (final a in parsed) {
+              final cur = _inner._seqBySession[sessionId] ?? 0;
+              if (a.effectiveSeq > cur) {
+                _inner._seqBySession[sessionId] = a.effectiveSeq;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // Keep clean state if file is unreadable
+    }
+  }
+
+  Future<void> _flushSnapshot() {
+    final next = _writeChain
+        .then((_) async {
+          await _directory.create(recursive: true);
+          final alertsJson = <String, Object?>{};
+          for (final entry in _inner._alertsBySession.entries) {
+            final items = entry.value;
+            final trimmed = items.length > _maxAlertsPerSession
+                ? items.sublist(items.length - _maxAlertsPerSession)
+                : items;
+            alertsJson[entry.key] = trimmed
+                .map((a) => a.toJson())
+                .toList(growable: false);
+          }
+          final payload = <String, Object?>{
+            'schemaVersion': 1,
+            'updatedAtUtc': DateTime.now().toUtc().toIso8601String(),
+            'sessions': _inner._sessionsById.values
+                .map((s) => s.toStorageJson())
+                .toList(growable: false),
+            'bonds': _inner._bondsById.values
+                .map((b) => b.toStorageJson())
+                .toList(growable: false),
+            'seqBySession': _inner._seqBySession,
+            'alertsBySession': alertsJson,
+          };
+          final encoded = const JsonEncoder.withIndent('  ').convert(payload);
+          final tmp = File('${_storeFile.path}.tmp');
+          await tmp.writeAsString(encoded, flush: true);
+          await _tightenFilePermissions(tmp);
+          await tmp.rename(_storeFile.path);
+          await _tightenFilePermissions(_storeFile);
+        })
+        .catchError((_) {});
+    _writeChain = next;
+    return next;
+  }
+
+  @override
+  Future<void> close() async {
+    await _writeChain;
+  }
+
+  @override
+  Future<Map<String, String>?> loadPersistedVapidKeys() async {
+    await initialize();
+    if (!await _vapidFile.exists()) {
+      final legacy = File('.watsafe-runtime/vapid_keys.json');
+      if (await legacy.exists()) {
+        try {
+          final legacyDecoded = jsonDecode(await legacy.readAsString());
+          if (legacyDecoded is Map &&
+              legacyDecoded['privateKey'] is String &&
+              legacyDecoded['publicKey'] is String) {
+            final migrated = <String, String>{
+              'publicKey': legacyDecoded['publicKey'] as String,
+              'privateKey': legacyDecoded['privateKey'] as String,
+            };
+            await savePersistedVapidKeys(
+              publicKeyBase64Url: migrated['publicKey']!,
+              privateKeyBase64Url: migrated['privateKey']!,
+            );
+            return migrated;
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+    try {
+      final decoded = jsonDecode(await _vapidFile.readAsString());
+      if (decoded is Map &&
+          decoded['privateKey'] is String &&
+          decoded['publicKey'] is String) {
+        return <String, String>{
+          'publicKey': decoded['publicKey'] as String,
+          'privateKey': decoded['privateKey'] as String,
+        };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Future<void> savePersistedVapidKeys({
+    required String publicKeyBase64Url,
+    required String privateKeyBase64Url,
+  }) async {
+    await _directory.create(recursive: true);
+    final tmp = File('${_vapidFile.path}.tmp');
+    await tmp.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(<String, String>{
+        'publicKey': publicKeyBase64Url,
+        'privateKey': privateKeyBase64Url,
+        'updatedAtUtc': DateTime.now().toUtc().toIso8601String(),
+      }),
+      flush: true,
+    );
+    await _tightenFilePermissions(tmp);
+    await tmp.rename(_vapidFile.path);
+    await _tightenFilePermissions(_vapidFile);
+  }
+
+  @override
+  Future<void> saveSession(RelaySessionRecord session) async {
+    await initialize();
+    await _inner.saveSession(session);
+    await _flushSnapshot();
+  }
+
+  @override
+  Future<RelaySessionRecord?> findSessionById(String pairingSessionId) async {
+    await initialize();
+    return _inner.findSessionById(pairingSessionId);
+  }
+
+  @override
+  Future<RelaySessionRecord?> findSessionByHostToken(String hostToken) async {
+    await initialize();
+    return _inner.findSessionByHostToken(hostToken);
+  }
+
+  @override
+  Future<RelaySessionRecord?> findSessionByPairingCode(
+    String normalizedCode,
+  ) async {
+    await initialize();
+    return _inner.findSessionByPairingCode(normalizedCode);
+  }
+
+  @override
+  Future<void> saveCompanionBond(CompanionBondRecord bond) async {
+    await initialize();
+    await _inner.saveCompanionBond(bond);
+    await _flushSnapshot();
+  }
+
+  @override
+  Future<CompanionBondRecord?> findActiveBondByCompanionToken(
+    String companionToken,
+  ) async {
+    await initialize();
+    return _inner.findActiveBondByCompanionToken(companionToken);
+  }
+
+  @override
+  Future<CompanionBondRecord?> findActiveBondByHandoffCode(
+    String normalizedHandoffCode,
+  ) async {
+    await initialize();
+    return _inner.findActiveBondByHandoffCode(normalizedHandoffCode);
+  }
+
+  @override
+  Future<List<CompanionBondRecord>> listActiveBondsForSession(
+    String pairingSessionId,
+  ) async {
+    await initialize();
+    return _inner.listActiveBondsForSession(pairingSessionId);
+  }
+
+  @override
+  Future<bool> revokeBond({
+    required String pairingSessionId,
+    required String deviceId,
+  }) async {
+    await initialize();
+    final revoked = await _inner.revokeBond(
+      pairingSessionId: pairingSessionId,
+      deviceId: deviceId,
+    );
+    if (revoked) {
+      await _flushSnapshot();
+    }
+    return revoked;
+  }
+
+  @override
+  Future<void> revokeSessionAndBonds(String pairingSessionId) async {
+    await initialize();
+    await _inner.revokeSessionAndBonds(pairingSessionId);
+    await _flushSnapshot();
+  }
+
+  @override
+  Future<({SessionAlertRecord alert, bool deduplicated})> recordSessionAlert({
+    required String pairingSessionId,
+    required String incidentId,
+    required String sessionId,
+    required String kind,
+    required String detectorType,
+    required String triggeredAtUtc,
+    required String triggerSummary,
+    required String createdAtUtc,
+    double? peakMotionScore,
+    String? hostDisplayName,
+    bool isTest = false,
+    AlertLocationData? location,
+    String locationStatus = 'notRequested',
+  }) async {
+    await initialize();
+    final result = await _inner.recordSessionAlert(
+      pairingSessionId: pairingSessionId,
+      incidentId: incidentId,
+      sessionId: sessionId,
+      kind: kind,
+      detectorType: detectorType,
+      triggeredAtUtc: triggeredAtUtc,
+      triggerSummary: triggerSummary,
+      createdAtUtc: createdAtUtc,
+      peakMotionScore: peakMotionScore,
+      hostDisplayName: hostDisplayName,
+      isTest: isTest,
+      location: location,
+      locationStatus: locationStatus,
+    );
+    if (!result.deduplicated) {
+      await _flushSnapshot();
+    }
+    return result;
+  }
+
+  @override
+  Future<SessionAlertRecord?> updateSessionAlertLocation({
+    required String pairingSessionId,
+    required String incidentId,
+    AlertLocationData? location,
+    required String locationStatus,
+  }) async {
+    await initialize();
+    final updated = await _inner.updateSessionAlertLocation(
+      pairingSessionId: pairingSessionId,
+      incidentId: incidentId,
+      location: location,
+      locationStatus: locationStatus,
+    );
+    if (updated != null) {
+      await _flushSnapshot();
+    }
+    return updated;
+  }
+
+  @override
+  Future<SessionAlertRecord?> findAlertByIncidentId({
+    required String pairingSessionId,
+    required String incidentId,
+  }) async {
+    await initialize();
+    return _inner.findAlertByIncidentId(
+      pairingSessionId: pairingSessionId,
+      incidentId: incidentId,
+    );
+  }
+
+  @override
+  Future<List<SessionAlertRecord>> listAlertsAfterSeq({
+    required String pairingSessionId,
+    required int afterSeq,
+  }) async {
+    await initialize();
+    return _inner.listAlertsAfterSeq(
+      pairingSessionId: pairingSessionId,
+      afterSeq: afterSeq,
+    );
+  }
+
+  @override
+  Future<int> latestAlertSeq(String pairingSessionId) async {
+    await initialize();
+    return _inner.latestAlertSeq(pairingSessionId);
   }
 }
 
@@ -1121,6 +1804,7 @@ class PostgresRelayStore implements RelayStore {
   String get _sessionsTable => '${_tablePrefix}pairing_sessions';
   String get _bondsTable => '${_tablePrefix}companion_bonds';
   String get _alertsTable => '${_tablePrefix}session_alerts';
+  String get _secretsTable => '${_tablePrefix}server_secrets';
 
   @override
   String get backendName => 'aiven_postgres';
@@ -1142,18 +1826,42 @@ class PostgresRelayStore implements RelayStore {
   Future<void> initialize() async {
     final conn = await _conn();
     await conn.execute('''
+      CREATE TABLE IF NOT EXISTS $_secretsTable (
+        secret_key TEXT PRIMARY KEY,
+        secret_value_json TEXT NOT NULL,
+        updated_at_utc TIMESTAMPTZ NOT NULL
+      )
+    ''');
+
+    await conn.execute('''
       CREATE TABLE IF NOT EXISTS $_sessionsTable (
         pairing_session_id TEXT PRIMARY KEY,
         host_display_name TEXT NOT NULL,
         host_token TEXT NOT NULL UNIQUE,
+        host_device_id TEXT,
         active_pairing_code TEXT,
         code_expires_at_utc TIMESTAMPTZ,
         failed_code_attempts INTEGER NOT NULL DEFAULT 0,
+        host_last_seen_at_utc TIMESTAMPTZ,
+        host_disconnected_at_utc TIMESTAMPTZ,
+        host_protection_state TEXT NOT NULL DEFAULT 'off',
         created_at_utc TIMESTAMPTZ NOT NULL
       )
     ''');
     await conn.execute(
       'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS failed_code_attempts INTEGER NOT NULL DEFAULT 0',
+    );
+    await conn.execute(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_device_id TEXT',
+    );
+    await conn.execute(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_last_seen_at_utc TIMESTAMPTZ',
+    );
+    await conn.execute(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_disconnected_at_utc TIMESTAMPTZ',
+    );
+    await conn.execute(
+      "ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_protection_state TEXT NOT NULL DEFAULT 'off'",
     );
 
     await conn.execute('''
@@ -1164,6 +1872,9 @@ class PostgresRelayStore implements RelayStore {
         display_name TEXT NOT NULL,
         platform TEXT NOT NULL,
         companion_token TEXT NOT NULL UNIQUE,
+        previous_companion_token TEXT,
+        previous_token_grace_until_utc TIMESTAMPTZ,
+        token_refreshed_at_utc_iso TEXT,
         paired_at_utc_iso TEXT NOT NULL,
         connected BOOLEAN NOT NULL DEFAULT TRUE,
         push_channel_ready BOOLEAN NOT NULL DEFAULT FALSE,
@@ -1184,6 +1895,15 @@ class PostgresRelayStore implements RelayStore {
         last_seen_at_utc_iso TEXT
       )
     ''');
+    await conn.execute(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS previous_companion_token TEXT',
+    );
+    await conn.execute(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS previous_token_grace_until_utc TIMESTAMPTZ',
+    );
+    await conn.execute(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS token_refreshed_at_utc_iso TEXT',
+    );
     await conn.execute(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE',
     );
@@ -1265,9 +1985,67 @@ class PostgresRelayStore implements RelayStore {
     }
   }
 
+  @override
+  Future<Map<String, String>?> loadPersistedVapidKeys() async {
+    final conn = await _conn();
+    final rows = await conn.execute(
+      Sql.named(
+        'SELECT secret_value_json FROM $_secretsTable WHERE secret_key = @key LIMIT 1',
+      ),
+      parameters: const <String, Object?>{'key': 'vapid_key_pair'},
+    );
+    if (rows.isEmpty) {
+      return null;
+    }
+    final raw = rows.first.toColumnMap()['secret_value_json'] as String?;
+    if (raw == null || raw.trim().isEmpty) {
+      return null;
+    }
+    final decoded = jsonDecode(raw);
+    if (decoded is Map &&
+        decoded['privateKey'] is String &&
+        decoded['publicKey'] is String) {
+      return <String, String>{
+        'publicKey': decoded['publicKey'] as String,
+        'privateKey': decoded['privateKey'] as String,
+      };
+    }
+    return null;
+  }
+
+  @override
+  Future<void> savePersistedVapidKeys({
+    required String publicKeyBase64Url,
+    required String privateKeyBase64Url,
+  }) async {
+    final conn = await _conn();
+    await conn.execute(
+      Sql.named('''
+        INSERT INTO $_secretsTable (secret_key, secret_value_json, updated_at_utc)
+        VALUES (@key, @val, @nowUtc)
+        ON CONFLICT (secret_key) DO UPDATE SET
+          secret_value_json = EXCLUDED.secret_value_json,
+          updated_at_utc = EXCLUDED.updated_at_utc
+      '''),
+      parameters: <String, Object?>{
+        'key': 'vapid_key_pair',
+        'val': jsonEncode(<String, String>{
+          'publicKey': publicKeyBase64Url,
+          'privateKey': privateKeyBase64Url,
+        }),
+        'nowUtc': DateTime.now().toUtc(),
+      },
+    );
+  }
+
+  DateTime? _parseDbUtc(Object? raw) {
+    if (raw == null) return null;
+    if (raw is DateTime) return raw.toUtc();
+    return DateTime.tryParse('$raw')?.toUtc();
+  }
+
   RelaySessionRecord _rowToSession(Map<String, dynamic> map) {
     final createdRaw = map['created_at_utc'];
-    final expiresRaw = map['code_expires_at_utc'];
     return RelaySessionRecord(
       pairingSessionId: map['pairing_session_id'] as String,
       hostDisplayName: map['host_display_name'] as String,
@@ -1275,19 +2053,17 @@ class PostgresRelayStore implements RelayStore {
       createdAtUtc: createdRaw is DateTime
           ? createdRaw.toUtc()
           : DateTime.parse('$createdRaw').toUtc(),
+      hostDeviceId: map['host_device_id'] as String?,
       activePairingCode: map['active_pairing_code'] as String?,
-      codeExpiresAtUtc: expiresRaw == null
-          ? null
-          : (expiresRaw is DateTime
-                ? expiresRaw.toUtc()
-                : DateTime.tryParse('$expiresRaw')?.toUtc()),
-      failedCodeAttempts:
-          (map['failed_code_attempts'] as num?)?.toInt() ?? 0,
+      codeExpiresAtUtc: _parseDbUtc(map['code_expires_at_utc']),
+      failedCodeAttempts: (map['failed_code_attempts'] as num?)?.toInt() ?? 0,
+      hostLastSeenAtUtc: _parseDbUtc(map['host_last_seen_at_utc']),
+      hostDisconnectedAtUtc: _parseDbUtc(map['host_disconnected_at_utc']),
+      hostProtectionState: map['host_protection_state'] as String? ?? 'off',
     );
   }
 
   CompanionBondRecord _rowToBond(Map<String, dynamic> map) {
-    final handoffExpRaw = map['handoff_expires_at_utc'];
     return CompanionBondRecord(
       bondId: map['bond_id'] as String,
       pairingSessionId: map['pairing_session_id'] as String,
@@ -1295,6 +2071,11 @@ class PostgresRelayStore implements RelayStore {
       displayName: map['display_name'] as String,
       platform: map['platform'] as String,
       companionToken: map['companion_token'] as String,
+      previousCompanionToken: map['previous_companion_token'] as String?,
+      previousTokenGraceUntilUtc: _parseDbUtc(
+        map['previous_token_grace_until_utc'],
+      ),
+      tokenRefreshedAtUtcIso: map['token_refreshed_at_utc_iso'] as String?,
       pairedAtUtcIso: map['paired_at_utc_iso'] as String,
       connected: map['connected'] as bool? ?? true,
       pushChannelReady: map['push_channel_ready'] as bool? ?? false,
@@ -1312,11 +2093,7 @@ class PostgresRelayStore implements RelayStore {
       webPushP256dh: map['web_push_p256dh'] as String?,
       webPushAuth: map['web_push_auth'] as String?,
       activeHandoffCode: map['active_handoff_code'] as String?,
-      handoffExpiresAtUtc: handoffExpRaw == null
-          ? null
-          : (handoffExpRaw is DateTime
-                ? handoffExpRaw.toUtc()
-                : DateTime.tryParse('$handoffExpRaw')?.toUtc()),
+      handoffExpiresAtUtc: _parseDbUtc(map['handoff_expires_at_utc']),
       revokedAtUtcIso: map['revoked_at_utc_iso'] as String?,
       lastSeenAtUtcIso: map['last_seen_at_utc_iso'] as String?,
     );
@@ -1363,32 +2140,48 @@ class PostgresRelayStore implements RelayStore {
           pairing_session_id,
           host_display_name,
           host_token,
+          host_device_id,
           active_pairing_code,
           code_expires_at_utc,
           failed_code_attempts,
+          host_last_seen_at_utc,
+          host_disconnected_at_utc,
+          host_protection_state,
           created_at_utc
         ) VALUES (
           @id,
           @name,
           @token,
+          @hostDeviceId,
           @code,
           @expires,
           @failedAttempts,
+          @hostLastSeen,
+          @hostDisconnected,
+          @hostProtectionState,
           @created
         )
         ON CONFLICT (pairing_session_id) DO UPDATE SET
           host_display_name = EXCLUDED.host_display_name,
+          host_device_id = EXCLUDED.host_device_id,
           active_pairing_code = EXCLUDED.active_pairing_code,
           code_expires_at_utc = EXCLUDED.code_expires_at_utc,
-          failed_code_attempts = EXCLUDED.failed_code_attempts
+          failed_code_attempts = EXCLUDED.failed_code_attempts,
+          host_last_seen_at_utc = EXCLUDED.host_last_seen_at_utc,
+          host_disconnected_at_utc = EXCLUDED.host_disconnected_at_utc,
+          host_protection_state = EXCLUDED.host_protection_state
       '''),
       parameters: <String, Object?>{
         'id': session.pairingSessionId,
         'name': session.hostDisplayName,
         'token': session.hostToken,
+        'hostDeviceId': session.hostDeviceId,
         'code': session.activePairingCode,
         'expires': session.codeExpiresAtUtc,
         'failedAttempts': session.failedCodeAttempts,
+        'hostLastSeen': session.hostLastSeenAtUtc,
+        'hostDisconnected': session.hostDisconnectedAtUtc,
+        'hostProtectionState': session.hostProtectionState,
         'created': session.createdAtUtc,
       },
     );
@@ -1453,6 +2246,9 @@ class PostgresRelayStore implements RelayStore {
           display_name,
           platform,
           companion_token,
+          previous_companion_token,
+          previous_token_grace_until_utc,
+          token_refreshed_at_utc_iso,
           paired_at_utc_iso,
           connected,
           push_channel_ready,
@@ -1478,6 +2274,9 @@ class PostgresRelayStore implements RelayStore {
           @displayName,
           @platform,
           @companionToken,
+          @previousCompanionToken,
+          @previousTokenGraceUntilUtc,
+          @tokenRefreshedAtUtcIso,
           @pairedAt,
           @connected,
           @pushReady,
@@ -1500,6 +2299,9 @@ class PostgresRelayStore implements RelayStore {
         ON CONFLICT (bond_id) DO UPDATE SET
           platform = EXCLUDED.platform,
           companion_token = EXCLUDED.companion_token,
+          previous_companion_token = EXCLUDED.previous_companion_token,
+          previous_token_grace_until_utc = EXCLUDED.previous_token_grace_until_utc,
+          token_refreshed_at_utc_iso = EXCLUDED.token_refreshed_at_utc_iso,
           connected = EXCLUDED.connected,
           push_channel_ready = EXCLUDED.push_channel_ready,
           notifications_enabled = EXCLUDED.notifications_enabled,
@@ -1525,6 +2327,9 @@ class PostgresRelayStore implements RelayStore {
         'displayName': bond.displayName,
         'platform': bond.platform,
         'companionToken': bond.companionToken,
+        'previousCompanionToken': bond.previousCompanionToken,
+        'previousTokenGraceUntilUtc': bond.previousTokenGraceUntilUtc,
+        'tokenRefreshedAtUtcIso': bond.tokenRefreshedAtUtcIso,
         'pairedAt': bond.pairedAtUtcIso,
         'connected': bond.connected,
         'pushReady': bond.pushChannelReady,
@@ -1552,13 +2357,22 @@ class PostgresRelayStore implements RelayStore {
     String companionToken,
   ) async {
     final conn = await _conn();
+    final nowUtc = DateTime.now().toUtc();
     final rows = await conn.execute(
       Sql.named('''
         SELECT * FROM $_bondsTable
-        WHERE companion_token = @token AND revoked_at_utc_iso IS NULL
+        WHERE revoked_at_utc_iso IS NULL
+          AND (
+            companion_token = @token
+            OR (
+              previous_companion_token = @token
+              AND previous_token_grace_until_utc IS NOT NULL
+              AND previous_token_grace_until_utc > @nowUtc
+            )
+          )
         LIMIT 1
       '''),
-      parameters: <String, Object?>{'token': companionToken},
+      parameters: <String, Object?>{'token': companionToken, 'nowUtc': nowUtc},
     );
     if (rows.isEmpty) {
       return null;
@@ -1617,6 +2431,8 @@ class PostgresRelayStore implements RelayStore {
             push_channel_ready = FALSE,
             push_subscribed = FALSE,
             backend_push_registered = FALSE,
+            previous_companion_token = NULL,
+            previous_token_grace_until_utc = NULL,
             push_token = NULL,
             web_push_endpoint = NULL,
             web_push_p256dh = NULL,
@@ -1896,10 +2712,12 @@ class WatSafeRelayServer {
     DateTime Function()? clock,
     this.pairingCodeTtl = const Duration(minutes: 5),
     this.handoffCodeTtl = const Duration(minutes: 10),
+    this.hostOnlineTtl = const Duration(seconds: 45),
+    this.tokenRefreshGraceWindow = const Duration(seconds: 60),
     this.maxFailedPairingAttempts = 5,
     this.failedAttemptWindow = const Duration(minutes: 10),
     Map<String, String>? environment,
-  }) : _store = store ?? InMemoryRelayStore(),
+  }) : _store = store ?? InMemoryRelayStore(clock: clock),
        _pushProvider =
            pushProvider ??
            EnvironmentPushProviderAdapter(environment: environment),
@@ -1907,17 +2725,19 @@ class WatSafeRelayServer {
        _env = environment ?? Platform.environment;
 
   /// Creates a relay server backed by Aiven PostgreSQL when `AIVEN_DATABASE_URL`
-  /// or `DATABASE_URL` is set in [environment], or falls back to
-  /// [InMemoryRelayStore] for zero-config local runs.
+  /// or `DATABASE_URL` is set in [environment], or falls back to durable
+  /// [FileRelayStore] on disk so pairing records, push subscriptions, and VAPID
+  /// keys survive restarts and deployments.
   factory WatSafeRelayServer.fromEnvironment({
     Map<String, String>? environment,
     PushProviderAdapter? pushProvider,
     DateTime Function()? clock,
     Duration pairingCodeTtl = const Duration(minutes: 5),
+    Duration hostOnlineTtl = const Duration(seconds: 45),
   }) {
     final pgStore = PostgresRelayStore.fromEnvironment(environment);
     return WatSafeRelayServer(
-      store: pgStore ?? InMemoryRelayStore(),
+      store: pgStore ?? FileRelayStore.fromEnvironment(environment, clock),
       pushProvider:
           pushProvider ??
           EnvironmentPushProviderAdapter(
@@ -1926,10 +2746,12 @@ class WatSafeRelayServer {
           ),
       clock: clock,
       pairingCodeTtl: pairingCodeTtl,
+      hostOnlineTtl: hostOnlineTtl,
       environment: environment,
     );
   }
 
+  static const String companionSwVersion = '2026.11.16-v2';
   static const String _codeAlphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
   final RelayStore _store;
@@ -1938,6 +2760,8 @@ class WatSafeRelayServer {
   final Map<String, String> _env;
   final Duration pairingCodeTtl;
   final Duration handoffCodeTtl;
+  final Duration hostOnlineTtl;
+  final Duration tokenRefreshGraceWindow;
   final int maxFailedPairingAttempts;
   final Duration failedAttemptWindow;
   final Random _random = Random.secure();
@@ -1981,6 +2805,10 @@ class WatSafeRelayServer {
 
   Future<int> start({InternetAddress? address, int port = 8787}) async {
     await _store.initialize();
+    final push = _pushProvider;
+    if (push is EnvironmentPushProviderAdapter) {
+      await push.syncDurableVapidKeys(_store);
+    }
     await _pushProvider.verifyConfiguredSenders();
     final bindAddress = address ?? InternetAddress.loopbackIPv4;
     final server = await HttpServer.bind(bindAddress, port);
@@ -2062,7 +2890,46 @@ class WatSafeRelayServer {
     return null;
   }
 
+  static bool isEphemeralTunnelOrigin(String? rawOrigin) {
+    if (rawOrigin == null || rawOrigin.trim().isEmpty) {
+      return false;
+    }
+    final parsed = Uri.tryParse(rawOrigin.trim());
+    final host = (parsed?.host ?? rawOrigin.trim()).toLowerCase();
+    return host.endsWith('.trycloudflare.com') ||
+        host.endsWith('.lhr.life') ||
+        host.endsWith('.localhost.run') ||
+        host.endsWith('.ngrok-free.app') ||
+        host.endsWith('.ngrok-free.dev') ||
+        host.endsWith('.ngrok.io');
+  }
+
+  String? _configuredPermanentHttpsOrigin() {
+    final candidates = <String>[
+      (_env['WATSAFE_PUBLIC_URL'] ?? '').trim(),
+      (_env['RENDER_EXTERNAL_URL'] ?? '').trim(),
+      if ((_env['RAILWAY_PUBLIC_DOMAIN'] ?? '').trim().isNotEmpty)
+        'https://${(_env['RAILWAY_PUBLIC_DOMAIN'] ?? '').trim()}',
+      if ((_env['FLY_APP_NAME'] ?? '').trim().isNotEmpty)
+        'https://${(_env['FLY_APP_NAME'] ?? '').trim()}.fly.dev',
+    ];
+    for (final raw in candidates) {
+      if (raw.startsWith('https://') && !isEphemeralTunnelOrigin(raw)) {
+        return raw.endsWith('/') ? raw.substring(0, raw.length - 1) : raw;
+      }
+    }
+    final dyn = (_dynamicPublicOrigin ?? '').trim();
+    if (dyn.startsWith('https://') && !isEphemeralTunnelOrigin(dyn)) {
+      return dyn.endsWith('/') ? dyn.substring(0, dyn.length - 1) : dyn;
+    }
+    return null;
+  }
+
   String? _configuredPublicHttpsOrigin() {
+    final perm = _configuredPermanentHttpsOrigin();
+    if (perm != null) {
+      return perm;
+    }
     final dyn = (_dynamicPublicOrigin ?? '').trim();
     if (dyn.startsWith('https://')) {
       return dyn.endsWith('/') ? dyn.substring(0, dyn.length - 1) : dyn;
@@ -2077,6 +2944,10 @@ class WatSafeRelayServer {
   }
 
   String _resolvePublicRelayOrigin(HttpRequest request, {String? requested}) {
+    final perm = _configuredPermanentHttpsOrigin();
+    if (perm != null) {
+      return perm;
+    }
     final dyn = (_dynamicPublicOrigin ?? '').trim();
     if (dyn.isNotEmpty) {
       return dyn.endsWith('/') ? dyn.substring(0, dyn.length - 1) : dyn;
@@ -2091,7 +2962,8 @@ class WatSafeRelayServer {
       final cleaned = requested.trim();
       // If requested is loopback and request carries a public forwarded host, prefer forwarded HTTPS.
       final reqUri = Uri.tryParse(cleaned);
-      final fwdProto = (request.headers.value('x-forwarded-proto') ?? '').trim();
+      final fwdProto = (request.headers.value('x-forwarded-proto') ?? '')
+          .trim();
       final fwdHost = (request.headers.value('x-forwarded-host') ?? '').trim();
       if (reqUri != null &&
           (reqUri.host == '127.0.0.1' || reqUri.host == 'localhost') &&
@@ -2112,6 +2984,20 @@ class WatSafeRelayServer {
         ? hostHeader
         : '127.0.0.1:$port';
     return '$proto://$host';
+  }
+
+  Map<String, Object?> _hostPresenceFields(
+    RelaySessionRecord? session,
+    DateTime nowUtc,
+  ) {
+    final online = session?.isHostOnlineAt(nowUtc, ttl: hostOnlineTtl) ?? false;
+    return <String, Object?>{
+      'hostOnline': online,
+      'hostLastSeenAtUtc': ?session?.hostLastSeenAtUtc?.toIso8601String(),
+      'hostDisconnectedAtUtc': ?session?.hostDisconnectedAtUtc
+          ?.toIso8601String(),
+      'hostProtectionState': session?.hostProtectionState ?? 'off',
+    };
   }
 
   bool _isWebCompanionBond(
@@ -2273,8 +3159,8 @@ class WatSafeRelayServer {
       }
 
       if (method == 'GET' && path == '/.well-known/assetlinks.json') {
-        final pkg =
-            (_env['ANDROID_PACKAGE_NAME'] ?? 'dev.watsafe.temp.watsafe').trim();
+        final pkg = (_env['ANDROID_PACKAGE_NAME'] ?? 'dev.watsafe.temp.watsafe')
+            .trim();
         final sha256Cert = (_env['ANDROID_SHA256_CERT_FINGERPRINT'] ?? '')
             .trim();
         request.response.statusCode = HttpStatus.ok;
@@ -2363,12 +3249,14 @@ class WatSafeRelayServer {
 
       if (method == 'GET' && path == '/v1/health') {
         final publicHttpsOrigin = _configuredPublicHttpsOrigin();
+        final permanentHttpsOrigin = _configuredPermanentHttpsOrigin();
         final envPush = _pushProvider is EnvironmentPushProviderAdapter
             ? _pushProvider
             : null;
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           'status': 'ok',
           'storageBackend': _store.backendName,
+          'swVersion': companionSwVersion,
           'deliveryMode': _pushProvider.isConfigured
               ? 'push_and_live_poll'
               : 'foreground_companion_poll',
@@ -2376,6 +3264,11 @@ class WatSafeRelayServer {
           'pushProvider': _pushProvider.providerSummary,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,
           'publicHttpsOrigin': ?publicHttpsOrigin,
+          'permanentHttpsOrigin': ?permanentHttpsOrigin,
+          'isPermanentHttpsOrigin': permanentHttpsOrigin != null,
+          'isEphemeralOrigin':
+              publicHttpsOrigin != null &&
+              isEphemeralTunnelOrigin(publicHttpsOrigin),
           if (envPush != null) ...<String, Object?>{
             'directWebPushReady': envPush.directWebPushReady,
             'webhookConfigured': envPush.hasWebhookConfigured,
@@ -2466,7 +3359,12 @@ class WatSafeRelayServer {
         }
 
         if (session != null) {
-          session.hostDisplayName = hostDisplayName;
+          session.markHostSeen(
+            nowUtc,
+            displayName: hostDisplayName,
+            deviceId: body['hostDeviceId'] as String?,
+            protectionState: body['hostProtectionState'] as String?,
+          );
           session.activePairingCode = normalizedCode;
           session.codeExpiresAtUtc = expiresAtUtc;
           session.failedCodeAttempts = 0;
@@ -2477,9 +3375,13 @@ class WatSafeRelayServer {
             hostDisplayName: hostDisplayName,
             hostToken: 'host_${_randomHex(20)}',
             createdAtUtc: nowUtc,
+            hostDeviceId: (body['hostDeviceId'] as String?)?.trim(),
             activePairingCode: normalizedCode,
             codeExpiresAtUtc: expiresAtUtc,
             failedCodeAttempts: 0,
+            hostLastSeenAtUtc: nowUtc,
+            hostProtectionState:
+                (body['hostProtectionState'] as String?)?.trim() ?? 'off',
           );
           await _store.saveSession(session);
         }
@@ -2488,6 +3390,7 @@ class WatSafeRelayServer {
           request,
           requested: body['relayUrl'] as String?,
         );
+        final permanentOrigin = _configuredPermanentHttpsOrigin();
         final pairingUrl =
             '$effectiveRelayUrl/pair?code=${Uri.encodeQueryComponent(displayCode)}'
             '&session=${Uri.encodeQueryComponent(session.pairingSessionId)}';
@@ -2506,6 +3409,8 @@ class WatSafeRelayServer {
           'pairingUrl': pairingUrl,
           'qrPayload': pairingUrl,
           'appDeepLink': appDeepLink,
+          'permanentHttpsOrigin': ?permanentOrigin,
+          'isEphemeralOrigin': isEphemeralTunnelOrigin(effectiveRelayUrl),
         });
         return;
       }
@@ -2516,15 +3421,14 @@ class WatSafeRelayServer {
         final nowUtc = _clock().toUtc();
         final clientKey = _clientRateLimitKey(request);
         if (_isClientRateLimited(clientKey, nowUtc)) {
-          _writeJson(
-            request.response,
-            HttpStatus.tooManyRequests,
-            <String, Object?>{
-              'error': 'TOO_MANY_ATTEMPTS',
-              'message':
-                  'Too many incorrect pairing codes. Wait a few minutes or get a new code on your laptop.',
-            },
-          );
+          _writeJson(request.response, HttpStatus.tooManyRequests, <
+            String,
+            Object?
+          >{
+            'error': 'TOO_MANY_ATTEMPTS',
+            'message':
+                'Too many incorrect pairing codes. Wait a few minutes or get a new code on your laptop.',
+          });
           return;
         }
 
@@ -2603,22 +3507,22 @@ class WatSafeRelayServer {
             );
             return;
           }
+          session.markHostSeen(nowUtc);
           if (session.activePairingCode == normalizedCode) {
             session.activePairingCode = null;
             session.codeExpiresAtUtc = null;
-            await _store.saveSession(session);
           }
+          await _store.saveSession(session);
         } else {
           if (_isClientRateLimited(clientKey, nowUtc)) {
-            _writeJson(
-              request.response,
-              HttpStatus.tooManyRequests,
-              <String, Object?>{
-                'error': 'TOO_MANY_ATTEMPTS',
-                'message':
-                    'Too many incorrect pairing attempts. Wait a few minutes or generate a new code on your laptop.',
-              },
-            );
+            _writeJson(request.response, HttpStatus.tooManyRequests, <
+              String,
+              Object?
+            >{
+              'error': 'TOO_MANY_ATTEMPTS',
+              'message':
+                  'Too many incorrect pairing attempts. Wait a few minutes or generate a new code on your laptop.',
+            });
             return;
           }
 
@@ -2652,15 +3556,14 @@ class WatSafeRelayServer {
                 await _store.saveSession(targeted);
               }
             }
-            _writeJson(
-              request.response,
-              HttpStatus.badRequest,
-              <String, Object?>{
-                'error': 'INVALID_OR_EXPIRED_PAIRING_CODE',
-                'message':
-                    'Pairing code is invalid or has already been used. Get a new code on your laptop.',
-              },
-            );
+            _writeJson(request.response, HttpStatus.badRequest, <
+              String,
+              Object?
+            >{
+              'error': 'INVALID_OR_EXPIRED_PAIRING_CODE',
+              'message':
+                  'Pairing code is invalid or has already been used. Get a new code on your laptop.',
+            });
             return;
           }
 
@@ -2669,15 +3572,14 @@ class WatSafeRelayServer {
             candidate.activePairingCode = null;
             candidate.codeExpiresAtUtc = null;
             await _store.saveSession(candidate);
-            _writeJson(
-              request.response,
-              HttpStatus.badRequest,
-              <String, Object?>{
-                'error': 'PAIRING_CODE_EXPIRED',
-                'message':
-                    'This pairing code expired. Tap "Get new code" on your laptop.',
-              },
-            );
+            _writeJson(request.response, HttpStatus.badRequest, <
+              String,
+              Object?
+            >{
+              'error': 'PAIRING_CODE_EXPIRED',
+              'message':
+                  'This pairing code expired. Tap "Get new code" on your laptop.',
+            });
             return;
           }
 
@@ -2711,12 +3613,27 @@ class WatSafeRelayServer {
                     body['deliveryChannel'] as String?)
                 ?.trim();
 
+        final explicitDeviceId = (body['deviceId'] as String?)?.trim();
+        final resolvedDeviceId =
+            explicitDeviceId != null && explicitDeviceId.isNotEmpty
+            ? explicitDeviceId
+            : 'dev_${++_seq}_${_randomHex(4)}';
+        if (explicitDeviceId != null && explicitDeviceId.isNotEmpty) {
+          await _store.revokeBond(
+            pairingSessionId: session.pairingSessionId,
+            deviceId: explicitDeviceId,
+          );
+          _pairedDevicesSnapshot.removeWhere(
+            (item) =>
+                item['pairingSessionId'] == session!.pairingSessionId &&
+                item['deviceId'] == explicitDeviceId,
+          );
+        }
+
         final provisionalBond = CompanionBondRecord(
           bondId: 'bond_${++_seq}_${_randomHex(6)}',
           pairingSessionId: session.pairingSessionId,
-          deviceId: (body['deviceId'] as String?)?.trim().isNotEmpty == true
-              ? (body['deviceId'] as String).trim()
-              : 'dev_${_seq}_${_randomHex(4)}',
+          deviceId: resolvedDeviceId,
           displayName:
               (body['displayName'] as String?)?.trim().isNotEmpty == true
               ? (body['displayName'] as String).trim()
@@ -2771,9 +3688,11 @@ class WatSafeRelayServer {
           'companionToken': provisionalBond.companionToken,
           'pushConfigured': _pushProvider.isConfigured,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,
+          'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
           'deliveryMode': _pushProvider.isConfigured
               ? 'push_and_live_poll'
               : 'foreground_poll',
+          ..._hostPresenceFields(session, nowUtc),
         });
         return;
       }
@@ -2837,15 +3756,14 @@ class WatSafeRelayServer {
         final nowUtc = _clock().toUtc();
         final clientKey = _clientRateLimitKey(request);
         if (_isClientRateLimited(clientKey, nowUtc)) {
-          _writeJson(
-            request.response,
-            HttpStatus.tooManyRequests,
-            <String, Object?>{
-              'error': 'TOO_MANY_ATTEMPTS',
-              'message':
-                  'Too many incorrect setup codes. Wait a few minutes or scan a fresh QR code from your laptop.',
-            },
-          );
+          _writeJson(request.response, HttpStatus.tooManyRequests, <
+            String,
+            Object?
+          >{
+            'error': 'TOO_MANY_ATTEMPTS',
+            'message':
+                'Too many incorrect setup codes. Wait a few minutes or scan a fresh QR code from your laptop.',
+          });
           return;
         }
 
@@ -2885,7 +3803,10 @@ class WatSafeRelayServer {
         _clearFailedPairingAttempts(clientKey);
         bond.activeHandoffCode = null;
         bond.handoffExpiresAtUtc = null;
+        bond.previousCompanionToken = null;
+        bond.previousTokenGraceUntilUtc = null;
         bond.companionToken = 'comp_${_randomHex(20)}';
+        bond.tokenRefreshedAtUtcIso = nowUtc.toIso8601String();
         if (body['platform'] is String &&
             (body['platform'] as String).trim().isNotEmpty) {
           bond.platform = (body['platform'] as String).trim();
@@ -2908,6 +3829,65 @@ class WatSafeRelayServer {
           'companionToken': bond.companionToken,
           'pushConfigured': _pushProvider.isConfigured,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,
+          'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
+          ..._hostPresenceFields(session, nowUtc),
+        });
+        return;
+      }
+
+      // Rotates the companion bearer token in-place with a short grace window so
+      // concurrent requests or flaky mobile networks never invalidate a valid pairing.
+      if (method == 'POST' && path == '/v1/companion/token/refresh') {
+        final companionToken = _extractBearerToken(request);
+        if (companionToken == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_COMPANION_SESSION',
+              'message': 'Missing companion session bearer token.',
+            },
+          );
+          return;
+        }
+        final bond = await _store.findActiveBondByCompanionToken(
+          companionToken,
+        );
+        if (bond == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_COMPANION_SESSION',
+              'message': 'Companion session is unpaired or revoked.',
+            },
+          );
+          return;
+        }
+
+        final nowUtc = _clock().toUtc();
+        final nowIso = nowUtc.toIso8601String();
+        if (bond.companionToken == companionToken) {
+          bond.previousCompanionToken = bond.companionToken;
+          bond.previousTokenGraceUntilUtc = nowUtc.add(tokenRefreshGraceWindow);
+          bond.companionToken = 'comp_${_randomHex(20)}';
+          bond.tokenRefreshedAtUtcIso = nowIso;
+        }
+        bond.connected = true;
+        bond.lastSeenAtUtcIso = nowIso;
+        await _store.saveCompanionBond(bond);
+        _syncPairedSnapshot(bond);
+
+        final session = await _store.findSessionById(bond.pairingSessionId);
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          ...bond.toDeviceSummaryJson(),
+          'companionToken': bond.companionToken,
+          'tokenRefreshedAtUtc': bond.tokenRefreshedAtUtcIso ?? nowIso,
+          'hostDisplayName': session?.hostDisplayName ?? 'My Laptop',
+          'pushConfigured': _pushProvider.isConfigured,
+          'vapidPublicKey': ?_pushProvider.vapidPublicKey,
+          'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
+          ..._hostPresenceFields(session, nowUtc),
         });
         return;
       }
@@ -2948,7 +3928,11 @@ class WatSafeRelayServer {
           bond.lastSeenAtUtcIso = _clock().toUtc().toIso8601String();
           await _store.saveCompanionBond(bond);
           _syncPairedSnapshot(bond);
-          _writeJson(request.response, HttpStatus.ok, bond.toDeviceSummaryJson());
+          _writeJson(
+            request.response,
+            HttpStatus.ok,
+            bond.toDeviceSummaryJson(),
+          );
           return;
         }
 
@@ -3005,15 +3989,20 @@ class WatSafeRelayServer {
         bond.pushChannelReady = ready;
         bond.notificationChannel = ready ? 'web_push' : 'pending_setup';
         bond.connected = true;
-        bond.lastSeenAtUtcIso = _clock().toUtc().toIso8601String();
+        final nowUtc = _clock().toUtc();
+        bond.lastSeenAtUtcIso = nowUtc.toIso8601String();
 
         await _store.saveCompanionBond(bond);
         _syncPairedSnapshot(bond);
 
+        final session = await _store.findSessionById(bond.pairingSessionId);
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           ...bond.toDeviceSummaryJson(),
+          'hostDisplayName': session?.hostDisplayName ?? 'My Laptop',
           'pushConfigured': _pushProvider.isConfigured,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,
+          'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
+          ..._hostPresenceFields(session, nowUtc),
         });
         return;
       }
@@ -3056,11 +4045,20 @@ class WatSafeRelayServer {
           );
           return;
         }
+        final nowUtc = _clock().toUtc();
+        final session = await _store.findSessionById(bond.pairingSessionId);
         if (method == 'GET') {
+          bond.connected = true;
+          bond.lastSeenAtUtcIso = nowUtc.toIso8601String();
+          await _store.saveCompanionBond(bond);
+          _syncPairedSnapshot(bond);
           _writeJson(request.response, HttpStatus.ok, <String, Object?>{
             ...bond.toDeviceSummaryJson(),
+            'hostDisplayName': session?.hostDisplayName ?? 'My Laptop',
             'pushConfigured': _pushProvider.isConfigured,
             'vapidPublicKey': ?_pushProvider.vapidPublicKey,
+            'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
+            ..._hostPresenceFields(session, nowUtc),
           });
           return;
         }
@@ -3137,13 +4135,17 @@ class WatSafeRelayServer {
         }
 
         bond.connected = true;
-        bond.lastSeenAtUtcIso = _clock().toUtc().toIso8601String();
+        bond.lastSeenAtUtcIso = nowUtc.toIso8601String();
         await _store.saveCompanionBond(bond);
         _syncPairedSnapshot(bond);
 
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           ...bond.toDeviceSummaryJson(),
+          'hostDisplayName': session?.hostDisplayName ?? 'My Laptop',
           'pushConfigured': _pushProvider.isConfigured,
+          'vapidPublicKey': ?_pushProvider.vapidPublicKey,
+          'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
+          ..._hostPresenceFields(session, nowUtc),
         });
         return;
       }
@@ -3331,6 +4333,100 @@ class WatSafeRelayServer {
         return;
       }
 
+      // Host laptop presence heartbeat & graceful offline notification so the
+      // phone companion distinguishes "Laptop offline" from a disconnected pairing.
+      if (method == 'POST' && path == '/v1/host/heartbeat') {
+        final body = await _readJsonBody(request);
+        final forbidden = detectForbiddenSensitiveField(body);
+        if (forbidden != null) {
+          _writePrivacyViolation(request.response, forbidden);
+          return;
+        }
+        final hostToken = _extractBearerToken(request);
+        if (hostToken == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_HOST_SESSION',
+              'message': 'Missing host session bearer token.',
+            },
+          );
+          return;
+        }
+        final session = await _store.findSessionByHostToken(hostToken);
+        if (session == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_HOST_SESSION',
+              'message': 'Unknown or revoked host session token.',
+            },
+          );
+          return;
+        }
+        final nowUtc = _clock().toUtc();
+        session.markHostSeen(
+          nowUtc,
+          displayName: body['hostDisplayName'] as String?,
+          deviceId: body['hostDeviceId'] as String?,
+          protectionState: body['hostProtectionState'] as String?,
+        );
+        await _store.saveSession(session);
+        final bonds = await _store.listActiveBondsForSession(
+          session.pairingSessionId,
+        );
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'ok': true,
+          'pairingSessionId': session.pairingSessionId,
+          'hostDisplayName': session.hostDisplayName,
+          'pushConfigured': _pushProvider.isConfigured,
+          'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
+          ..._hostPresenceFields(session, nowUtc),
+          'devices': bonds
+              .map((b) => b.toDeviceSummaryJson())
+              .toList(growable: false),
+        });
+        return;
+      }
+
+      if (method == 'POST' && path == '/v1/host/offline') {
+        final hostToken = _extractBearerToken(request);
+        if (hostToken == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_HOST_SESSION',
+              'message': 'Missing host session bearer token.',
+            },
+          );
+          return;
+        }
+        final session = await _store.findSessionByHostToken(hostToken);
+        if (session == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_HOST_SESSION',
+              'message': 'Unknown or revoked host session token.',
+            },
+          );
+          return;
+        }
+        final nowUtc = _clock().toUtc();
+        session.hostDisconnectedAtUtc = nowUtc;
+        await _store.saveSession(session);
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'ok': true,
+          'pairingSessionId': session.pairingSessionId,
+          ..._hostPresenceFields(session, nowUtc),
+        });
+        return;
+      }
+
       if (method == 'GET' && path == '/v1/pairing/devices') {
         final hostToken = _extractBearerToken(request);
         if (hostToken == null) {
@@ -3356,6 +4452,9 @@ class WatSafeRelayServer {
           );
           return;
         }
+        final nowUtc = _clock().toUtc();
+        session.markHostSeen(nowUtc);
+        await _store.saveSession(session);
         final bonds = await _store.listActiveBondsForSession(
           session.pairingSessionId,
         );
@@ -3363,6 +4462,8 @@ class WatSafeRelayServer {
           'pairingSessionId': session.pairingSessionId,
           'hostDisplayName': session.hostDisplayName,
           'pushConfigured': _pushProvider.isConfigured,
+          'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
+          ..._hostPresenceFields(session, nowUtc),
           'devices': bonds
               .map((b) => b.toDeviceSummaryJson())
               .toList(growable: false),
@@ -3421,6 +4522,14 @@ class WatSafeRelayServer {
           _writePrivacyViolation(request.response, forbidden);
           return;
         }
+        final hostToken = _extractBearerToken(request);
+        if (hostToken != null) {
+          final session = await _store.findSessionByHostToken(hostToken);
+          if (session != null) {
+            session.markHostSeen(_clock().toUtc());
+            await _store.saveSession(session);
+          }
+        }
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           'delivered': true,
           'commandId': 'cmd_${++_seq}',
@@ -3465,16 +4574,20 @@ class WatSafeRelayServer {
           return;
         }
 
-        final nowIso = _clock().toUtc().toIso8601String();
+        final nowUtc = _clock().toUtc();
+        final nowIso = nowUtc.toIso8601String();
         final incidentId =
             (body['incidentId'] as String?)?.trim().isNotEmpty == true
             ? (body['incidentId'] as String).trim()
             : 'inc_${++_seq}_${_randomHex(4)}';
         final hostNameOverride = (body['deviceName'] as String?)?.trim();
-        if (hostNameOverride != null && hostNameOverride.isNotEmpty) {
-          session.hostDisplayName = hostNameOverride;
-          await _store.saveSession(session);
-        }
+        final isTestIncident = body['isTest'] as bool? ?? false;
+        session.markHostSeen(
+          nowUtc,
+          displayName: hostNameOverride,
+          protectionState: isTestIncident ? null : 'triggered',
+        );
+        await _store.saveSession(session);
 
         AlertLocationData? initialLocation;
         final rawLoc = body['location'];
@@ -3569,6 +4682,9 @@ class WatSafeRelayServer {
           return;
         }
 
+        session.markHostSeen(_clock().toUtc());
+        await _store.saveSession(session);
+
         final incidentId = (body['incidentId'] as String? ?? '').trim();
         if (incidentId.isEmpty) {
           _writeJson(request.response, HttpStatus.badRequest, <String, Object?>{
@@ -3620,15 +4736,14 @@ class WatSafeRelayServer {
       if (method == 'GET' && path.startsWith('/v1/companion/events/')) {
         final token = _extractBearerToken(request);
         if (token == null) {
-          _writeJson(
-            request.response,
-            HttpStatus.unauthorized,
-            <String, Object?>{
-              'error': 'UNAUTHORIZED_EVENT_ACCESS',
-              'message':
-                  'Authenticated session token required to access event details and location.',
-            },
-          );
+          _writeJson(request.response, HttpStatus.unauthorized, <
+            String,
+            Object?
+          >{
+            'error': 'UNAUTHORIZED_EVENT_ACCESS',
+            'message':
+                'Authenticated session token required to access event details and location.',
+          });
           return;
         }
         String? authorizedSessionId;
@@ -3697,8 +4812,9 @@ class WatSafeRelayServer {
           return;
         }
 
+        final nowUtc = _clock().toUtc();
         bond.connected = true;
-        bond.lastSeenAtUtcIso = _clock().toUtc().toIso8601String();
+        bond.lastSeenAtUtcIso = nowUtc.toIso8601String();
         await _store.saveCompanionBond(bond);
 
         final session = await _store.findSessionById(bond.pairingSessionId);
@@ -3719,9 +4835,11 @@ class WatSafeRelayServer {
           'backendPushRegistered': bond.backendPushRegistered,
           'pushConfigured': _pushProvider.isConfigured,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,
+          'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
           'deliveryMode': _pushProvider.isConfigured
               ? 'push_and_live_poll'
               : 'foreground_poll',
+          ..._hostPresenceFields(session, nowUtc),
           'latestSeq': latestSeq,
           'alerts': alerts.map((a) => a.toJson()).toList(growable: false),
         });
@@ -3760,6 +4878,12 @@ class WatSafeRelayServer {
       'Access-Control-Allow-Headers',
       'Authorization, Content-Type',
     );
+    response.headers.set(
+      'Access-Control-Expose-Headers',
+      'X-WATSafe-Companion, X-WATSafe-SW-Version',
+    );
+    response.headers.set('X-WATSafe-Companion', '1');
+    response.headers.set('X-WATSafe-SW-Version', companionSwVersion);
   }
 
   Future<Map<String, Object?>> _readJsonBody(HttpRequest request) async {

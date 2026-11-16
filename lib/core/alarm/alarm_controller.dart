@@ -6,6 +6,8 @@ import 'package:flutter/widgets.dart';
 import '../../services/local_notification_service.dart';
 import '../../services/location_service.dart';
 import '../../services/pin_security_service.dart';
+import '../../services/relay_config.dart';
+import '../../services/remote_notification_service.dart';
 import '../contracts/platform_contracts.dart';
 import '../models/detector_models.dart';
 import '../models/incident_models.dart';
@@ -24,7 +26,8 @@ class AlarmController extends ChangeNotifier {
     required IncidentStorageAdapter incidentStorage,
     required SettingsStorageAdapter settingsStorage,
     required RemoteNotificationAdapter notificationAdapter,
-    LocationServiceAdapter locationAdapter = const UnconfiguredLocationService(),
+    LocationServiceAdapter locationAdapter =
+        const UnconfiguredLocationService(),
     LocalNotificationAdapter? localNotificationAdapter,
     DateTime Function()? clock,
     bool enableDeveloperControlsForTest = false,
@@ -243,6 +246,33 @@ class AlarmController extends ChangeNotifier {
         : null;
   }
 
+  /// True when [relayEndpointUrl] is a stable, non-ephemeral `https://` origin
+  /// suitable for one-time iPhone Home Screen PWA installation and durable pairing.
+  bool get isPermanentRelayConfigured =>
+      RelayConfig.isPermanentHttpsUrl(relayEndpointUrl);
+
+  /// True when [relayEndpointUrl] is a temporary quick-tunnel hostname
+  /// (`*.trycloudflare.com`, `*.lhr.life`, `*.ngrok-free.app`, etc.) that will
+  /// change when the tunnel restarts.
+  bool get isEphemeralTunnelRelay =>
+      RelayConfig.isEphemeralTunnelUrl(relayEndpointUrl);
+
+  void _syncHostPresenceMetadata({
+    bool immediateHeartbeatIfBackground = false,
+  }) {
+    final adapter = _notificationAdapter;
+    if (adapter is ConfigurableRemoteNotificationService) {
+      unawaited(
+        adapter.updateHostPresence(
+          hostDisplayName: effectiveDeviceName,
+          protectionState: _state.name,
+          sendImmediateHeartbeat:
+              immediateHeartbeatIfBackground && adapter.enableBackgroundPolling,
+        ),
+      );
+    }
+  }
+
   PairingCodeInvitation? get activePairingInvitation {
     final adapter = _notificationAdapter;
     return adapter is MutableRemoteNotificationAdapter
@@ -394,6 +424,7 @@ class AlarmController extends ChangeNotifier {
       }
     }
     _isInitialized = true;
+    _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
     notifyListeners();
 
     if (_selectedActivityIncidentId != null &&
@@ -447,7 +478,8 @@ class AlarmController extends ChangeNotifier {
       _localNotificationPermissionStatus = PermissionStatus.denied;
     }
 
-    final enabled = _localNotificationPermissionStatus == PermissionStatus.granted;
+    final enabled =
+        _localNotificationPermissionStatus == PermissionStatus.granted;
     final adapter = _notificationAdapter;
     if (adapter is MutableRemoteNotificationAdapter &&
         adapter.companionSession.isConnected) {
@@ -476,6 +508,7 @@ class AlarmController extends ChangeNotifier {
   Future<void> updateDeviceDisplayName(String name) async {
     _settings = _settings.copyWith(deviceDisplayName: name.trim());
     await _persistSettingsSafely();
+    _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
     notifyListeners();
   }
 
@@ -509,7 +542,8 @@ class AlarmController extends ChangeNotifier {
       if (currentCap == null || !currentCap.canArm) {
         _state = ProtectionState.unavailable;
         _statusMessage =
-            currentCap?.summary ?? 'Motion detection needs setup before arming.';
+            currentCap?.summary ??
+            'Motion detection needs setup before arming.';
       } else {
         _state = ProtectionState.disarmed;
         _statusMessage =
@@ -564,7 +598,8 @@ class AlarmController extends ChangeNotifier {
       return false;
     }
     if (!_detectors.containsKey(type)) {
-      _warningMessage = 'That motion detection option is not available on this device.';
+      _warningMessage =
+          'That motion detection option is not available on this device.';
       notifyListeners();
       return false;
     }
@@ -821,6 +856,7 @@ class AlarmController extends ChangeNotifier {
     _state = ProtectionState.armed;
     _statusMessage =
         'Monitoring with ${detector.detectorType.userFacingMethodName.toLowerCase()}. Enter your PIN to disarm.';
+    _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
     notifyListeners();
   }
 
@@ -974,6 +1010,11 @@ class AlarmController extends ChangeNotifier {
         final mutableNotifications = _notificationAdapter;
         if (mutableNotifications is MutableRemoteNotificationAdapter) {
           mutableNotifications.setForegroundActive(false);
+        }
+        if (lifecycleState == AppLifecycleState.detached &&
+            mutableNotifications is ConfigurableRemoteNotificationService &&
+            mutableNotifications.enableBackgroundPolling) {
+          await mutableNotifications.notifyHostOffline();
         }
         final detector = selectedDetector;
         if (_state != ProtectionState.alarming &&
@@ -1345,7 +1386,8 @@ class AlarmController extends ChangeNotifier {
       try {
         await _incidentStorage.updateIncident(resolved);
       } catch (_) {
-        _warningMessage = 'Disarmed, though local activity history could not be saved.';
+        _warningMessage =
+            'Disarmed, though local activity history could not be saved.';
       }
     }
 
@@ -1354,6 +1396,7 @@ class AlarmController extends ChangeNotifier {
       _state = ProtectionState.disarmed;
       _statusMessage = 'Protection turned off.';
     }
+    _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
     notifyListeners();
     return result;
   }
@@ -1551,6 +1594,7 @@ class AlarmController extends ChangeNotifier {
     }
     try {
       await adapter.configureRelayEndpoint(endpointUrl);
+      _syncHostPresenceMetadata();
       await refreshNotificationStatus();
       return true;
     } catch (_) {
@@ -1558,6 +1602,47 @@ class AlarmController extends ChangeNotifier {
       notifyListeners();
       return false;
     }
+  }
+
+  /// Validates and persists a permanent `https://` companion & relay origin to
+  /// `~/.watsafe/relay_service.json` so both `WATSafe.app` and `./scripts/run_watsafe.sh`
+  /// automatically reconnect to the same permanent address on every startup.
+  ///
+  /// Passing `null` or an empty string clears the saved permanent override.
+  Future<bool> savePermanentRelayEndpoint(String? endpointUrl) async {
+    final trimmed = endpointUrl?.trim() ?? '';
+    if (trimmed.isNotEmpty) {
+      if (RelayConfig.isEphemeralTunnelUrl(trimmed)) {
+        _warningMessage =
+            'Temporary tunnel addresses (*.trycloudflare.com, *.lhr.life, *.ngrok) expire when restarted. Enter a permanent HTTPS domain.';
+        notifyListeners();
+        return false;
+      }
+      if (!RelayConfig.isPermanentHttpsUrl(trimmed)) {
+        _warningMessage =
+            'Enter a valid https:// address (for example https://watsafe-companion.onrender.com).';
+        notifyListeners();
+        return false;
+      }
+    }
+
+    try {
+      await RelayConfig.savePermanentRelayUrl(trimmed.isEmpty ? null : trimmed);
+    } catch (_) {
+      _warningMessage = 'Could not save permanent companion address.';
+      notifyListeners();
+      return false;
+    }
+
+    final nextEndpoint = trimmed.isEmpty
+        ? RelayConfig.resolveDefaultRelayUrl()
+        : trimmed;
+    final configured = await configureRelayEndpoint(nextEndpoint);
+    if (configured) {
+      _warningMessage = null;
+      notifyListeners();
+    }
+    return configured;
   }
 
   /// Pairs a new companion mobile device for remote alert delivery.
@@ -1857,7 +1942,8 @@ class AlarmController extends ChangeNotifier {
       if (currentIncident != null && event.motionScore != null) {
         final previousPeak = currentIncident.peakMotionScore ?? 0.0;
         if (event.motionScore! > previousPeak) {
-          final latest = _findIncidentById(currentIncident.id) ?? currentIncident;
+          final latest =
+              _findIncidentById(currentIncident.id) ?? currentIncident;
           final updated = latest.copyWith(peakMotionScore: event.motionScore);
           _activeIncident = updated;
           _replaceIncidentInMemory(updated);
@@ -1893,6 +1979,7 @@ class AlarmController extends ChangeNotifier {
     _activeIncident = incident;
     _incidents = <IncidentRecord>[incident, ..._incidents];
     _statusMessage = 'Alarm triggered — ${event.summary}';
+    _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
     notifyListeners();
 
     // 1. Start local siren and send initial phone notification immediately (never delayed by location!).
@@ -1918,10 +2005,7 @@ class AlarmController extends ChangeNotifier {
     try {
       capture = await _locationAdapter.captureCurrentLocation();
     } catch (_) {
-      capture = (
-        location: null,
-        status: IncidentLocationStatus.unavailable,
-      );
+      capture = (location: null, status: IncidentLocationStatus.unavailable);
     }
 
     await _applyLocationResultToIncident(
