@@ -100,42 +100,39 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('Windows Media Foundation Frame Format & Row Stride Sampling (#8)', () {
-    test(
-      'NV12 contiguous buffer with padded MF_MT_DEFAULT_STRIDE=768 resolves to 640 and avoids UV chroma skew',
-      () {
-        const srcW = 640;
-        const srcH = 480;
-        final nv12Bytes = Uint8List(
-          CameraFrameSampler.contiguousFrameByteLength(
-            CameraPixelFormat.nv12,
-            srcW,
-            srcH,
-          ),
-        );
-        // Fill Y plane with clean gradient 40..160, and fill UV plane with 255
-        // so any stride overshoot into UV is immediately caught.
-        for (var y = 0; y < srcH; y++) {
-          final luma = 40 + ((y * 120) ~/ srcH);
-          nv12Bytes.fillRange(y * srcW, (y + 1) * srcW, luma);
-        }
-        nv12Bytes.fillRange(srcW * srcH, nv12Bytes.length, 255);
+    test('NV12 contiguous buffer with padded MF_MT_DEFAULT_STRIDE=768 resolves to 640 and avoids UV chroma skew', () {
+      const srcW = 640;
+      const srcH = 480;
+      final nv12Bytes = Uint8List(
+        CameraFrameSampler.contiguousFrameByteLength(
+          CameraPixelFormat.nv12,
+          srcW,
+          srcH,
+        ),
+      );
+      // Fill Y plane with clean gradient 40..160, and fill UV plane with 255
+      // so any stride overshoot into UV is immediately caught.
+      for (var y = 0; y < srcH; y++) {
+        final luma = 40 + ((y * 120) ~/ srcH);
+        nv12Bytes.fillRange(y * srcW, (y + 1) * srcW, luma);
+      }
+      nv12Bytes.fillRange(srcW * srcH, nv12Bytes.length, 255);
 
-        final sampled = CameraFrameSampler.sampleToGrayscaleGrid(
-          rawBytes: nv12Bytes,
-          format: CameraPixelFormat.nv12,
-          srcWidth: srcW,
-          srcHeight: srcH,
-          reportedStride: 768,
-          isContiguousBuffer: true,
-        );
+      final sampled = CameraFrameSampler.sampleToGrayscaleGrid(
+        rawBytes: nv12Bytes,
+        format: CameraPixelFormat.nv12,
+        srcWidth: srcW,
+        srcHeight: srcH,
+        reportedStride: 768,
+        isContiguousBuffer: true,
+      );
 
-        expect(sampled, isNotNull);
-        expect(sampled!.effectiveRowStride, 640);
-        // Top row should be ~40 and bottom row should be ~158 (never 255 from UV!).
-        expect(sampled.grid.first, closeTo(40.0, 2.0));
-        expect(sampled.grid.last, closeTo(157.0, 4.0));
-      },
-    );
+      expect(sampled, isNotNull);
+      expect(sampled!.effectiveRowStride, 640);
+      // Top row should be ~40 and bottom row should be ~158 (never 255 from UV!).
+      expect(sampled.grid.first, closeTo(40.0, 2.0));
+      expect(sampled.grid.last, closeTo(157.0, 4.0));
+    });
 
     test(
       'NV12 GPU-padded 2D buffer (pitch 768) preserves padded row alignment',
@@ -166,95 +163,89 @@ void main() {
       },
     );
 
-    test(
-      'YUY2 and UYVY contiguous buffers with padded MF_MT_DEFAULT_STRIDE=1408 are accepted instead of dropped',
-      () {
-        const srcW = 640;
-        const srcH = 480;
-        final yuy2Bytes = Uint8List(srcW * srcH * 2);
-        final uyvyBytes = Uint8List(srcW * srcH * 2);
-        for (var i = 0; i < srcW * srcH; i++) {
-          yuy2Bytes[i * 2] = 112; // Y
-          yuy2Bytes[i * 2 + 1] = 200; // U/V
-          uyvyBytes[i * 2] = 200; // U/V
-          uyvyBytes[i * 2 + 1] = 134; // Y
+    test('YUY2 and UYVY contiguous buffers with padded MF_MT_DEFAULT_STRIDE=1408 are accepted instead of dropped', () {
+      const srcW = 640;
+      const srcH = 480;
+      final yuy2Bytes = Uint8List(srcW * srcH * 2);
+      final uyvyBytes = Uint8List(srcW * srcH * 2);
+      for (var i = 0; i < srcW * srcH; i++) {
+        yuy2Bytes[i * 2] = 112; // Y
+        yuy2Bytes[i * 2 + 1] = 200; // U/V
+        uyvyBytes[i * 2] = 200; // U/V
+        uyvyBytes[i * 2 + 1] = 134; // Y
+      }
+
+      final sampledYuy2 = CameraFrameSampler.sampleToGrayscaleGrid(
+        rawBytes: yuy2Bytes,
+        format: CameraPixelFormat.yuy2,
+        srcWidth: srcW,
+        srcHeight: srcH,
+        reportedStride: 1408, // Padded GPU stride > 1280!
+      );
+      final sampledUyvy = CameraFrameSampler.sampleToGrayscaleGrid(
+        rawBytes: uyvyBytes,
+        format: CameraPixelFormat.uyvy,
+        srcWidth: srcW,
+        srcHeight: srcH,
+        reportedStride: 1408,
+      );
+
+      expect(sampledYuy2, isNotNull);
+      expect(sampledYuy2!.effectiveRowStride, 1280);
+      expect(sampledYuy2.meanLuminance255, closeTo(112.0, 0.1));
+
+      expect(sampledUyvy, isNotNull);
+      expect(sampledUyvy!.effectiveRowStride, 1280);
+      expect(sampledUyvy.meanLuminance255, closeTo(134.0, 0.1));
+    });
+
+    test('Negative bottom-up RGB32 and RGB24 DIB strides orient top and bottom rows accurately', () {
+      const srcW = 64;
+      const srcH = 48;
+      final rgb32 = Uint8List(srcW * srcH * 4);
+      final rgb24 = Uint8List(srcW * srcH * 3);
+
+      // In a bottom-up DIB, row 0 in memory is the visual bottom row (dark=30)
+      // and row srcH-1 in memory is the visual top row (bright=210).
+      for (var memRow = 0; memRow < srcH; memRow++) {
+        final val = memRow < (srcH ~/ 2) ? 30 : 210;
+        for (var x = 0; x < srcW; x++) {
+          final p32 = (memRow * srcW + x) * 4;
+          rgb32[p32] = val;
+          rgb32[p32 + 1] = val;
+          rgb32[p32 + 2] = val;
+          rgb32[p32 + 3] = 255;
+
+          final p24 = (memRow * srcW + x) * 3;
+          rgb24[p24] = val;
+          rgb24[p24 + 1] = val;
+          rgb24[p24 + 2] = val;
         }
+      }
 
-        final sampledYuy2 = CameraFrameSampler.sampleToGrayscaleGrid(
-          rawBytes: yuy2Bytes,
-          format: CameraPixelFormat.yuy2,
-          srcWidth: srcW,
-          srcHeight: srcH,
-          reportedStride: 1408, // Padded GPU stride > 1280!
-        );
-        final sampledUyvy = CameraFrameSampler.sampleToGrayscaleGrid(
-          rawBytes: uyvyBytes,
-          format: CameraPixelFormat.uyvy,
-          srcWidth: srcW,
-          srcHeight: srcH,
-          reportedStride: 1408,
-        );
+      final sampled32 = CameraFrameSampler.sampleToGrayscaleGrid(
+        rawBytes: rgb32,
+        format: CameraPixelFormat.bgra32,
+        srcWidth: srcW,
+        srcHeight: srcH,
+        reportedStride: -(srcW * 4),
+      );
+      final sampled24 = CameraFrameSampler.sampleToGrayscaleGrid(
+        rawBytes: rgb24,
+        format: CameraPixelFormat.bgr24,
+        srcWidth: srcW,
+        srcHeight: srcH,
+        reportedStride: -(srcW * 3),
+      );
 
-        expect(sampledYuy2, isNotNull);
-        expect(sampledYuy2!.effectiveRowStride, 1280);
-        expect(sampledYuy2.meanLuminance255, closeTo(112.0, 0.1));
+      expect(sampled32, isNotNull);
+      expect(sampled32!.grid.first, closeTo(210.0, 2.0));
+      expect(sampled32.grid.last, closeTo(30.0, 2.0));
 
-        expect(sampledUyvy, isNotNull);
-        expect(sampledUyvy!.effectiveRowStride, 1280);
-        expect(sampledUyvy.meanLuminance255, closeTo(134.0, 0.1));
-      },
-    );
-
-    test(
-      'Negative bottom-up RGB32 and RGB24 DIB strides orient top and bottom rows accurately',
-      () {
-        const srcW = 64;
-        const srcH = 48;
-        final rgb32 = Uint8List(srcW * srcH * 4);
-        final rgb24 = Uint8List(srcW * srcH * 3);
-
-        // In a bottom-up DIB, row 0 in memory is the visual bottom row (dark=30)
-        // and row srcH-1 in memory is the visual top row (bright=210).
-        for (var memRow = 0; memRow < srcH; memRow++) {
-          final val = memRow < (srcH ~/ 2) ? 30 : 210;
-          for (var x = 0; x < srcW; x++) {
-            final p32 = (memRow * srcW + x) * 4;
-            rgb32[p32] = val;
-            rgb32[p32 + 1] = val;
-            rgb32[p32 + 2] = val;
-            rgb32[p32 + 3] = 255;
-
-            final p24 = (memRow * srcW + x) * 3;
-            rgb24[p24] = val;
-            rgb24[p24 + 1] = val;
-            rgb24[p24 + 2] = val;
-          }
-        }
-
-        final sampled32 = CameraFrameSampler.sampleToGrayscaleGrid(
-          rawBytes: rgb32,
-          format: CameraPixelFormat.bgra32,
-          srcWidth: srcW,
-          srcHeight: srcH,
-          reportedStride: -(srcW * 4),
-        );
-        final sampled24 = CameraFrameSampler.sampleToGrayscaleGrid(
-          rawBytes: rgb24,
-          format: CameraPixelFormat.bgr24,
-          srcWidth: srcW,
-          srcHeight: srcH,
-          reportedStride: -(srcW * 3),
-        );
-
-        expect(sampled32, isNotNull);
-        expect(sampled32!.grid.first, closeTo(210.0, 2.0));
-        expect(sampled32.grid.last, closeTo(30.0, 2.0));
-
-        expect(sampled24, isNotNull);
-        expect(sampled24!.grid.first, closeTo(210.0, 2.0));
-        expect(sampled24.grid.last, closeTo(30.0, 2.0));
-      },
-    );
+      expect(sampled24, isNotNull);
+      expect(sampled24!.grid.first, closeTo(210.0, 2.0));
+      expect(sampled24.grid.last, closeTo(30.0, 2.0));
+    });
   });
 
   group('Camera Ego-Motion vs. Passersby & Lighting Regression (#2)', () {
@@ -277,160 +268,147 @@ void main() {
       return analyzer;
     }
 
-    test(
-      'Stationary laptop does NOT trigger false alarm when a person walks across the webcam view',
-      () {
-        final t0 = DateTime.utc(2026, 11, 13, 12);
-        final background = renderSyntheticRoomScene();
-        final analyzer = buildCalibratedAnalyzer(
-          baselineScene: background,
-          startTime: t0,
+    test('Stationary laptop does NOT trigger false alarm when a person walks across the webcam view', () {
+      final t0 = DateTime.utc(2026, 11, 13, 12);
+      final background = renderSyntheticRoomScene();
+      final analyzer = buildCalibratedAnalyzer(
+        baselineScene: background,
+        startTime: t0,
+      );
+
+      // Simulate a person walking continuously from left (x=8) to right (x=56)
+      // across 13 frames while background shelves/walls remain anchored.
+      var time = t0.add(const Duration(seconds: 2));
+      for (var step = 0; step < 13; step++) {
+        time = time.add(const Duration(milliseconds: 125));
+        final frame = overlayPassingPerson(
+          background,
+          personCenterX: 8.0 + (step * 4.0),
+          halfWidth: 11.5,
         );
-
-        // Simulate a person walking continuously from left (x=8) to right (x=56)
-        // across 13 frames while background shelves/walls remain anchored.
-        var time = t0.add(const Duration(seconds: 2));
-        for (var step = 0; step < 13; step++) {
-          time = time.add(const Duration(milliseconds: 125));
-          final frame = overlayPassingPerson(
-            background,
-            personCenterX: 8.0 + (step * 4.0),
-            halfWidth: 11.5,
-          );
-          final eval = analyzer.processFrame(frame, timestamp: time);
-          expect(
-            eval.anchoredTexturedBlocks,
-            greaterThanOrEqualTo(4),
-            reason:
-                'Unoccluded background blocks should remain anchored on step $step',
-          );
-          expect(
-            eval.triggered,
-            isFalse,
-            reason:
-                'Passing person in front of stationary laptop must not trigger alarm (step $step, score=${eval.motionScore})',
-          );
-        }
-      },
-    );
-
-    test(
-      'Brief lighting switch and gradual ambient brightness drift do NOT trigger false alarm',
-      () {
-        final t0 = DateTime.utc(2026, 11, 13, 12);
-        final background = renderSyntheticRoomScene();
-        final analyzer = buildCalibratedAnalyzer(
-          baselineScene: background,
-          startTime: t0,
-        );
-
-        var time = t0.add(const Duration(seconds: 2));
-        // Abrupt overhead room light switch (+38 brightness, 1.15x contrast).
-        final brightFlash = renderSyntheticRoomScene(
-          illuminationOffset: 38.0,
-          contrastScale: 1.15,
-        );
-        for (var i = 0; i < 5; i++) {
-          time = time.add(const Duration(milliseconds: 125));
-          final eval = analyzer.processFrame(brightFlash, timestamp: time);
-          expect(eval.triggered, isFalse);
-        }
-
-        // Gradual sunlight drift.
-        for (var i = 1; i <= 8; i++) {
-          time = time.add(const Duration(milliseconds: 125));
-          final drifted = renderSyntheticRoomScene(
-            illuminationOffset: 38.0 - (i * 4.0),
-          );
-          final eval = analyzer.processFrame(drifted, timestamp: time);
-          expect(eval.triggered, isFalse);
-        }
-      },
-    );
-
-    test(
-      'Picking up or panning the laptop produces coherent multi-quadrant optical flow and DOES trigger alarm',
-      () {
-        final t0 = DateTime.utc(2026, 11, 13, 12);
-        final background = renderSyntheticRoomScene();
-        final analyzer = buildCalibratedAnalyzer(
-          baselineScene: background,
-          startTime: t0,
-        );
-
-        var time = t0.add(const Duration(seconds: 2));
-        var triggeredAny = false;
-        for (var step = 1; step <= 5; step++) {
-          time = time.add(const Duration(milliseconds: 125));
-          final movedFrame = renderSyntheticRoomScene(
-            panX: step * 1.8,
-            panY: step * 0.9,
-          );
-          final eval = analyzer.processFrame(movedFrame, timestamp: time);
-          if (eval.triggered) {
-            triggeredAny = true;
-            expect(eval.activeQuadrants, greaterThanOrEqualTo(3));
-            expect(eval.coherentTranslatedBlocks, greaterThanOrEqualTo(5));
-            break;
-          }
-        }
+        final eval = analyzer.processFrame(frame, timestamp: time);
         expect(
-          triggeredAny,
-          isTrue,
-          reason: 'Sustained laptop pickup/panning must trigger alarm',
-        );
-      },
-    );
-
-    test(
-      'Rotating the laptop (including in a minimalist plain-wall room) triggers alarm',
-      () {
-        final t0 = DateTime.utc(2026, 11, 13, 12);
-        final minimalistBase = renderSyntheticRoomScene(minimalistWalls: true);
-        final analyzer = buildCalibratedAnalyzer(
-          baselineScene: minimalistBase,
-          startTime: t0,
-        );
-
-        var time = t0.add(const Duration(seconds: 2));
-        var triggeredAny = false;
-        for (var step = 1; step <= 6; step++) {
-          time = time.add(const Duration(milliseconds: 125));
-          final rotated = renderSyntheticRoomScene(
-            minimalistWalls: true,
-            rollRadians: step * 0.085,
-            panX: step * 1.6,
-          );
-          final eval = analyzer.processFrame(rotated, timestamp: time);
-          if (eval.triggered) {
-            triggeredAny = true;
-            break;
-          }
-        }
-        expect(
-          triggeredAny,
-          isTrue,
+          eval.anchoredTexturedBlocks,
+          greaterThanOrEqualTo(4),
           reason:
-              'Rotating/lifting laptop in a minimalist room must still trigger alarm',
+              'Unoccluded background blocks should remain anchored on step $step',
         );
-      },
-    );
-  });
-
-  group('Camera Initialization Failures, Retry & Auxiliary Sensors (#6, #9)', () {
-    const macMethod = MethodChannel('dev.watsafe/test_mac_cam_init');
-    const macEvents = EventChannel('dev.watsafe/test_mac_cam_init_events');
-
-    tearDown(() {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(macMethod, null);
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockStreamHandler(macEvents, null);
+        expect(
+          eval.triggered,
+          isFalse,
+          reason:
+              'Passing person in front of stationary laptop must not trigger alarm (step $step, score=${eval.motionScore})',
+        );
+      }
     });
 
-    test(
-      'Handles PERMISSION_DENIED, NO_CAMERA_HARDWARE, CAMERA_BUSY, and FRAME_TIMEOUT without entering armed, cleans up, and recovers on retry',
-      () async {
+    test('Brief lighting switch and gradual ambient brightness drift do NOT trigger false alarm', () {
+      final t0 = DateTime.utc(2026, 11, 13, 12);
+      final background = renderSyntheticRoomScene();
+      final analyzer = buildCalibratedAnalyzer(
+        baselineScene: background,
+        startTime: t0,
+      );
+
+      var time = t0.add(const Duration(seconds: 2));
+      // Abrupt overhead room light switch (+38 brightness, 1.15x contrast).
+      final brightFlash = renderSyntheticRoomScene(
+        illuminationOffset: 38.0,
+        contrastScale: 1.15,
+      );
+      for (var i = 0; i < 5; i++) {
+        time = time.add(const Duration(milliseconds: 125));
+        final eval = analyzer.processFrame(brightFlash, timestamp: time);
+        expect(eval.triggered, isFalse);
+      }
+
+      // Gradual sunlight drift.
+      for (var i = 1; i <= 8; i++) {
+        time = time.add(const Duration(milliseconds: 125));
+        final drifted = renderSyntheticRoomScene(
+          illuminationOffset: 38.0 - (i * 4.0),
+        );
+        final eval = analyzer.processFrame(drifted, timestamp: time);
+        expect(eval.triggered, isFalse);
+      }
+    });
+
+    test('Picking up or panning the laptop produces coherent multi-quadrant optical flow and DOES trigger alarm', () {
+      final t0 = DateTime.utc(2026, 11, 13, 12);
+      final background = renderSyntheticRoomScene();
+      final analyzer = buildCalibratedAnalyzer(
+        baselineScene: background,
+        startTime: t0,
+      );
+
+      var time = t0.add(const Duration(seconds: 2));
+      var triggeredAny = false;
+      for (var step = 1; step <= 5; step++) {
+        time = time.add(const Duration(milliseconds: 125));
+        final movedFrame = renderSyntheticRoomScene(
+          panX: step * 1.8,
+          panY: step * 0.9,
+        );
+        final eval = analyzer.processFrame(movedFrame, timestamp: time);
+        if (eval.triggered) {
+          triggeredAny = true;
+          expect(eval.activeQuadrants, greaterThanOrEqualTo(3));
+          expect(eval.coherentTranslatedBlocks, greaterThanOrEqualTo(5));
+          break;
+        }
+      }
+      expect(
+        triggeredAny,
+        isTrue,
+        reason: 'Sustained laptop pickup/panning must trigger alarm',
+      );
+    });
+
+    test('Rotating the laptop (including in a minimalist plain-wall room) triggers alarm', () {
+      final t0 = DateTime.utc(2026, 11, 13, 12);
+      final minimalistBase = renderSyntheticRoomScene(minimalistWalls: true);
+      final analyzer = buildCalibratedAnalyzer(
+        baselineScene: minimalistBase,
+        startTime: t0,
+      );
+
+      var time = t0.add(const Duration(seconds: 2));
+      var triggeredAny = false;
+      for (var step = 1; step <= 6; step++) {
+        time = time.add(const Duration(milliseconds: 125));
+        final rotated = renderSyntheticRoomScene(
+          minimalistWalls: true,
+          rollRadians: step * 0.085,
+          panX: step * 1.6,
+        );
+        final eval = analyzer.processFrame(rotated, timestamp: time);
+        if (eval.triggered) {
+          triggeredAny = true;
+          break;
+        }
+      }
+      expect(
+        triggeredAny,
+        isTrue,
+        reason: 'Rotating/lifting laptop in a minimalist room must still trigger alarm',
+      );
+    });
+  });
+
+  group(
+    'Camera Initialization Failures, Retry & Auxiliary Sensors (#6, #9)',
+    () {
+      const macMethod = MethodChannel('dev.watsafe/test_mac_cam_init');
+      const macEvents = EventChannel('dev.watsafe/test_mac_cam_init_events');
+
+      tearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(macMethod, null);
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockStreamHandler(macEvents, null);
+      });
+
+      test('Handles PERMISSION_DENIED, NO_CAMERA_HARDWARE, CAMERA_BUSY, and FRAME_TIMEOUT without entering armed, cleans up, and recovers on retry', () async {
         final failureModes = <Map<String, Object?>>[
           <String, Object?>{
             'started': false,
@@ -472,8 +450,7 @@ void main() {
                   }
                   return <String, Object?>{
                     'started': true,
-                    'message':
-                        'Monitoring active on FaceTime HD Camera (frames arriving).',
+                    'message': 'Monitoring active on FaceTime HD Camera (frames arriving).',
                   };
                 case 'stopMonitoring':
                   stopCalls += 1;
@@ -548,12 +525,9 @@ void main() {
 
         controller.dispose();
         await macDetector.dispose();
-      },
-    );
+      });
 
-    test(
-      'Arms auxiliary Windows Accelerometer alongside Windows Webcam as a corroborating physical motion input',
-      () async {
+      test('Arms auxiliary Windows Accelerometer alongside Windows Webcam as a corroborating physical motion input', () async {
         final winCam = FakeMotionDetector(
           type: DetectorType.windowsCameraSceneMotion,
           initialCapability: const DetectorCapability(
@@ -629,12 +603,9 @@ void main() {
         controller.dispose();
         await winCam.dispose();
         await winAccel.dispose();
-      },
-    );
+      });
 
-    test(
-      'Android background monitoring stays armed across app pause and exits armed if foreground service stops (#9)',
-      () async {
+      test('Android background monitoring stays armed across app pause and exits armed if foreground service stops (#9)', () async {
         const androidMethod = MethodChannel('dev.watsafe/test_android_bg');
         const androidEvents = EventChannel(
           'dev.watsafe/test_android_bg_events',
@@ -717,8 +688,7 @@ void main() {
         sink?.success(<String, Object?>{
           'sessionId': sid,
           'eventType': 'detectorFailed',
-          'summary':
-              'Android foreground monitoring stopped from persistent notification.',
+          'summary': 'Android foreground monitoring stopped from persistent notification.',
           'errorCode': 'FOREGROUND_SERVICE_STOPPED',
           'timestampMs': 1730000010000,
         });
@@ -733,12 +703,9 @@ void main() {
             .setMockMethodCallHandler(androidMethod, null);
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockStreamHandler(androidEvents, null);
-      },
-    );
+      });
 
-    test(
-      'WindowsCameraSceneMotionDetectorAdapter maps PERMISSION_DENIED to permissionRequired',
-      () async {
+      test('WindowsCameraSceneMotionDetectorAdapter maps PERMISSION_DENIED to permissionRequired', () async {
         const winMethod = MethodChannel('dev.watsafe/test_win_cam_err');
         const winEvents = EventChannel('dev.watsafe/test_win_cam_err_events');
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -775,7 +742,7 @@ void main() {
             .setMockMethodCallHandler(winMethod, null);
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockStreamHandler(winEvents, null);
-      },
-    );
-  });
+      });
+    },
+  );
 }

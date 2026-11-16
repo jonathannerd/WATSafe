@@ -1,3 +1,5 @@
+bool hasExplicitRuntimeEnvVarOverride() => false;
+
 String? readRuntimeRelayEnvUrl() => null;
 
 String? readPersistedPermanentRelayUrl() => null;

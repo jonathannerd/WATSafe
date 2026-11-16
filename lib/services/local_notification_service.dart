@@ -76,10 +76,9 @@ class NoOpLocalNotificationService implements LocalNotificationAdapter {
 class PlatformLocalNotificationService implements LocalNotificationAdapter {
   PlatformLocalNotificationService({
     MethodChannel? channel,
-    void Function(String deepLink)? onDeepLinkReceived,
+    this._onDeepLinkReceived,
   }) : _channel =
-           channel ?? const MethodChannel('dev.watsafe/local_notifications'),
-       _onDeepLinkReceived = onDeepLinkReceived {
+           channel ?? const MethodChannel('dev.watsafe/local_notifications') {
     _channel.setMethodCallHandler(_handleNativeCallback);
   }
 
@@ -194,13 +193,15 @@ class PlatformLocalNotificationService implements LocalNotificationAdapter {
       return false;
     }
     try {
-      final ok = await _channel
-          .invokeMethod<bool>('showAlertNotification', <String, Object?>{
-            'incidentId': incidentId,
-            'title': deviceName,
-            'body': message,
-            'isTest': isTest,
-          });
+      final ok = await _channel.invokeMethod<bool>(
+        'showAlertNotification',
+        <String, Object?>{
+          'incidentId': incidentId,
+          'title': deviceName,
+          'body': message,
+          'isTest': isTest,
+        },
+      );
       return ok ?? false;
     } on MissingPluginException {
       _supported = false;

@@ -9,34 +9,44 @@ The standalone WATSafe Relay Server (`backend/server.dart`, backed by `lib/relay
 - **Strict Payload Sanitization:** Every write endpoint inspects incoming JSON keys and string values recursively and rejects (`400 PRIVACY_INVARIANT_VIOLATION`) any payload containing camera frames/images (`frame*`, `image*`, `rgba`, `nv12`, `data:image/*`), PIN material (`pin`, `pinHash`, `pbkdf2`, `salt*`), or database/provider credentials (`databaseUrl`, `aiven*`, `postgres://`, `privateKey`, `serviceAccount`).
 - **Authenticated Location Access Only:** Protected device coordinates attached via `POST /v1/incidents/location` are stored strictly on the session's authenticated event record (`GET /v1/companion/alerts` and `GET /v1/companion/events/<incidentId>`). Lock-screen Web Push / APNs / FCM notification payloads contain **only** the protected device name, plain alarm message, and `incidentId` — never coordinates.
 - **Zero Credentials in URLs:** Neither `companionToken` nor `hostToken` is ever placed in query strings. Moving from Mobile Safari into an isolated iOS Home Screen web app uses a short-lived, single-use 6-character setup code (`POST /v1/companion/handoff-code` -> `POST /v1/companion/claim-handoff`) that rotates the companion token on consumption.
-- **Built-In RFC 8291 + RFC 8292 Web Push:** Encrypts push payloads with `aes128gcm` (NIST P-256 ECDH + HKDF-SHA-256) and signs VAPID `ES256` JWT headers directly in pure Dart, auto-revoking expired (`404` / `410`) push subscriptions.
-- **Verified Webhook Adapter:** When `WATSAFE_PUSH_WEBHOOK_URL` is configured, `verifyConfiguredSenders()` probes reachability on startup and reports `webhookSenderVerified` on `/v1/health` rather than assuming an unverified webhook works.
+- **Built-In RFC 8291 + RFC 8292 Web Push & Durable VAPID Keys:** Encrypts push payloads with `aes128gcm` (NIST P-256 ECDH + HKDF-SHA-256), signs VAPID `ES256` JWT headers directly in pure Dart, persists generated VAPID keys in `watsafe_server_secrets` (`PostgresRelayStore`) or local `vapid_keys.json` (`FileRelayStore`), and auto-revokes expired (`404` / `410`) push subscriptions.
+- **Honest Storage Durability Telemetry:** `GET /v1/health` exposes `storageBackend`, `storageDurable`, and `storageDurabilityWarning` (`storageDurable: false` when running inside a cloud container such as Render without `AIVEN_DATABASE_URL`) so an ephemeral container filesystem is never mistaken for permanent storage.
 
 ---
 
-## 2. Single-Command Local HTTPS Launch
+## 2. Cloud HTTPS Deployment with Existing Aiven PostgreSQL (`render.yaml` + `Dockerfile`)
 
-From the repository root, start the relay, a valid-certificate public HTTPS tunnel (`cloudflared` -> `ngrok` -> built-in `ssh localhost.run`), health verification, and the WATSafe desktop app with one command:
+Deployment files at the repository root (`Dockerfile` pinned to `dart:3.13.7-sdk` and `render.yaml`) prepare the HTTPS `watsafe-relay` service:
+
+1. **Important storage behavior:**
+   - `render.yaml` deploys the `watsafe-relay` Docker web service (providing a stable `https://<your-render-service>.onrender.com` certificate via `RENDER_EXTERNAL_URL`) and **prompts (`sync: false`) for environment secrets**. It **does not** provision PostgreSQL automatically.
+   - **Do not** use Render’s expiring 30-day free PostgreSQL database or Render’s ephemeral container filesystem for permanent pairing.
+   - Supply our existing **Aiven PostgreSQL** connection URI via `AIVEN_DATABASE_URL` in Render environment secrets (never in Git).
+2. **Deploy & set secrets in Render:**
+   - In the Render Dashboard, choose **New -> Blueprint** and select `jonathannerd/WATSafe`.
+   - Set `AIVEN_DATABASE_URL` (`postgres://avnadmin:<password>@<project>.aivencloud.com:<port>/defaultdb?sslmode=require`).
+   - Optionally set `AIVEN_CA_CERT` (PEM certificate string) if your URI uses `?sslmode=verify-full` or `?sslmode=verify-ca`.
+3. **Verify the live HTTPS endpoint and database persistence across a restart/redeploy:**
+   ```bash
+   dart run tool/verify_deployment.dart --require-postgres --phase=before-restart https://<your-render-service>.onrender.com
+   # Restart or redeploy watsafe-relay in Render, then run:
+   dart run tool/verify_deployment.dart --require-postgres --phase=after-restart --save https://<your-render-service>.onrender.com
+   ```
+   Passing `--save` writes the verified permanent HTTPS origin to `~/.watsafe/relay_service.json` (and syncs to the macOS `WATSafe.app` sandbox container) so every future launch of `WATSafe.app` or `./scripts/run_watsafe.sh` reconnects automatically.
+
+---
+
+## 3. Local Development Launch
+
+From the repository root:
 
 ```bash
 ./scripts/run_watsafe.sh
 ```
 
-Or when opening `WATSafe.app` directly without a terminal, `LocalRelaySupervisor` automatically connects to your configured HTTPS relay or starts an embedded local relay in-process.
-
----
-
-## 3. Free Persistent Cloud HTTPS Deployment (Zero Paid Services)
-
-Deployment files are ready at the repository root (`Dockerfile` and `render.yaml` on the **Free** plan):
-
-1. On [Render](https://dashboard.render.com) (Free tier, automatic Let's Encrypt HTTPS certificate), click **New -> Blueprint** and select `jonathannerd/WATSafe`. `render.yaml` provisions `watsafe-companion` + a managed PostgreSQL database (`watsafe-companion-db`) and persists pairing sessions, Web Push subscriptions, and VAPID keys automatically in `watsafe_server_secrets` (or you may optionally supply `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` from `dart run tool/generate_vapid_keys.dart`).
-2. Save your permanent HTTPS URL once on your Mac (no rebuild required):
-   ```bash
-   ./scripts/run_watsafe.sh --save-permanent-url=https://watsafe-companion.onrender.com --save-only
-   ```
-   *(Or build with `--dart-define=WATSAFE_API_URL=https://watsafe-companion.onrender.com`.)*
-   Opening `WATSafe.app` or running `./scripts/run_watsafe.sh` then connects directly over HTTPS every time with zero temporary tunnels.
+- If a permanent HTTPS URL has been saved in `~/.watsafe/relay_service.json`, `run_watsafe.sh` and `WATSafe.app` connect directly to that permanent origin.
+- If `WATSAFE_CLOUDFLARE_TUNNEL_TOKEN` + `WATSAFE_PUBLIC_URL` are set, `run_watsafe.sh` starts the local relay (`~/.watsafe/relay/`) behind your permanent Named Cloudflare Tunnel.
+- Otherwise, `run_watsafe.sh` starts the local relay with a temporary development tunnel and prints a notice explaining one-time permanent setup.
 
 ---
 
@@ -46,11 +56,11 @@ Deployment files are ready at the repository root (`Dockerfile` and `render.yaml
 | :--- | :--- |
 | `PORT` / `WATSAFE_BIND_HOST` | Listen port (default `8787`) and bind address (default `0.0.0.0`) |
 | `WATSAFE_PUBLIC_URL` | Permanent public HTTPS base URL encoded into QR pairing links (auto-detected on Render via `RENDER_EXTERNAL_URL`) |
-| `WATSAFE_DATA_DIR` | Directory for durable `FileRelayStore` (`relay_store.json`) and `vapid_keys.json` when PostgreSQL is not configured (defaults to `~/.watsafe/relay`) |
-| `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | Optional explicit NIST P-256 VAPID keypair (base64url); otherwise generated once and persisted durably in PostgreSQL (`watsafe_server_secrets`) or `WATSAFE_DATA_DIR/vapid_keys.json` |
+| `AIVEN_DATABASE_URL` / `DATABASE_URL` | Aiven / PostgreSQL connection URI (`postgres://...`, environment secret only—never committed to Git). Required in cloud containers for durable storage (`storageBackend: aiven_postgres`, `storageDurable: true`). |
+| `AIVEN_CA_CERT` / `AIVEN_CA_CERT_PATH` / `PGSSLROOTCERT` | Optional Aiven CA certificate (inline PEM string or file path) for `SslMode.verifyFull` |
+| `WATSAFE_DATA_DIR` | Directory for local host `FileRelayStore` when running on a personal Mac/PC (`~/.watsafe/relay` by default; ephemeral inside cloud containers unless `WATSAFE_PERSISTENT_VOLUME=true`) |
+| `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | Optional explicit NIST P-256 VAPID keypair (base64url); when omitted, WATSafe generates once and persists durably in `watsafe_server_secrets` (PostgreSQL) or local `vapid_keys.json` |
 | `VAPID_SUBJECT` | Contact URI for VAPID JWT `sub` claim (default `mailto:alerts@watsafe.app`) |
-| `AIVEN_DATABASE_URL` / `DATABASE_URL` | Optional PostgreSQL URI (`postgres://...`); falls back to durable `FileRelayStore` on disk when unset |
-| `AIVEN_CA_CERT_PATH` / `PGSSLROOTCERT` | Optional CA certificate path for `SslMode.verifyFull` |
 | `FCM_PROJECT_ID` + `FCM_BEARER_TOKEN` / `FCM_SERVER_KEY` | Optional Firebase Cloud Messaging credentials for native Android/iOS push tokens |
 | `APNS_BUNDLE_ID` + `APNS_AUTH_TOKEN` | Optional Apple Push Notification service HTTP/2 credentials for native iOS builds |
 | `WATSAFE_PUSH_WEBHOOK_URL` | Optional external push gateway URL (verified on startup) |
@@ -63,7 +73,7 @@ Deployment files are ready at the repository root (`Dockerfile` and `render.yaml
 | :--- | :--- | :--- |
 | `GET /`, `GET /pair`, `GET /companion` | Public HTML | Permanent-shell iPhone & Android Web Companion PWA (`X-WATSafe-Companion: 1`) |
 | `GET /manifest.webmanifest`, `GET /sw.js`, `GET /icons/*` | Public PWA | Stable Web App Manifest (`id: '/companion'`, `start_url: '/companion?source=homescreen'`, `scope: '/'`, `standalone`), icons, and offline-caching Service Worker |
-| `GET /v1/health` | Public JSON | Readiness check, storage backend, VAPID public key, `permanentHttpsOrigin`, and `publicHttpsOrigin` |
+| `GET /v1/health` | Public JSON | Readiness check, `storageBackend`, `storageDurable`, `storageDurabilityWarning`, `vapidPublicKey`, and `permanentHttpsOrigin` |
 | `POST /v1/pairing/initiate` | Optional `Bearer <hostToken>` | Generates a 5-minute single-use code and HTTPS `/pair?code=...` QR URL |
 | `POST /v1/host/heartbeat` | `Bearer <hostToken>` | Marks protected laptop online (`hostOnline: true`, `hostLastSeenAtUtc`) and returns active paired devices |
 | `POST /v1/host/offline` | `Bearer <hostToken>` | Marks protected laptop offline on clean app exit while keeping pairing intact |

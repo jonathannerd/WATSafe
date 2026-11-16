@@ -370,10 +370,16 @@ Future<void> main(List<String> args) async {
         '          To give your iPhone Home Screen icon a permanent HTTPS address once and for all:',
       );
       stdout.writeln(
-        '            1. Deploy `render.yaml` once (free Render Blueprint -> https://<your-service>.onrender.com)',
+        '            1. Deploy `render.yaml` with `AIVEN_DATABASE_URL` set in Render environment secrets',
       );
       stdout.writeln(
-        '            2. Save it once: ./scripts/run_watsafe.sh --save-permanent-url=https://<your-service>.onrender.com',
+        '               (or run a Named Cloudflare Tunnel against your local Mac relay)',
+      );
+      stdout.writeln(
+        '            2. Verify & save once: dart run tool/verify_deployment.dart --phase=before-restart https://<your-render-service>.onrender.com',
+      );
+      stdout.writeln(
+        '               (restart relay, then: dart run tool/verify_deployment.dart --phase=after-restart --save https://<your-render-service>.onrender.com)',
       );
     }
     stdout.writeln('');
@@ -495,6 +501,12 @@ Future<bool> _waitForHealth(String baseUrl, {required Duration timeout}) async {
         final raw = await utf8.decoder.bind(resp).join();
         final decoded = jsonDecode(raw);
         if (decoded is Map && decoded['status'] == 'ok') {
+          if (decoded['storageDurable'] == false) {
+            final warn =
+                (decoded['storageDurabilityWarning'] as String?)?.trim() ??
+                'Relay storage at $baseUrl is not durable across restarts.';
+            stderr.writeln('[WATSafe] WARNING: $warn');
+          }
           return true;
         }
       } else {

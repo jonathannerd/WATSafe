@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+const String _macosSandboxBundleId = 'dev.watsafe.temp.watsafe';
+
 bool _isEphemeralTunnelHost(String host) {
   final lower = host.toLowerCase();
   return lower.endsWith('.trycloudflare.com') ||
@@ -9,6 +11,22 @@ bool _isEphemeralTunnelHost(String host) {
       lower.endsWith('.ngrok-free.app') ||
       lower.endsWith('.ngrok-free.dev') ||
       lower.endsWith('.ngrok.io');
+}
+
+bool _isPlaceholderHost(String raw, String host) {
+  final lowerRaw = raw.toLowerCase();
+  final lowerHost = host.toLowerCase();
+  if (lowerRaw.contains('<') || lowerRaw.contains('>')) {
+    return true;
+  }
+  return lowerHost == 'example.com' ||
+      lowerHost.endsWith('.example.com') ||
+      lowerHost == 'example.org' ||
+      lowerHost.endsWith('.example.org') ||
+      lowerHost.contains('your-service') ||
+      lowerHost.contains('your-render-service') ||
+      lowerHost.contains('yourdomain.com') ||
+      lowerHost.contains('your-relay-domain');
 }
 
 bool _isPermanentHttps(String raw) {
@@ -20,7 +38,29 @@ bool _isPermanentHttps(String raw) {
   if (parsed == null || parsed.host.isEmpty) {
     return false;
   }
+  if (_isPlaceholderHost(trimmed, parsed.host)) {
+    return false;
+  }
   return !_isEphemeralTunnelHost(parsed.host);
+}
+
+List<File> _macosSandboxSyncTargets(String home) {
+  if (!Platform.isMacOS || home.isEmpty) {
+    return const <File>[];
+  }
+  // When running outside the App Sandbox (e.g. CLI `./scripts/run_watsafe.sh`),
+  // also sync into the macOS App Sandbox container so double-clicking
+  // `WATSafe.app` in Finder reads the same permanent HTTPS endpoint.
+  if (home.contains('/Library/Containers/')) {
+    return const <File>[];
+  }
+  final containerData = '$home/Library/Containers/$_macosSandboxBundleId/Data';
+  return <File>[
+    File('$containerData/.watsafe/relay_service.json'),
+    File(
+      '$containerData/Library/Application Support/dev.watsafe/relay_service.json',
+    ),
+  ];
 }
 
 List<File> _permanentConfigCandidates() {
@@ -33,6 +73,7 @@ List<File> _permanentConfigCandidates() {
     if (home.isNotEmpty) File('$home/.watsafe/relay_service.json'),
     if (home.isNotEmpty && Platform.isMacOS)
       File('$home/Library/Application Support/dev.watsafe/relay_service.json'),
+    ..._macosSandboxSyncTargets(home),
     File('config/relay_service.json'),
   ];
 }
@@ -73,6 +114,7 @@ Future<void> writePersistedPermanentRelayUrl(String? url) async {
     if (home.isNotEmpty) File('$home/.watsafe/relay_service.json'),
     if (home.isNotEmpty && Platform.isMacOS)
       File('$home/Library/Application Support/dev.watsafe/relay_service.json'),
+    ..._macosSandboxSyncTargets(home),
   ];
   final payload = const JsonEncoder.withIndent('  ').convert(<String, Object?>{
     'permanentRelayUrl': normalized,
@@ -114,6 +156,15 @@ bool _isLauncherRuntimeStillActive() {
   } catch (_) {
     return false;
   }
+}
+
+bool hasExplicitRuntimeEnvVarOverride() {
+  final envApi = (Platform.environment['WATSAFE_API_URL'] ?? '').trim();
+  if (envApi.isNotEmpty) {
+    return true;
+  }
+  final envRelay = (Platform.environment['WATSAFE_RELAY_URL'] ?? '').trim();
+  return envRelay.isNotEmpty;
 }
 
 String? readRuntimeRelayEnvUrl() {

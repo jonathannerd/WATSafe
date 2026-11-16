@@ -27,8 +27,7 @@ class CompanionPwaAssets {
       'id': '/companion',
       'name': 'WATSafe Phone Companion',
       'short_name': 'WATSafe',
-      'description':
-          'Receive protected laptop alarm notifications and view device location.',
+      'description': 'Receive protected laptop alarm notifications and view device location.',
       'start_url': '/companion?source=homescreen',
       'scope': '/',
       'display': 'standalone',

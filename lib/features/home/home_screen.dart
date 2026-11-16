@@ -591,9 +591,8 @@ class _DisarmPinSheetState extends State<_DisarmPinSheet> {
             children: <Widget>[
               Text(
                 'Enter PIN to disarm',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                style: Theme.of(context).textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
               const Text(

@@ -339,8 +339,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
       Navigator.of(context).pop();
     } else {
       setState(() {
-        _infoMessage =
-            'Notifications are off in your device settings. You will still see alerts while WATSafe is open, and you can enable system notifications anytime in Settings.';
+        _infoMessage = 'Notifications are off in your device settings. You will still see alerts while WATSafe is open, and you can enable system notifications anytime in Settings.';
       });
     }
   }
@@ -360,8 +359,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
       if (res.delivered) {
         _infoMessage = 'Test alert sent! Check your phone.';
       } else {
-        _errorMessage =
-            'Could not deliver the test alert right now. Check your connection and try again.';
+        _errorMessage = 'Could not deliver the test alert right now. Check your connection and try again.';
       }
     });
   }
@@ -432,9 +430,8 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
         Text(
           'Phone connected',
           textAlign: TextAlign.center,
-          style: Theme.of(
-            context,
-          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+          style: Theme.of(context).textTheme.headlineSmall
+              ?.copyWith(fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 8),
         Text(
@@ -488,9 +485,8 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
             Expanded(
               child: Text(
                 'Pair your phone',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                style: Theme.of(context).textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
             ),
             IconButton(
@@ -534,8 +530,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
           ),
         ] else if (invite != null && isExpired) ...<Widget>[
           _StatusNotice(
-            message:
-                'This pairing code expired for your security. Generate a fresh code to continue.',
+            message: 'This pairing code expired for your security. Generate a fresh code to continue.',
             color: WatSafeTheme.amberAccent,
             icon: Icons.timer_off_outlined,
           ),
@@ -646,9 +641,8 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
             Expanded(
               child: Text(
                 'Connect to your laptop',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                style: Theme.of(context).textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
             ),
             IconButton(
@@ -722,9 +716,8 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
           'Connect to $hostName?',
           key: const Key('connect_to_host_title'),
           textAlign: TextAlign.center,
-          style: Theme.of(
-            context,
-          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+          style: Theme.of(context).textTheme.headlineSmall
+              ?.copyWith(fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 8),
         Text(
@@ -781,9 +774,8 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
         Text(
           'Connected to $hostName',
           textAlign: TextAlign.center,
-          style: Theme.of(
-            context,
-          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800),
+          style: Theme.of(context).textTheme.headlineSmall
+              ?.copyWith(fontWeight: FontWeight.w800),
         ),
         const SizedBox(height: 8),
         Text(
@@ -839,8 +831,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
     }
     setState(() {
       _showPermanentUrlEditor = false;
-      _infoMessage =
-          'Permanent companion address saved. Scan this new QR code once in Safari and replace any old Home Screen icon.';
+      _infoMessage = 'Permanent companion address saved. Scan this new QR code once in Safari and replace any old Home Screen icon.';
     });
     await _ensureHostInvitation(forceRefresh: true);
   }
@@ -889,8 +880,8 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
         ? 'Temporary tunnel address — one-time cloud deploy needed for permanent Home Screen icon'
         : 'Local address — deploy or set a permanent HTTPS address for iPhone Home Screen install';
     final detail = isEphemeral
-        ? 'Temporary *.trycloudflare.com tunnels expire when restarted, causing an old Home Screen bookmark to open a white error page. Deploy the permanent relay once (render.yaml or Named Cloudflare Tunnel), save its https:// address below, remove the old iPhone bookmark, and pair one final time.'
-        : 'iPhone Home Screen notifications require a permanent HTTPS domain. Deploy the free Render Blueprint (render.yaml) or Named Cloudflare Tunnel once, then save its https:// address here.';
+        ? 'Temporary *.trycloudflare.com tunnels expire when restarted, causing an old Home Screen bookmark to open a white error page. Deploy the permanent relay with Aiven PostgreSQL (render.yaml + AIVEN_DATABASE_URL secret, or a Named Cloudflare Tunnel), save its https:// address below, remove the old iPhone bookmark, and pair one final time.'
+        : 'iPhone Home Screen notifications require a permanent HTTPS domain. Deploy render.yaml with AIVEN_DATABASE_URL in Render secrets (or a Named Cloudflare Tunnel), then save its https:// address here.';
 
     return Container(
       key: const Key('companion_address_status_banner'),
@@ -972,7 +963,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
               controller: _permanentUrlController,
               decoration: const InputDecoration(
                 labelText: 'Permanent HTTPS address',
-                hintText: 'https://watsafe-companion.onrender.com',
+                hintText: 'https://<your-render-service>.onrender.com',
                 isDense: true,
               ),
               onSubmitted: (_) => _savePermanentUrlFromSheet(),
@@ -1044,9 +1035,7 @@ class _ConnectedPhoneDetailsBodyState
     setState(() {
       _isBusy = false;
       _feedbackIsError = !res.delivered;
-      _feedbackMessage = res.delivered
-          ? 'Test alert sent to your phone.'
-          : 'Could not reach your phone right now. Check your connection and try again.';
+      _feedbackMessage = res.delivered ? 'Test alert sent to your phone.' : 'Could not reach your phone right now. Check your connection and try again.';
     });
   }
 
@@ -1276,9 +1265,8 @@ class _ConnectedPhoneDetailsBodyState
               const SizedBox(height: 16),
               Text(
                 'Paired with $hostLabel',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                style: Theme.of(context).textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
               Text(

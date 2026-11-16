@@ -15,11 +15,8 @@ import '../core/contracts/platform_contracts.dart';
 /// still loading assets or awaiting native channel startup immediately cancels
 /// playback and prevents late siren startup.
 class PlatformAudioAlarmService implements AudioAlarmAdapter {
-  PlatformAudioAlarmService({
-    MethodChannel? channel,
-    Future<Uint8List?> Function()? assetLoader,
-  }) : _channel = channel ?? const MethodChannel('dev.watsafe/audio_alarm'),
-       _assetLoader = assetLoader;
+  PlatformAudioAlarmService({MethodChannel? channel, this._assetLoader})
+    : _channel = channel ?? const MethodChannel('dev.watsafe/audio_alarm');
 
   final MethodChannel _channel;
   final Future<Uint8List?> Function()? _assetLoader;

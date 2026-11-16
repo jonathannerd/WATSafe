@@ -20,6 +20,10 @@ Future<void> main(List<String> args) async {
   final boundPort = await server.start(address: bindAddress, port: port);
   stdout.writeln(
     'WATSafe Relay listening on http://${bindAddress.address}:$boundPort '
-    '(store=${server.storageBackend}, push=${server.pushProvider.providerSummary})',
+    '(store=${server.storageBackend}, durable=${server.isStorageDurable}, push=${server.pushProvider.providerSummary})',
   );
+  final durabilityWarning = server.storageDurabilityWarning;
+  if (durabilityWarning != null) {
+    stderr.writeln('[WATSafe WARNING] $durabilityWarning');
+  }
 }

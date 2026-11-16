@@ -72,17 +72,15 @@ class ParsedPairingInput {
 class ConfigurableRemoteNotificationService
     implements MutableRemoteNotificationAdapter {
   ConfigurableRemoteNotificationService({
-    Object? storageDirectory,
+    this._storageDirectory,
     this.persistToDisk = true,
     this.enableBackgroundPolling = false,
     this.pollInterval = const Duration(seconds: 2),
     String? initialRelayEndpointUrl,
     List<PairedDeviceSummary>? initialDevices,
-    Duration httpTimeout = const Duration(seconds: 3),
+    this._httpTimeout = const Duration(seconds: 3),
     DateTime Function()? clock,
-  }) : _storageDirectory = storageDirectory,
-       _httpTimeout = httpTimeout,
-       _clock = clock ?? DateTime.now,
+  }) : _clock = clock ?? DateTime.now,
        _relayEndpointUrl = _normalizeUrl(
          initialRelayEndpointUrl ??
              const String.fromEnvironment('WATSAFE_API_URL'),

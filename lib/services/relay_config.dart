@@ -35,8 +35,31 @@ class RelayConfig {
         host.endsWith('.ngrok.io');
   }
 
+  static bool isPlaceholderUrl(String? rawUrl) {
+    if (rawUrl == null || rawUrl.trim().isEmpty) {
+      return false;
+    }
+    final lower = rawUrl.trim().toLowerCase();
+    if (lower.contains('<') || lower.contains('>')) {
+      return true;
+    }
+    final parsed = Uri.tryParse(lower);
+    final host = parsed?.host ?? lower;
+    return host == 'example.com' ||
+        host.endsWith('.example.com') ||
+        host == 'example.org' ||
+        host.endsWith('.example.org') ||
+        host.contains('your-service') ||
+        host.contains('your-render-service') ||
+        host.contains('yourdomain.com') ||
+        host.contains('your-relay-domain');
+  }
+
   static bool isPermanentHttpsUrl(String? rawUrl) {
     if (rawUrl == null || rawUrl.trim().isEmpty) {
+      return false;
+    }
+    if (isPlaceholderUrl(rawUrl)) {
       return false;
     }
     final cleaned = _trimTrailingSlash(rawUrl);
@@ -56,7 +79,7 @@ class RelayConfig {
   static bool get hasExplicitCompileOrEnvOverride =>
       _compiledApiUrl.trim().isNotEmpty ||
       _compiledRelayUrl.trim().isNotEmpty ||
-      (readRuntimeRelayEnvUrl()?.trim().isNotEmpty ?? false);
+      hasExplicitRuntimeEnvVarOverride();
 
   static String resolveDefaultRelayUrl({Uri? browserOrigin}) {
     if (_compiledApiUrl.trim().isNotEmpty) {

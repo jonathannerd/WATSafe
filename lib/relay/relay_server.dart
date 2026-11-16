@@ -535,11 +535,10 @@ abstract class PushProviderAdapter {
 class EnvironmentPushProviderAdapter implements PushProviderAdapter {
   EnvironmentPushProviderAdapter({
     Map<String, String>? environment,
-    Future<bool> Function(OutboundPushEnvelope envelope)? customSender,
+    this._customSender,
     bool persistVapidKeysToDisk = false,
     File? vapidKeyFile,
-  }) : _env = environment ?? Platform.environment,
-       _customSender = customSender {
+  }) : _env = environment ?? Platform.environment {
     final envPriv = (_env['VAPID_PRIVATE_KEY'] ?? '').trim();
     final envPub = (_env['VAPID_PUBLIC_KEY'] ?? '').trim();
     _hasExplicitEnvVapidKey = envPriv.isNotEmpty || envPub.isNotEmpty;
@@ -1285,9 +1284,8 @@ class InMemoryRelayStore implements RelayStore {
 /// subscriptions, VAPID keys, and incident alerts survive backend restarts and
 /// updates even when PostgreSQL is not configured.
 class FileRelayStore implements RelayStore {
-  FileRelayStore({required Directory directory, DateTime Function()? clock})
-    : _directory = directory,
-      _inner = InMemoryRelayStore(clock: clock);
+  FileRelayStore({required this._directory, DateTime Function()? clock})
+    : _inner = InMemoryRelayStore(clock: clock);
 
   factory FileRelayStore.fromEnvironment([
     Map<String, String>? environment,
@@ -1695,14 +1693,11 @@ class FileRelayStore implements RelayStore {
 /// or `PGSSLROOTCERT`) and are never exposed to clients or logs.
 class PostgresRelayStore implements RelayStore {
   PostgresRelayStore._({
-    required Endpoint endpoint,
-    required ConnectionSettings settings,
-    required String redactedSummary,
+    required this._endpoint,
+    required this._settings,
+    required this._redactedSummary,
     required String tablePrefix,
-  }) : _endpoint = endpoint,
-       _settings = settings,
-       _redactedSummary = redactedSummary,
-       _tablePrefix = _sanitizePrefix(tablePrefix);
+  }) : _tablePrefix = _sanitizePrefix(tablePrefix);
 
   static PostgresRelayStore? fromEnvironment([
     Map<String, String>? environment,
@@ -1742,6 +1737,7 @@ class PostgresRelayStore implements RelayStore {
       }
     }
 
+    final caCertPem = (env['AIVEN_CA_CERT'] ?? '').trim();
     final caCertPath = (env['AIVEN_CA_CERT_PATH'] ?? env['PGSSLROOTCERT'] ?? '')
         .trim();
     final sslModeParam = (uri.queryParameters['sslmode'] ?? '')
@@ -1750,7 +1746,11 @@ class PostgresRelayStore implements RelayStore {
 
     SecurityContext? securityContext;
     SslMode sslMode;
-    if (caCertPath.isNotEmpty) {
+    if (caCertPem.isNotEmpty) {
+      securityContext = SecurityContext(withTrustedRoots: true)
+        ..setTrustedCertificatesBytes(utf8.encode(caCertPem));
+      sslMode = SslMode.verifyFull;
+    } else if (caCertPath.isNotEmpty) {
       securityContext = SecurityContext(withTrustedRoots: true)
         ..setTrustedCertificates(caCertPath);
       sslMode = SslMode.verifyFull;
@@ -1822,10 +1822,35 @@ class PostgresRelayStore implements RelayStore {
     return opened;
   }
 
+  Future<T> _withConn<T>(Future<T> Function(Connection conn) action) async {
+    final first = await _conn();
+    try {
+      return await action(first);
+    } on SocketException {
+      await close();
+    } on ServerException catch (e) {
+      // Postgres 57P01..57P03 / 08xxx indicate terminated or dropped connection.
+      final code = e.code ?? '';
+      if (!code.startsWith('57P') && !code.startsWith('08')) {
+        rethrow;
+      }
+      await close();
+    } on PgException {
+      if (first.isOpen) {
+        rethrow;
+      }
+      await close();
+    }
+    final reopened = await _conn();
+    return action(reopened);
+  }
+
+  Future<Result> _exec(Object query, {Object? parameters}) =>
+      _withConn((conn) => conn.execute(query, parameters: parameters));
+
   @override
   Future<void> initialize() async {
-    final conn = await _conn();
-    await conn.execute('''
+    await _exec('''
       CREATE TABLE IF NOT EXISTS $_secretsTable (
         secret_key TEXT PRIMARY KEY,
         secret_value_json TEXT NOT NULL,
@@ -1833,7 +1858,7 @@ class PostgresRelayStore implements RelayStore {
       )
     ''');
 
-    await conn.execute('''
+    await _exec('''
       CREATE TABLE IF NOT EXISTS $_sessionsTable (
         pairing_session_id TEXT PRIMARY KEY,
         host_display_name TEXT NOT NULL,
@@ -1848,23 +1873,23 @@ class PostgresRelayStore implements RelayStore {
         created_at_utc TIMESTAMPTZ NOT NULL
       )
     ''');
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS failed_code_attempts INTEGER NOT NULL DEFAULT 0',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_device_id TEXT',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_last_seen_at_utc TIMESTAMPTZ',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_disconnected_at_utc TIMESTAMPTZ',
     );
-    await conn.execute(
+    await _exec(
       "ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_protection_state TEXT NOT NULL DEFAULT 'off'",
     );
 
-    await conn.execute('''
+    await _exec('''
       CREATE TABLE IF NOT EXISTS $_bondsTable (
         bond_id TEXT PRIMARY KEY,
         pairing_session_id TEXT NOT NULL REFERENCES $_sessionsTable(pairing_session_id) ON DELETE CASCADE,
@@ -1895,56 +1920,56 @@ class PostgresRelayStore implements RelayStore {
         last_seen_at_utc_iso TEXT
       )
     ''');
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS previous_companion_token TEXT',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS previous_token_grace_until_utc TIMESTAMPTZ',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS token_refreshed_at_utc_iso TEXT',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS notifications_enabled BOOLEAN NOT NULL DEFAULT FALSE',
     );
-    await conn.execute(
+    await _exec(
       "ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS notification_channel TEXT NOT NULL DEFAULT 'foreground_only'",
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS https_ready BOOLEAN NOT NULL DEFAULT FALSE',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS home_screen_installed BOOLEAN NOT NULL DEFAULT FALSE',
     );
-    await conn.execute(
+    await _exec(
       "ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS notification_permission TEXT NOT NULL DEFAULT 'default'",
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS push_subscribed BOOLEAN NOT NULL DEFAULT FALSE',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS backend_push_registered BOOLEAN NOT NULL DEFAULT FALSE',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS push_token TEXT',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS web_push_endpoint TEXT',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS web_push_p256dh TEXT',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS web_push_auth TEXT',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS active_handoff_code TEXT',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS handoff_expires_at_utc TIMESTAMPTZ',
     );
 
-    await conn.execute('''
+    await _exec('''
       CREATE TABLE IF NOT EXISTS $_alertsTable (
         pairing_session_id TEXT NOT NULL REFERENCES $_sessionsTable(pairing_session_id) ON DELETE CASCADE,
         alert_seq INTEGER NOT NULL,
@@ -1965,13 +1990,13 @@ class PostgresRelayStore implements RelayStore {
         UNIQUE (pairing_session_id, incident_id)
       )
     ''');
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS updated_seq INTEGER NOT NULL DEFAULT 0',
     );
-    await conn.execute(
+    await _exec(
       'ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS location_json TEXT',
     );
-    await conn.execute(
+    await _exec(
       "ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS location_status TEXT NOT NULL DEFAULT 'notRequested'",
     );
   }
@@ -1987,8 +2012,7 @@ class PostgresRelayStore implements RelayStore {
 
   @override
   Future<Map<String, String>?> loadPersistedVapidKeys() async {
-    final conn = await _conn();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named(
         'SELECT secret_value_json FROM $_secretsTable WHERE secret_key = @key LIMIT 1',
       ),
@@ -2018,8 +2042,7 @@ class PostgresRelayStore implements RelayStore {
     required String publicKeyBase64Url,
     required String privateKeyBase64Url,
   }) async {
-    final conn = await _conn();
-    await conn.execute(
+    await _exec(
       Sql.named('''
         INSERT INTO $_secretsTable (secret_key, secret_value_json, updated_at_utc)
         VALUES (@key, @val, @nowUtc)
@@ -2133,8 +2156,7 @@ class PostgresRelayStore implements RelayStore {
 
   @override
   Future<void> saveSession(RelaySessionRecord session) async {
-    final conn = await _conn();
-    await conn.execute(
+    await _exec(
       Sql.named('''
         INSERT INTO $_sessionsTable (
           pairing_session_id,
@@ -2189,8 +2211,7 @@ class PostgresRelayStore implements RelayStore {
 
   @override
   Future<RelaySessionRecord?> findSessionById(String pairingSessionId) async {
-    final conn = await _conn();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named(
         'SELECT * FROM $_sessionsTable WHERE pairing_session_id = @id LIMIT 1',
       ),
@@ -2204,8 +2225,7 @@ class PostgresRelayStore implements RelayStore {
 
   @override
   Future<RelaySessionRecord?> findSessionByHostToken(String hostToken) async {
-    final conn = await _conn();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named(
         'SELECT * FROM $_sessionsTable WHERE host_token = @token LIMIT 1',
       ),
@@ -2221,8 +2241,7 @@ class PostgresRelayStore implements RelayStore {
   Future<RelaySessionRecord?> findSessionByPairingCode(
     String normalizedCode,
   ) async {
-    final conn = await _conn();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named(
         'SELECT * FROM $_sessionsTable WHERE active_pairing_code = @code LIMIT 1',
       ),
@@ -2236,8 +2255,7 @@ class PostgresRelayStore implements RelayStore {
 
   @override
   Future<void> saveCompanionBond(CompanionBondRecord bond) async {
-    final conn = await _conn();
-    await conn.execute(
+    await _exec(
       Sql.named('''
         INSERT INTO $_bondsTable (
           bond_id,
@@ -2356,9 +2374,8 @@ class PostgresRelayStore implements RelayStore {
   Future<CompanionBondRecord?> findActiveBondByCompanionToken(
     String companionToken,
   ) async {
-    final conn = await _conn();
     final nowUtc = DateTime.now().toUtc();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named('''
         SELECT * FROM $_bondsTable
         WHERE revoked_at_utc_iso IS NULL
@@ -2384,8 +2401,7 @@ class PostgresRelayStore implements RelayStore {
   Future<CompanionBondRecord?> findActiveBondByHandoffCode(
     String normalizedHandoffCode,
   ) async {
-    final conn = await _conn();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named('''
         SELECT * FROM $_bondsTable
         WHERE active_handoff_code = @code AND revoked_at_utc_iso IS NULL
@@ -2403,8 +2419,7 @@ class PostgresRelayStore implements RelayStore {
   Future<List<CompanionBondRecord>> listActiveBondsForSession(
     String pairingSessionId,
   ) async {
-    final conn = await _conn();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named('''
         SELECT * FROM $_bondsTable
         WHERE pairing_session_id = @sessionId AND revoked_at_utc_iso IS NULL
@@ -2420,9 +2435,8 @@ class PostgresRelayStore implements RelayStore {
     required String pairingSessionId,
     required String deviceId,
   }) async {
-    final conn = await _conn();
     final nowIso = DateTime.now().toUtc().toIso8601String();
-    final res = await conn.execute(
+    final res = await _exec(
       Sql.named('''
         UPDATE $_bondsTable
         SET revoked_at_utc_iso = @nowIso,
@@ -2454,8 +2468,7 @@ class PostgresRelayStore implements RelayStore {
 
   @override
   Future<void> revokeSessionAndBonds(String pairingSessionId) async {
-    final conn = await _conn();
-    await conn.execute(
+    await _exec(
       Sql.named(
         'DELETE FROM $_sessionsTable WHERE pairing_session_id = @sessionId',
       ),
@@ -2479,40 +2492,40 @@ class PostgresRelayStore implements RelayStore {
     AlertLocationData? location,
     String locationStatus = 'notRequested',
   }) async {
-    final conn = await _conn();
-    return conn.runTx((tx) async {
-      final existing = await tx.execute(
-        Sql.named('''
+    return _withConn(
+      (conn) => conn.runTx((tx) async {
+        final existing = await tx.execute(
+          Sql.named('''
           SELECT * FROM $_alertsTable
           WHERE pairing_session_id = @sessionId AND incident_id = @incidentId
           LIMIT 1
         '''),
-        parameters: <String, Object?>{
-          'sessionId': pairingSessionId,
-          'incidentId': incidentId,
-        },
-      );
-      if (existing.isNotEmpty) {
-        return (
-          alert: _rowToAlert(existing.first.toColumnMap()),
-          deduplicated: true,
+          parameters: <String, Object?>{
+            'sessionId': pairingSessionId,
+            'incidentId': incidentId,
+          },
         );
-      }
+        if (existing.isNotEmpty) {
+          return (
+            alert: _rowToAlert(existing.first.toColumnMap()),
+            deduplicated: true,
+          );
+        }
 
-      final seqRows = await tx.execute(
-        Sql.named('''
+        final seqRows = await tx.execute(
+          Sql.named('''
           SELECT COALESCE(MAX(GREATEST(alert_seq, updated_seq)), 0) + 1 AS next_seq
           FROM $_alertsTable
           WHERE pairing_session_id = @sessionId
         '''),
-        parameters: <String, Object?>{'sessionId': pairingSessionId},
-      );
-      final nextSeq =
-          (seqRows.first.toColumnMap()['next_seq'] as num?)?.toInt() ?? 1;
-      final locJson = location != null ? jsonEncode(location.toJson()) : null;
+          parameters: <String, Object?>{'sessionId': pairingSessionId},
+        );
+        final nextSeq =
+            (seqRows.first.toColumnMap()['next_seq'] as num?)?.toInt() ?? 1;
+        final locJson = location != null ? jsonEncode(location.toJson()) : null;
 
-      await tx.execute(
-        Sql.named('''
+        await tx.execute(
+          Sql.named('''
           INSERT INTO $_alertsTable (
             pairing_session_id,
             alert_seq,
@@ -2547,46 +2560,47 @@ class PostgresRelayStore implements RelayStore {
             @locationStatus
           )
         '''),
-        parameters: <String, Object?>{
-          'pairingSessionId': pairingSessionId,
-          'alertSeq': nextSeq,
-          'updatedSeq': nextSeq,
-          'incidentId': incidentId,
-          'sessionId': sessionId,
-          'kind': kind,
-          'detectorType': detectorType,
-          'triggeredAtUtc': triggeredAtUtc,
-          'triggerSummary': triggerSummary,
-          'createdAtUtc': createdAtUtc,
-          'peakMotionScore': peakMotionScore,
-          'hostDisplayName': hostDisplayName,
-          'isTest': isTest,
-          'locationJson': locJson,
-          'locationStatus': locationStatus,
-        },
-      );
+          parameters: <String, Object?>{
+            'pairingSessionId': pairingSessionId,
+            'alertSeq': nextSeq,
+            'updatedSeq': nextSeq,
+            'incidentId': incidentId,
+            'sessionId': sessionId,
+            'kind': kind,
+            'detectorType': detectorType,
+            'triggeredAtUtc': triggeredAtUtc,
+            'triggerSummary': triggerSummary,
+            'createdAtUtc': createdAtUtc,
+            'peakMotionScore': peakMotionScore,
+            'hostDisplayName': hostDisplayName,
+            'isTest': isTest,
+            'locationJson': locJson,
+            'locationStatus': locationStatus,
+          },
+        );
 
-      return (
-        alert: SessionAlertRecord(
-          alertSeq: nextSeq,
-          updatedSeq: nextSeq,
-          pairingSessionId: pairingSessionId,
-          incidentId: incidentId,
-          sessionId: sessionId,
-          kind: kind,
-          detectorType: detectorType,
-          triggeredAtUtc: triggeredAtUtc,
-          triggerSummary: triggerSummary,
-          createdAtUtc: createdAtUtc,
-          peakMotionScore: peakMotionScore,
-          hostDisplayName: hostDisplayName,
-          isTest: isTest,
-          location: location,
-          locationStatus: locationStatus,
-        ),
-        deduplicated: false,
-      );
-    });
+        return (
+          alert: SessionAlertRecord(
+            alertSeq: nextSeq,
+            updatedSeq: nextSeq,
+            pairingSessionId: pairingSessionId,
+            incidentId: incidentId,
+            sessionId: sessionId,
+            kind: kind,
+            detectorType: detectorType,
+            triggeredAtUtc: triggeredAtUtc,
+            triggerSummary: triggerSummary,
+            createdAtUtc: createdAtUtc,
+            peakMotionScore: peakMotionScore,
+            hostDisplayName: hostDisplayName,
+            isTest: isTest,
+            location: location,
+            locationStatus: locationStatus,
+          ),
+          deduplicated: false,
+        );
+      }),
+    );
   }
 
   @override
@@ -2596,22 +2610,22 @@ class PostgresRelayStore implements RelayStore {
     AlertLocationData? location,
     required String locationStatus,
   }) async {
-    final conn = await _conn();
-    return conn.runTx((tx) async {
-      final seqRows = await tx.execute(
-        Sql.named('''
+    return _withConn(
+      (conn) => conn.runTx((tx) async {
+        final seqRows = await tx.execute(
+          Sql.named('''
           SELECT COALESCE(MAX(GREATEST(alert_seq, updated_seq)), 0) + 1 AS next_seq
           FROM $_alertsTable
           WHERE pairing_session_id = @sessionId
         '''),
-        parameters: <String, Object?>{'sessionId': pairingSessionId},
-      );
-      final nextSeq =
-          (seqRows.first.toColumnMap()['next_seq'] as num?)?.toInt() ?? 1;
-      final locJson = location != null ? jsonEncode(location.toJson()) : null;
+          parameters: <String, Object?>{'sessionId': pairingSessionId},
+        );
+        final nextSeq =
+            (seqRows.first.toColumnMap()['next_seq'] as num?)?.toInt() ?? 1;
+        final locJson = location != null ? jsonEncode(location.toJson()) : null;
 
-      final updatedRows = await tx.execute(
-        Sql.named('''
+        final updatedRows = await tx.execute(
+          Sql.named('''
           UPDATE $_alertsTable
           SET updated_seq = @updatedSeq,
               location_json = COALESCE(@locationJson, location_json),
@@ -2619,19 +2633,20 @@ class PostgresRelayStore implements RelayStore {
           WHERE pairing_session_id = @sessionId AND incident_id = @incidentId
           RETURNING *
         '''),
-        parameters: <String, Object?>{
-          'updatedSeq': nextSeq,
-          'locationJson': locJson,
-          'locationStatus': locationStatus,
-          'sessionId': pairingSessionId,
-          'incidentId': incidentId,
-        },
-      );
-      if (updatedRows.isEmpty) {
-        return null;
-      }
-      return _rowToAlert(updatedRows.first.toColumnMap());
-    });
+          parameters: <String, Object?>{
+            'updatedSeq': nextSeq,
+            'locationJson': locJson,
+            'locationStatus': locationStatus,
+            'sessionId': pairingSessionId,
+            'incidentId': incidentId,
+          },
+        );
+        if (updatedRows.isEmpty) {
+          return null;
+        }
+        return _rowToAlert(updatedRows.first.toColumnMap());
+      }),
+    );
   }
 
   @override
@@ -2639,8 +2654,7 @@ class PostgresRelayStore implements RelayStore {
     required String pairingSessionId,
     required String incidentId,
   }) async {
-    final conn = await _conn();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named('''
         SELECT * FROM $_alertsTable
         WHERE pairing_session_id = @sessionId AND incident_id = @incidentId
@@ -2662,8 +2676,7 @@ class PostgresRelayStore implements RelayStore {
     required String pairingSessionId,
     required int afterSeq,
   }) async {
-    final conn = await _conn();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named('''
         SELECT * FROM $_alertsTable
         WHERE pairing_session_id = @sessionId
@@ -2682,8 +2695,7 @@ class PostgresRelayStore implements RelayStore {
 
   @override
   Future<int> latestAlertSeq(String pairingSessionId) async {
-    final conn = await _conn();
-    final rows = await conn.execute(
+    final rows = await _exec(
       Sql.named('''
         SELECT COALESCE(MAX(GREATEST(alert_seq, updated_seq)), 0) AS max_seq
         FROM $_alertsTable
@@ -2784,6 +2796,42 @@ class WatSafeRelayServer {
   String get storageDescription => _store.redactedDescription;
   PushProviderAdapter get pushProvider => _pushProvider;
   String? get dynamicPublicOrigin => _dynamicPublicOrigin;
+
+  bool get _isEphemeralCloudContainer {
+    final isRender =
+        (_env['RENDER'] ?? '').trim().toLowerCase() == 'true' ||
+        (_env['RENDER_EXTERNAL_URL'] ?? '').trim().isNotEmpty;
+    final isCloudRun = (_env['K_SERVICE'] ?? '').trim().isNotEmpty;
+    final isHeroku = (_env['DYNO'] ?? '').trim().isNotEmpty;
+    final isFly = (_env['FLY_APP_NAME'] ?? '').trim().isNotEmpty;
+    final hasPersistentVolume =
+        (_env['WATSAFE_PERSISTENT_VOLUME'] ?? '').trim().toLowerCase() ==
+        'true';
+    return (isRender || isCloudRun || isHeroku || isFly) &&
+        !hasPersistentVolume;
+  }
+
+  /// True only when pairing sessions, Web Push subscriptions, and VAPID keys
+  /// are backed by storage that survives restarts and cloud redeployments.
+  bool get isStorageDurable {
+    if (_store.backendName == 'aiven_postgres') {
+      return true;
+    }
+    if (_store.backendName == 'durable_file') {
+      return !_isEphemeralCloudContainer;
+    }
+    return false;
+  }
+
+  String? get storageDurabilityWarning {
+    if (_store.backendName == 'memory') {
+      return 'In-memory store does not persist across restarts.';
+    }
+    if (_store.backendName == 'durable_file' && _isEphemeralCloudContainer) {
+      return 'Cloud container filesystem is ephemeral and resets on redeploy or spin-down. Configure AIVEN_DATABASE_URL in environment secrets for permanent pairing, push subscription, and VAPID key persistence.';
+    }
+    return null;
+  }
 
   List<Map<String, Object?>> get pairedDevices =>
       List<Map<String, Object?>>.unmodifiable(_pairedDevicesSnapshot);
@@ -3256,6 +3304,8 @@ class WatSafeRelayServer {
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           'status': 'ok',
           'storageBackend': _store.backendName,
+          'storageDurable': isStorageDurable,
+          'storageDurabilityWarning': ?storageDurabilityWarning,
           'swVersion': companionSwVersion,
           'deliveryMode': _pushProvider.isConfigured
               ? 'push_and_live_poll'
@@ -3421,14 +3471,14 @@ class WatSafeRelayServer {
         final nowUtc = _clock().toUtc();
         final clientKey = _clientRateLimitKey(request);
         if (_isClientRateLimited(clientKey, nowUtc)) {
-          _writeJson(request.response, HttpStatus.tooManyRequests, <
-            String,
-            Object?
-          >{
-            'error': 'TOO_MANY_ATTEMPTS',
-            'message':
-                'Too many incorrect pairing codes. Wait a few minutes or get a new code on your laptop.',
-          });
+          _writeJson(
+            request.response,
+            HttpStatus.tooManyRequests,
+            <String, Object?>{
+              'error': 'TOO_MANY_ATTEMPTS',
+              'message': 'Too many incorrect pairing codes. Wait a few minutes or get a new code on your laptop.',
+            },
+          );
           return;
         }
 
@@ -3448,8 +3498,7 @@ class WatSafeRelayServer {
           _recordFailedPairingAttempt(clientKey, nowUtc);
           _writeJson(request.response, HttpStatus.badRequest, <String, Object?>{
             'error': 'INVALID_OR_EXPIRED_PAIRING_CODE',
-            'message':
-                'That code was not recognized or has already been used. Get a new code on your laptop.',
+            'message': 'That code was not recognized or has already been used. Get a new code on your laptop.',
           });
           return;
         }
@@ -3461,8 +3510,7 @@ class WatSafeRelayServer {
           await _store.saveSession(candidate);
           _writeJson(request.response, HttpStatus.badRequest, <String, Object?>{
             'error': 'PAIRING_CODE_EXPIRED',
-            'message':
-                'This pairing code expired. Tap "Get new code" on your laptop and scan again.',
+            'message': 'This pairing code expired. Tap "Get new code" on your laptop and scan again.',
           });
           return;
         }
@@ -3515,14 +3563,14 @@ class WatSafeRelayServer {
           await _store.saveSession(session);
         } else {
           if (_isClientRateLimited(clientKey, nowUtc)) {
-            _writeJson(request.response, HttpStatus.tooManyRequests, <
-              String,
-              Object?
-            >{
-              'error': 'TOO_MANY_ATTEMPTS',
-              'message':
-                  'Too many incorrect pairing attempts. Wait a few minutes or generate a new code on your laptop.',
-            });
+            _writeJson(
+              request.response,
+              HttpStatus.tooManyRequests,
+              <String, Object?>{
+                'error': 'TOO_MANY_ATTEMPTS',
+                'message': 'Too many incorrect pairing attempts. Wait a few minutes or generate a new code on your laptop.',
+              },
+            );
             return;
           }
 
@@ -3556,14 +3604,14 @@ class WatSafeRelayServer {
                 await _store.saveSession(targeted);
               }
             }
-            _writeJson(request.response, HttpStatus.badRequest, <
-              String,
-              Object?
-            >{
-              'error': 'INVALID_OR_EXPIRED_PAIRING_CODE',
-              'message':
-                  'Pairing code is invalid or has already been used. Get a new code on your laptop.',
-            });
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'INVALID_OR_EXPIRED_PAIRING_CODE',
+                'message': 'Pairing code is invalid or has already been used. Get a new code on your laptop.',
+              },
+            );
             return;
           }
 
@@ -3572,14 +3620,14 @@ class WatSafeRelayServer {
             candidate.activePairingCode = null;
             candidate.codeExpiresAtUtc = null;
             await _store.saveSession(candidate);
-            _writeJson(request.response, HttpStatus.badRequest, <
-              String,
-              Object?
-            >{
-              'error': 'PAIRING_CODE_EXPIRED',
-              'message':
-                  'This pairing code expired. Tap "Get new code" on your laptop.',
-            });
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'PAIRING_CODE_EXPIRED',
+                'message': 'This pairing code expired. Tap "Get new code" on your laptop.',
+              },
+            );
             return;
           }
 
@@ -3756,14 +3804,14 @@ class WatSafeRelayServer {
         final nowUtc = _clock().toUtc();
         final clientKey = _clientRateLimitKey(request);
         if (_isClientRateLimited(clientKey, nowUtc)) {
-          _writeJson(request.response, HttpStatus.tooManyRequests, <
-            String,
-            Object?
-          >{
-            'error': 'TOO_MANY_ATTEMPTS',
-            'message':
-                'Too many incorrect setup codes. Wait a few minutes or scan a fresh QR code from your laptop.',
-          });
+          _writeJson(
+            request.response,
+            HttpStatus.tooManyRequests,
+            <String, Object?>{
+              'error': 'TOO_MANY_ATTEMPTS',
+              'message': 'Too many incorrect setup codes. Wait a few minutes or scan a fresh QR code from your laptop.',
+            },
+          );
           return;
         }
 
@@ -3794,8 +3842,7 @@ class WatSafeRelayServer {
           await _store.saveCompanionBond(bond);
           _writeJson(request.response, HttpStatus.badRequest, <String, Object?>{
             'error': 'HANDOFF_CODE_EXPIRED',
-            'message':
-                'This Home Screen setup code expired. Open Safari or scan a new QR code on your laptop.',
+            'message': 'This Home Screen setup code expired. Open Safari or scan a new QR code on your laptop.',
           });
           return;
         }
@@ -4736,14 +4783,14 @@ class WatSafeRelayServer {
       if (method == 'GET' && path.startsWith('/v1/companion/events/')) {
         final token = _extractBearerToken(request);
         if (token == null) {
-          _writeJson(request.response, HttpStatus.unauthorized, <
-            String,
-            Object?
-          >{
-            'error': 'UNAUTHORIZED_EVENT_ACCESS',
-            'message':
-                'Authenticated session token required to access event details and location.',
-          });
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_EVENT_ACCESS',
+              'message': 'Authenticated session token required to access event details and location.',
+            },
+          );
           return;
         }
         String? authorizedSessionId;
@@ -4863,8 +4910,7 @@ class WatSafeRelayServer {
     _writeJson(response, HttpStatus.badRequest, <String, Object?>{
       'error': 'PRIVACY_INVARIANT_VIOLATION',
       'field': fieldPath,
-      'message':
-          'Payloads must never contain camera frames, images, PIN material, or database credentials.',
+      'message': 'Payloads must never contain camera frames, images, PIN material, or database credentials.',
     });
   }
 

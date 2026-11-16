@@ -15,11 +15,8 @@ import 'local_storage_service.dart';
 /// and iOS (Keychain Services `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`),
 /// falling back to restricted local storage when native channels are unavailable.
 class PlatformSecurePinStorage implements SecurePinStorageAdapter {
-  PlatformSecurePinStorage({
-    MethodChannel? channel,
-    Directory? fallbackDirectory,
-  }) : _channel = channel ?? const MethodChannel('dev.watsafe/secure_storage'),
-       _fallbackDirectory = fallbackDirectory;
+  PlatformSecurePinStorage({MethodChannel? channel, this._fallbackDirectory})
+    : _channel = channel ?? const MethodChannel('dev.watsafe/secure_storage');
 
   final MethodChannel _channel;
   final Directory? _fallbackDirectory;

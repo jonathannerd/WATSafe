@@ -6,6 +6,6 @@
   "serviceWorkerPath": "/sw.js",
   "serviceWorkerScope": "/",
   "renderBlueprintPath": "render.yaml",
-  "deploymentStatus": "pending_one_time_cloud_deploy",
-  "setupInstructions": "Deploy render.yaml once to obtain a stable https://<service>.onrender.com origin (or configure a named Cloudflare Tunnel), then run `./scripts/run_watsafe.sh --save-permanent-url=https://<your-relay-domain>` or set it in WATSafe Settings -> Permanent companion address."
+  "deploymentStatus": "awaiting_https_endpoint_and_aiven_secret",
+  "setupInstructions": "Deploy render.yaml with AIVEN_DATABASE_URL configured in Render environment secrets (or run a Named Cloudflare Tunnel against your local Mac relay), verify restart persistence with `dart run tool/verify_deployment.dart --phase=before-restart https://<your-render-service>.onrender.com` and `--phase=after-restart --save https://<your-render-service>.onrender.com`, or save the verified HTTPS URL in WATSafe Settings -> Phone companion address & migration."
 }

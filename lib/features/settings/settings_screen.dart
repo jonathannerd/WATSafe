@@ -136,9 +136,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: <Widget>[
               Text(
                 'Settings',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
+                style: Theme.of(context).textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
               const Text(
@@ -260,9 +259,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: <Widget>[
             Text(
               'Motion detection & siren',
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 14),
             if (showMethodPicker) ...<Widget>[
@@ -471,9 +469,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: <Widget>[
             Text(
               'Permissions & location sharing',
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 14),
 
@@ -590,9 +587,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Expanded(
                   child: Text(
                     'Phone companion address & migration',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
                   ),
                 ),
                 Container(
@@ -633,8 +629,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               isPermanent
                   ? 'Active companion URL: $currentUrl/companion. Both WATSafe on this laptop and your installed iPhone Home Screen app reconnect automatically on startup.'
                   : (isEphemeral
-                        ? 'Currently using a temporary tunnel ($currentUrl). Temporary tunnels generate a new domain after restarts, causing old Home Screen bookmarks to open white tunnel error pages. Deploy the permanent relay once (render.yaml or Named Cloudflare Tunnel) and save its https:// address below.'
-                        : 'Deploy the permanent HTTPS relay once (render.yaml or Named Cloudflare Tunnel) and save its https:// address below so your iPhone Home Screen icon and pairing survive every restart.'),
+                        ? 'Currently using a temporary tunnel ($currentUrl). Temporary tunnels generate a new domain after restarts, causing old Home Screen bookmarks to open white tunnel error pages. Deploy the permanent relay with Aiven PostgreSQL (render.yaml + AIVEN_DATABASE_URL secret, or a Named Cloudflare Tunnel) and save its https:// address below.'
+                        : 'Deploy the permanent HTTPS relay with Aiven PostgreSQL (render.yaml + AIVEN_DATABASE_URL secret, or a Named Cloudflare Tunnel) and save its https:// address below so your iPhone Home Screen icon and pairing survive every restart.'),
               style: const TextStyle(
                 color: WatSafeTheme.warmMuted,
                 fontSize: 13,
@@ -650,7 +646,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     controller: _permanentRelayUrlController,
                     decoration: const InputDecoration(
                       labelText: 'Permanent HTTPS companion URL',
-                      hintText: 'https://watsafe-companion.onrender.com',
+                      hintText: 'https://<your-render-service>.onrender.com',
                     ),
                   ),
                 ),
@@ -699,9 +695,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
             const SizedBox(height: 12),
             Theme(
-              data: Theme.of(
-                context,
-              ).copyWith(dividerColor: Colors.transparent),
+              data: Theme.of(context)
+                  .copyWith(dividerColor: Colors.transparent),
               child: ExpansionTile(
                 key: const Key('iphone_migration_steps_tile'),
                 tilePadding: EdgeInsets.zero,
@@ -740,9 +735,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: <Widget>[
             Text(
               'Change PIN',
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 6),
             const Text(
