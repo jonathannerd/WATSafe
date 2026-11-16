@@ -1,13 +1,14 @@
 import 'relay_config_env_stub.dart'
     if (dart.library.io) 'relay_config_env_native.dart';
 
-/// Build-time, runtime-environment, and deployment-time relay URL configuration.
+/// Build-time, runtime-environment, and permanent-service relay URL configuration.
 ///
 /// Resolution priority:
 /// 1. `--dart-define=WATSAFE_API_URL=https://...` (or `WATSAFE_RELAY_URL`)
-/// 2. Runtime `WATSAFE_API_URL` / `.watsafe-runtime/relay_endpoint.json`
-/// 3. Browser origin when opened directly from an HTTPS/HTTP relay host
-/// 4. Local loopback relay (`http://127.0.0.1:8787`, auto-started on desktop)
+/// 2. Runtime `WATSAFE_API_URL` / persisted permanent HTTPS service (`~/.watsafe/relay_service.json` or `config/relay_service.json`)
+/// 3. Active launcher runtime endpoint (`.watsafe-runtime/relay_endpoint.json` while launcher is alive)
+/// 4. Browser origin when opened directly from an HTTPS/HTTP relay host
+/// 5. Local loopback relay (`http://127.0.0.1:8787`, auto-started on desktop)
 class RelayConfig {
   const RelayConfig._();
 
@@ -20,10 +21,65 @@ class RelayConfig {
 
   static const String localDevelopmentRelayUrl = 'http://127.0.0.1:8787';
 
+  static bool isEphemeralTunnelUrl(String? rawUrl) {
+    if (rawUrl == null || rawUrl.trim().isEmpty) {
+      return false;
+    }
+    final parsed = Uri.tryParse(rawUrl.trim());
+    final host = (parsed?.host ?? rawUrl.trim()).toLowerCase();
+    return host.endsWith('.trycloudflare.com') ||
+        host.endsWith('.lhr.life') ||
+        host.endsWith('.localhost.run') ||
+        host.endsWith('.ngrok-free.app') ||
+        host.endsWith('.ngrok-free.dev') ||
+        host.endsWith('.ngrok.io');
+  }
+
+  static bool isPlaceholderUrl(String? rawUrl) {
+    if (rawUrl == null || rawUrl.trim().isEmpty) {
+      return false;
+    }
+    final lower = rawUrl.trim().toLowerCase();
+    if (lower.contains('<') || lower.contains('>')) {
+      return true;
+    }
+    final parsed = Uri.tryParse(lower);
+    final host = parsed?.host ?? lower;
+    return host == 'example.com' ||
+        host.endsWith('.example.com') ||
+        host == 'example.org' ||
+        host.endsWith('.example.org') ||
+        host.contains('your-service') ||
+        host.contains('your-render-service') ||
+        host.contains('yourdomain.com') ||
+        host.contains('your-relay-domain');
+  }
+
+  static bool isPermanentHttpsUrl(String? rawUrl) {
+    if (rawUrl == null || rawUrl.trim().isEmpty) {
+      return false;
+    }
+    if (isPlaceholderUrl(rawUrl)) {
+      return false;
+    }
+    final cleaned = _trimTrailingSlash(rawUrl);
+    final parsed = Uri.tryParse(cleaned);
+    if (parsed == null || parsed.scheme != 'https' || parsed.host.isEmpty) {
+      return false;
+    }
+    return !isEphemeralTunnelUrl(cleaned);
+  }
+
+  static String? get persistedPermanentRelayUrl =>
+      readPersistedPermanentRelayUrl();
+
+  static Future<void> savePermanentRelayUrl(String? url) =>
+      writePersistedPermanentRelayUrl(url);
+
   static bool get hasExplicitCompileOrEnvOverride =>
       _compiledApiUrl.trim().isNotEmpty ||
       _compiledRelayUrl.trim().isNotEmpty ||
-      (readRuntimeRelayEnvUrl()?.trim().isNotEmpty ?? false);
+      hasExplicitRuntimeEnvVarOverride();
 
   static String resolveDefaultRelayUrl({Uri? browserOrigin}) {
     if (_compiledApiUrl.trim().isNotEmpty) {

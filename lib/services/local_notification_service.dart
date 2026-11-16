@@ -76,10 +76,9 @@ class NoOpLocalNotificationService implements LocalNotificationAdapter {
 class PlatformLocalNotificationService implements LocalNotificationAdapter {
   PlatformLocalNotificationService({
     MethodChannel? channel,
-    void Function(String deepLink)? onDeepLinkReceived,
+    this._onDeepLinkReceived,
   }) : _channel =
-           channel ?? const MethodChannel('dev.watsafe/local_notifications'),
-       _onDeepLinkReceived = onDeepLinkReceived {
+           channel ?? const MethodChannel('dev.watsafe/local_notifications') {
     _channel.setMethodCallHandler(_handleNativeCallback);
   }
 

@@ -1,7 +1,11 @@
 class LocalRelaySupervisor {
-  LocalRelaySupervisor({this.forceEnableForTest = false});
+  LocalRelaySupervisor({
+    this.forceEnableForTest = false,
+    this.storageDirectory,
+  });
 
   final bool forceEnableForTest;
+  final String? storageDirectory;
 
   bool get isRunningEmbeddedRelay => false;
 

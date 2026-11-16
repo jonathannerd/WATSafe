@@ -69,6 +69,7 @@ Future<void> _initializeControllerAndRelay(AlarmController controller) async {
       resolvedUrl != controller.relayEndpointUrl) {
     await controller.configureRelayEndpoint(resolvedUrl);
   }
+  await controller.syncPairedDevicesFromRelay();
 }
 
 /// Ensures the initial default detector matches the current host platform when

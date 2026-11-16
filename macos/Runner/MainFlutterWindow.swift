@@ -160,11 +160,11 @@ final class MacOSSecureStorageBridge {
   private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "readPinRecord":
-      if let keychainValue = readFromKeychain() {
+      if let keychainValue = readFromKeychain(account: accountName) {
         result(keychainValue)
         return
       }
-      result(readFromProtectedFile())
+      result(readFromProtectedFile(fileName: "secure_pin_record.json"))
 
     case "writePinRecord":
       let args = call.arguments as? [String: Any]
@@ -178,8 +178,8 @@ final class MacOSSecureStorageBridge {
         )
         return
       }
-      let keychainOk = writeToKeychain(payload: payload)
-      writeToProtectedFile(payload: payload)
+      let keychainOk = writeToKeychain(account: accountName, payload: payload)
+      writeToProtectedFile(fileName: "secure_pin_record.json", payload: payload)
       if keychainOk {
         result("macOS Security Keychain (PBKDF2-HMAC-SHA256)")
       } else {
@@ -187,8 +187,41 @@ final class MacOSSecureStorageBridge {
       }
 
     case "deletePinRecord":
-      deleteFromKeychain()
-      deleteProtectedFile()
+      deleteFromKeychain(account: accountName)
+      deleteProtectedFile(fileName: "secure_pin_record.json")
+      result(nil)
+
+    case "readSecureSecret":
+      let args = call.arguments as? [String: Any]
+      let key = sanitizeKey(args?["key"] as? String ?? "default")
+      if let keychainValue = readFromKeychain(account: "secret_\(key)") {
+        result(keychainValue)
+        return
+      }
+      result(readFromProtectedFile(fileName: "secure_secret_\(key).json"))
+
+    case "writeSecureSecret":
+      let args = call.arguments as? [String: Any]
+      let key = sanitizeKey(args?["key"] as? String ?? "default")
+      guard let payload = args?["payload"] as? String else {
+        result(
+          FlutterError(
+            code: "INVALID_ARGUMENTS",
+            message: "Missing payload for writeSecureSecret",
+            details: nil
+          )
+        )
+        return
+      }
+      _ = writeToKeychain(account: "secret_\(key)", payload: payload)
+      writeToProtectedFile(fileName: "secure_secret_\(key).json", payload: payload)
+      result("ok")
+
+    case "deleteSecureSecret":
+      let args = call.arguments as? [String: Any]
+      let key = sanitizeKey(args?["key"] as? String ?? "default")
+      deleteFromKeychain(account: "secret_\(key)")
+      deleteProtectedFile(fileName: "secure_secret_\(key).json")
       result(nil)
 
     default:
@@ -196,11 +229,18 @@ final class MacOSSecureStorageBridge {
     }
   }
 
-  private func readFromKeychain() -> String? {
+  private func sanitizeKey(_ raw: String) -> String {
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
+    let filtered = raw.unicodeScalars.filter { allowed.contains($0) }
+    let out = String(String.UnicodeScalarView(filtered))
+    return out.isEmpty ? "default" : out
+  }
+
+  private func readFromKeychain(account: String) -> String? {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: serviceName,
-      kSecAttrAccount as String: accountName,
+      kSecAttrAccount as String: account,
       kSecReturnData as String: true,
       kSecMatchLimit as String: kSecMatchLimitOne,
     ]
@@ -212,14 +252,14 @@ final class MacOSSecureStorageBridge {
     return String(data: data, encoding: .utf8)
   }
 
-  private func writeToKeychain(payload: String) -> Bool {
+  private func writeToKeychain(account: String, payload: String) -> Bool {
     guard let data = payload.data(using: .utf8) else {
       return false
     }
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: serviceName,
-      kSecAttrAccount as String: accountName,
+      kSecAttrAccount as String: account,
     ]
     SecItemDelete(query as CFDictionary)
 
@@ -229,16 +269,16 @@ final class MacOSSecureStorageBridge {
     return status == errSecSuccess
   }
 
-  private func deleteFromKeychain() {
+  private func deleteFromKeychain(account: String) {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: serviceName,
-      kSecAttrAccount as String: accountName,
+      kSecAttrAccount as String: account,
     ]
     SecItemDelete(query as CFDictionary)
   }
 
-  private func protectedFileURL() -> URL? {
+  private func protectedFileURL(fileName: String) -> URL? {
     guard
       let base = FileManager.default.urls(
         for: .applicationSupportDirectory,
@@ -249,11 +289,11 @@ final class MacOSSecureStorageBridge {
     }
     let dir = base.appendingPathComponent("dev.watsafe.temp.watsafe", isDirectory: true)
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    return dir.appendingPathComponent("secure_pin_record.json")
+    return dir.appendingPathComponent(fileName)
   }
 
-  private func readFromProtectedFile() -> String? {
-    guard let url = protectedFileURL(),
+  private func readFromProtectedFile(fileName: String) -> String? {
+    guard let url = protectedFileURL(fileName: fileName),
       FileManager.default.fileExists(atPath: url.path)
     else {
       return nil
@@ -261,8 +301,8 @@ final class MacOSSecureStorageBridge {
     return try? String(contentsOf: url, encoding: .utf8)
   }
 
-  private func writeToProtectedFile(payload: String) {
-    guard let url = protectedFileURL() else {
+  private func writeToProtectedFile(fileName: String, payload: String) {
+    guard let url = protectedFileURL(fileName: fileName) else {
       return
     }
     try? payload.write(to: url, atomically: true, encoding: .utf8)
@@ -272,8 +312,8 @@ final class MacOSSecureStorageBridge {
     )
   }
 
-  private func deleteProtectedFile() {
-    guard let url = protectedFileURL() else {
+  private func deleteProtectedFile(fileName: String) {
+    guard let url = protectedFileURL(fileName: fileName) else {
       return
     }
     try? FileManager.default.removeItem(at: url)

@@ -132,8 +132,7 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
       _permission = PermissionStatus.denied;
       _lastFailureStatus = CapabilityStatus.permissionRequired;
       _cameraErrorCode = 'PERMISSION_DENIED';
-      _cameraError =
-          'Camera permission denied. Allow camera access in browser site settings and retry.';
+      _cameraError = 'Camera permission denied. Allow camera access in browser site settings and retry.';
     } else if (details.contains('NotFoundError') ||
         details.contains('DevicesNotFoundError')) {
       _permission = PermissionStatus.notDetermined;
@@ -144,8 +143,7 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
         details.contains('TrackStartError')) {
       _lastFailureStatus = CapabilityStatus.unsupported;
       _cameraErrorCode = 'CAMERA_BUSY';
-      _cameraError =
-          'Webcam is busy or in use by another app/tab. Close other camera apps and retry.';
+      _cameraError = 'Webcam is busy or in use by another app/tab. Close other camera apps and retry.';
     } else {
       _lastFailureStatus = CapabilityStatus.unsupported;
       _cameraErrorCode = 'CAMERA_INIT_FAILED';
@@ -160,8 +158,7 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
       return const DetectorStartResult(
         started: false,
         status: CapabilityStatus.unsupported,
-        message:
-            'Camera API is unavailable on this page (HTTPS/localhost required).',
+        message: 'Camera API is unavailable on this page (HTTPS/localhost required).',
         errorCode: 'INSECURE_CONTEXT',
       );
     }
@@ -220,12 +217,10 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
       final canvas = web.HTMLCanvasElement()
         ..width = config.downsampleWidth
         ..height = config.downsampleHeight;
-      final context =
-          canvas.getContext(
-                '2d',
-                web.CanvasRenderingContext2DSettings(willReadFrequently: true),
-              )
-              as web.CanvasRenderingContext2D?;
+      final context = canvas.getContext(
+        '2d',
+        web.CanvasRenderingContext2DSettings(willReadFrequently: true),
+      ) as web.CanvasRenderingContext2D?;
       if (context == null) {
         throw StateError('Canvas is unavailable.');
       }

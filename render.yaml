@@ -1,5 +1,17 @@
-# Free-tier Render Blueprint for a persistent HTTPS WATSafe Relay
-# (Automatic Let's Encrypt TLS certificate — zero paid services required)
+# Render Blueprint for WATSafe HTTPS Companion & Relay (`watsafe-relay`)
+#
+# IMPORTANT — Storage & Secret Configuration:
+# - This blueprint deploys the Docker web service (`Dockerfile`) and provides an
+#   automatic Let's Encrypt HTTPS certificate (`RENDER_EXTERNAL_URL`).
+# - It does NOT provision PostgreSQL automatically; `sync: false` prompts you in
+#   the Render dashboard to supply environment secrets securely outside Git.
+# - Do NOT rely on Render's container filesystem (ephemeral: wiped on every
+#   redeploy and spin-down) or Render's free PostgreSQL tier (expires after 30 days)
+#   for permanent pairing.
+# - Configure `AIVEN_DATABASE_URL` with our existing Aiven PostgreSQL Service URI
+#   (`postgres://avnadmin:...@<host>.aivencloud.com:<port>/defaultdb?sslmode=require`)
+#   in Render environment secrets so pairings, Web Push subscriptions, alerts, and
+#   VAPID keys (`watsafe_server_secrets`) persist across restarts and redeployments.
 services:
   - type: web
     name: watsafe-relay
@@ -14,12 +26,17 @@ services:
         value: "0.0.0.0"
       - key: VAPID_SUBJECT
         value: "mailto:alerts@watsafe.app"
-      # Generate once locally via `dart run tool/generate_vapid_keys.dart`
-      # and paste into Render Dashboard so push subscriptions survive restarts:
+      # Required secret for permanent cloud durability: paste our Aiven PostgreSQL
+      # Service URI in the Render dashboard (never commit credentials to Git).
+      - key: AIVEN_DATABASE_URL
+        sync: false
+      # Optional: paste the Aiven project CA certificate PEM only if your
+      # AIVEN_DATABASE_URL explicitly sets `?sslmode=verify-full` or `verify-ca`.
+      - key: AIVEN_CA_CERT
+        sync: false
+      # Optional explicit overrides: when AIVEN_DATABASE_URL is set, WATSafe
+      # generates and persists VAPID keys automatically in `watsafe_server_secrets`.
       - key: VAPID_PUBLIC_KEY
         sync: false
       - key: VAPID_PRIVATE_KEY
-        sync: false
-      # Optional persistent PostgreSQL database URI:
-      - key: AIVEN_DATABASE_URL
         sync: false

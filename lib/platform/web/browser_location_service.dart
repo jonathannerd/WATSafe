@@ -111,7 +111,8 @@ class BrowserLocationService implements LocationServiceAdapter {
 
     return completer.future.timeout(
       timeout + const Duration(milliseconds: 500),
-      onTimeout: () => (location: null, status: IncidentLocationStatus.unavailable),
+      onTimeout: () =>
+          (location: null, status: IncidentLocationStatus.unavailable),
     );
   }
 }

@@ -124,8 +124,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
           statusDetail:
               response['detail'] as String? ??
               'AVCaptureDevice.DiscoverySession returned 0 video devices.',
-          guidance:
-              'Connect a UVC-compatible webcam or use the manual Test Alarm to verify local siren operation.',
+          guidance: 'Connect a UVC-compatible webcam or use the manual Test Alarm to verify local siren operation.',
         );
       }
 
@@ -138,8 +137,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
             hardwareDeviceName: deviceName ?? 'Built-in macOS Camera',
             summary:
                 'Ready — ${deviceName ?? "macOS Camera"} available with camera permission granted.',
-            statusDetail:
-                'Local 64x48 grayscale scene-motion pipeline ready (no frames saved or uploaded).',
+            statusDetail: 'Local 64x48 grayscale scene-motion pipeline ready (no frames saved or uploaded).',
           );
 
         case PermissionStatus.notDetermined:
@@ -148,11 +146,9 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
             status: CapabilityStatus.permissionRequired,
             permissionStatus: PermissionStatus.notDetermined,
             hardwareDeviceName: deviceName ?? 'Built-in macOS Camera',
-            summary:
-                'Camera permission required to enable macOS scene-motion monitoring.',
+            summary: 'Camera permission required to enable macOS scene-motion monitoring.',
             statusDetail: 'Hardware detected: ${deviceName ?? "macOS Camera"}.',
-            guidance:
-                'Click "Grant Camera Permission" below to prompt macOS for local camera access.',
+            guidance: 'Click "Grant Camera Permission" below to prompt macOS for local camera access.',
           );
 
         case PermissionStatus.denied:
@@ -164,8 +160,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
             summary: 'Camera access was denied for WATSafe.',
             statusDetail:
                 'macOS blocked AVCaptureDevice access for this application.',
-            guidance:
-                'Open macOS System Settings → Privacy & Security → Camera, enable WATSafe, then click Refresh Status.',
+            guidance: 'Open macOS System Settings → Privacy & Security → Camera, enable WATSafe, then click Refresh Status.',
           );
 
         case PermissionStatus.restricted:
@@ -174,10 +169,8 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
             status: CapabilityStatus.permissionRequired,
             permissionStatus: PermissionStatus.restricted,
             hardwareDeviceName: deviceName,
-            summary:
-                'Camera access is restricted by a macOS Screen Time or MDM profile.',
-            guidance:
-                'Check macOS System Settings → Screen Time → Content & Privacy Restrictions.',
+            summary: 'Camera access is restricted by a macOS Screen Time or MDM profile.',
+            guidance: 'Check macOS System Settings → Screen Time → Content & Privacy Restrictions.',
           );
 
         case PermissionStatus.notApplicable:
@@ -194,8 +187,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
         status: CapabilityStatus.unsupported,
         permissionStatus: PermissionStatus.notDetermined,
         summary: 'Native macOS camera bridge is not registered in this runner.',
-        guidance:
-            'Run the full macOS desktop build (`flutter run -d macos`) so the native AVFoundation bridge is active.',
+        guidance: 'Run the full macOS desktop build (`flutter run -d macos`) so the native AVFoundation bridge is active.',
       );
     } on PlatformException catch (error) {
       return DetectorCapability(

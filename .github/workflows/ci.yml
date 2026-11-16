@@ -20,7 +20,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.41.6'
+          flutter-version: '3.47.9'
           channel: 'stable'
           cache: true
 
@@ -32,6 +32,9 @@ jobs:
 
       - name: Run Flutter analyzer
         run: flutter analyze
+
+      - name: Run standalone backend & CLI analyzer
+        run: dart analyze tool/ backend/ lib/
 
       - name: Run automated tests
         run: flutter test

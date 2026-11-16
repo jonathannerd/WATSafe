@@ -214,7 +214,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             ),
                             onSubmitted: (_) => _submitPinSetup(),
                           ),
-                          if (widget.controller.isLocationSupported) ...<Widget>[
+                          if (widget
+                              .controller
+                              .isLocationSupported) ...<Widget>[
                             const SizedBox(height: 18),
                             Container(
                               padding: const EdgeInsets.all(12),
@@ -292,7 +294,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             child: Text(
                               widget.isPreviewMode
                                   ? 'Exit preview'
-                                  : (_isSubmitting ? 'Saving…' : 'Finish setup'),
+                                  : (_isSubmitting
+                                        ? 'Saving…'
+                                        : 'Finish setup'),
                             ),
                           ),
                         ],

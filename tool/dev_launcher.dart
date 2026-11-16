@@ -2,22 +2,30 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-/// Single-command WATSafe development launcher (`./scripts/run_watsafe.sh`).
+import 'package:watsafe/services/relay_config.dart';
+
+/// Single-command WATSafe launcher (`./scripts/run_watsafe.sh`).
 ///
-/// Orchestrates:
-/// 1. Port readiness & cleanup of any stale launcher-owned child processes
-/// 2. Local WATSafe relay startup (`backend/server.dart`) + `/v1/health` verification
-/// 3. Valid-certificate public HTTPS tunnel (`cloudflared` -> `ngrok` -> `ssh localhost.run`)
-///    so iPhone 13 & Android phones can scan QR codes over real HTTPS and register Web Push
-/// 4. Public TLS `/v1/health` verification + dynamic QR origin registration
-/// 5. Launching WATSafe (`flutter run -d macos --dart-define=WATSAFE_API_URL=...`)
-/// 6. Deterministic cleanup of all owned processes on exit / Ctrl-C.
+/// Supports three modes seamlessly:
+/// 1. **Permanent Cloud HTTPS Service (Recommended one-time setup):**
+///    Uses `WATSAFE_PUBLIC_URL`, `~/.watsafe/relay_service.json` (set via
+///    `--save-permanent-url=https://...` or Settings), or `config/relay_service.json`
+///    so the installed iPhone/Android Home Screen app has a permanent address forever.
+/// 2. **Permanent Named Cloudflare Tunnel (`WATSAFE_CLOUDFLARE_TUNNEL_TOKEN` + `WATSAFE_PUBLIC_URL`):**
+///    Starts the local durable relay (`FileRelayStore` / PostgreSQL) and binds your
+///    permanent Cloudflare hostname to it across restarts.
+/// 3. **Fallback Temporary Dev Tunnel (before permanent deployment is configured):**
+///    Starts the local durable relay + valid-certificate HTTPS Quick Tunnel and prints
+///    a clear dependency notice explaining the one-time permanent URL setup.
 Future<void> main(List<String> args) async {
   final checkOnly = args.contains('--check-only');
   final relayOnly = args.contains('--relay-only');
   final noTunnel = args.contains('--no-tunnel');
   final requireHttps = args.contains('--require-https');
+  final saveOnly = args.contains('--save-only');
+  final clearPermanent = args.contains('--clear-permanent-url');
 
+  String? savePermanentArg;
   var preferredPort = 8787;
   String? deviceOverride;
   final extraFlutterArgs = <String>[];
@@ -27,7 +35,13 @@ Future<void> main(List<String> args) async {
     if (arg == '--check-only' ||
         arg == '--relay-only' ||
         arg == '--no-tunnel' ||
-        arg == '--require-https') {
+        arg == '--require-https' ||
+        arg == '--save-only' ||
+        arg == '--clear-permanent-url') {
+      continue;
+    }
+    if (arg.startsWith('--save-permanent-url=')) {
+      savePermanentArg = arg.substring('--save-permanent-url='.length).trim();
       continue;
     }
     if (arg.startsWith('--port=')) {
@@ -46,6 +60,31 @@ Future<void> main(List<String> args) async {
     extraFlutterArgs.add(arg);
   }
 
+  if (clearPermanent) {
+    await RelayConfig.savePermanentRelayUrl('');
+    stdout.writeln(
+      '[WATSafe] Cleared saved permanent relay URL from ~/.watsafe/relay_service.json.',
+    );
+    if (saveOnly) return;
+  }
+
+  if (savePermanentArg != null) {
+    if (!RelayConfig.isPermanentHttpsUrl(savePermanentArg)) {
+      stderr.writeln(
+        '[WATSafe] ERROR: --save-permanent-url requires a stable https:// origin '
+        '(not a temporary *.trycloudflare.com / *.lhr.life / *.ngrok URL).',
+      );
+      exitCode = 2;
+      return;
+    }
+    final cleanedSave = _stripSlash(savePermanentArg);
+    await RelayConfig.savePermanentRelayUrl(cleanedSave);
+    stdout.writeln(
+      '[WATSafe] Saved permanent HTTPS companion & relay address: $cleanedSave',
+    );
+    if (saveOnly) return;
+  }
+
   final runtimeDir = Directory('.watsafe-runtime');
   if (!runtimeDir.existsSync()) {
     runtimeDir.createSync(recursive: true);
@@ -58,8 +97,21 @@ Future<void> main(List<String> args) async {
   final ownedProcesses = <Process>[];
   var cleaningUp = false;
 
-  final explicitPublicUrl =
+  final explicitEnvPublicUrl =
       (Platform.environment['WATSAFE_PUBLIC_URL'] ?? '').trim();
+  final namedTunnelToken =
+      (Platform.environment['WATSAFE_CLOUDFLARE_TUNNEL_TOKEN'] ?? '').trim();
+  final persistedPermanentUrl = noTunnel && explicitEnvPublicUrl.isEmpty
+      ? null
+      : RelayConfig.persistedPermanentRelayUrl;
+
+  final configuredPermanentUrl =
+      explicitEnvPublicUrl.startsWith('https://') &&
+          !RelayConfig.isEphemeralTunnelUrl(explicitEnvPublicUrl)
+      ? _stripSlash(explicitEnvPublicUrl)
+      : persistedPermanentUrl;
+
+  var activeUrlIsPermanent = false;
 
   Future<void> cleanupOwned() async {
     if (cleaningUp) return;
@@ -79,7 +131,7 @@ Future<void> main(List<String> args) async {
       if (stateFile.existsSync()) {
         stateFile.deleteSync();
       }
-      if (explicitPublicUrl.isEmpty && endpointFile.existsSync()) {
+      if (!activeUrlIsPermanent && endpointFile.existsSync()) {
         endpointFile.deleteSync();
       }
     } catch (_) {}
@@ -88,7 +140,7 @@ Future<void> main(List<String> args) async {
   StreamSubscription<ProcessSignal>? sigIntSub;
   StreamSubscription<ProcessSignal>? sigTermSub;
   sigIntSub = ProcessSignal.sigint.watch().listen((_) async {
-    stdout.writeln('\n[WATSafe] Stopping local relay and tunnel...');
+    stdout.writeln('\n[WATSafe] Stopping owned processes...');
     await cleanupOwned();
     exit(0);
   });
@@ -100,122 +152,194 @@ Future<void> main(List<String> args) async {
   }
 
   try {
-    // 1. Select a clean port (use preferredPort if free, else pick an open port).
-    final relayPort = await _selectAvailablePort(preferredPort);
-    if (relayPort != preferredPort) {
+    String effectiveApiUrl;
+    String? localRelayUrl;
+
+    // Mode 1: Cloud-deployed permanent HTTPS relay (no local tunnel needed!)
+    if (configuredPermanentUrl != null &&
+        namedTunnelToken.isEmpty &&
+        !noTunnel &&
+        !relayOnly) {
+      effectiveApiUrl = configuredPermanentUrl;
+      activeUrlIsPermanent = true;
       stdout.writeln(
-        '[WATSafe] Port $preferredPort is in use by another process; using free port $relayPort.',
+        '[WATSafe] Using permanent HTTPS companion & relay service: $effectiveApiUrl',
       );
-    }
-
-    final localRelayUrl = 'http://127.0.0.1:$relayPort';
-    stdout.writeln('[WATSafe] Starting local relay on $localRelayUrl ...');
-
-    final relayProc = await Process.start(
-      Platform.resolvedExecutable,
-      <String>['run', 'backend/server.dart', '$relayPort'],
-      environment: <String, String>{
-        ...Platform.environment,
-        'WATSAFE_BIND_HOST': '127.0.0.1',
-      },
-    );
-    ownedProcesses.add(relayProc);
-    relayProc.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) => stdout.writeln('[relay] $line'));
-    relayProc.stderr
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) => stderr.writeln('[relay] $line'));
-
-    final localReady = await _waitForHealth(
-      localRelayUrl,
-      timeout: const Duration(seconds: 15),
-    );
-    if (!localReady) {
-      stderr.writeln(
-        '[WATSafe] ERROR: Local relay failed to pass /v1/health on $localRelayUrl.',
+      final remoteHealthy = await _waitForHealth(
+        effectiveApiUrl,
+        timeout: const Duration(seconds: 12),
       );
-      exitCode = 1;
-      return;
-    }
-    stdout.writeln('[WATSafe] Local relay healthy at $localRelayUrl/v1/health');
-
-    // 2. Establish valid-certificate HTTPS URL for iPhone / Android QR pairing & Web Push.
-    String effectiveApiUrl = localRelayUrl;
-
-    if (explicitPublicUrl.startsWith('https://')) {
-      stdout.writeln(
-        '[WATSafe] Using configured WATSAFE_PUBLIC_URL: $explicitPublicUrl',
-      );
-      effectiveApiUrl = _stripSlash(explicitPublicUrl);
-    } else if (!noTunnel) {
-      stdout.writeln(
-        '[WATSafe] Starting valid-certificate HTTPS tunnel for phone QR & Web Push...',
-      );
-      final tunnelOutcome = await _startHttpsTunnel(
-        localPort: relayPort,
-        ownedProcesses: ownedProcesses,
-      );
-      if (tunnelOutcome != null) {
+      if (remoteHealthy) {
         stdout.writeln(
-          '[WATSafe] Tunnel URL assigned (${tunnelOutcome.provider}): ${tunnelOutcome.httpsUrl}',
+          '[WATSafe] Permanent HTTPS service verified at $effectiveApiUrl/v1/health',
         );
-        stdout.writeln(
-          '[WATSafe] Verifying public HTTPS certificate and /v1/health...',
-        );
-        final tlsHealthy = await _waitForHealth(
-          tunnelOutcome.httpsUrl,
-          timeout: const Duration(seconds: 18),
-        );
-        if (tlsHealthy) {
-          effectiveApiUrl = tunnelOutcome.httpsUrl;
-          await _registerDynamicPublicOrigin(
-            localRelayUrl: localRelayUrl,
-            publicHttpsUrl: effectiveApiUrl,
-          );
-          stdout.writeln(
-            '[WATSafe] Public HTTPS endpoint verified: $effectiveApiUrl',
-          );
-        } else {
-          stderr.writeln(
-            '[WATSafe] WARNING: Tunnel URL ${tunnelOutcome.httpsUrl} did not pass TLS /v1/health check in time.',
-          );
-          if (requireHttps) {
-            exitCode = 2;
-            return;
-          }
-        }
       } else {
         stderr.writeln(
-          '[WATSafe] WARNING: Could not establish an automatic HTTPS tunnel.',
-        );
-        stderr.writeln(
-          '          Desktop features work locally on $localRelayUrl, but iPhone Home Screen Web Push requires HTTPS.',
-        );
-        stderr.writeln(
-          '          Tip: Check internet access, install `brew install cloudflared`, or set WATSAFE_PUBLIC_URL to your deployed HTTPS relay.',
+          '[WATSafe] WARNING: $effectiveApiUrl did not respond within 12s '
+          '(cold-starting or offline). WATSafe will keep reconnecting automatically.',
         );
         if (requireHttps) {
           exitCode = 2;
           return;
         }
       }
+    } else {
+      // Mode 2 (Named Cloudflare Tunnel) or Mode 3 (Local durable relay + fallback Quick Tunnel)
+      final relayPort = await _selectAvailablePort(preferredPort);
+      if (relayPort != preferredPort) {
+        stdout.writeln(
+          '[WATSafe] Port $preferredPort is in use by another process; using free port $relayPort.',
+        );
+      }
+
+      localRelayUrl = 'http://127.0.0.1:$relayPort';
+      stdout.writeln(
+        '[WATSafe] Starting durable local relay on $localRelayUrl ...',
+      );
+
+      final relayProc = await Process.start(
+        Platform.resolvedExecutable,
+        <String>['run', 'backend/server.dart', '$relayPort'],
+        environment: <String, String>{
+          ...Platform.environment,
+          'WATSAFE_BIND_HOST': '127.0.0.1',
+          'WATSAFE_PUBLIC_URL': ?configuredPermanentUrl,
+        },
+      );
+      ownedProcesses.add(relayProc);
+      relayProc.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) => stdout.writeln('[relay] $line'));
+      relayProc.stderr
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) => stderr.writeln('[relay] $line'));
+
+      final localReady = await _waitForHealth(
+        localRelayUrl,
+        timeout: const Duration(seconds: 15),
+      );
+      if (!localReady) {
+        stderr.writeln(
+          '[WATSafe] ERROR: Local relay failed to pass /v1/health on $localRelayUrl.',
+        );
+        exitCode = 1;
+        return;
+      }
+      stdout.writeln(
+        '[WATSafe] Local relay healthy at $localRelayUrl/v1/health',
+      );
+
+      effectiveApiUrl = localRelayUrl;
+
+      if (configuredPermanentUrl != null &&
+          namedTunnelToken.isNotEmpty &&
+          !noTunnel) {
+        stdout.writeln(
+          '[WATSafe] Starting permanent Named Cloudflare Tunnel for $configuredPermanentUrl ...',
+        );
+        final namedOk = await _startNamedCloudflareTunnel(
+          token: namedTunnelToken,
+          publicHttpsUrl: configuredPermanentUrl,
+          ownedProcesses: ownedProcesses,
+        );
+        if (namedOk) {
+          effectiveApiUrl = configuredPermanentUrl;
+          activeUrlIsPermanent = true;
+          await _registerDynamicPublicOrigin(
+            localRelayUrl: localRelayUrl,
+            publicHttpsUrl: effectiveApiUrl,
+          );
+          stdout.writeln(
+            '[WATSafe] Permanent Named Tunnel verified: $effectiveApiUrl',
+          );
+        } else {
+          stderr.writeln(
+            '[WATSafe] ERROR: Named Cloudflare Tunnel did not pass /v1/health at $configuredPermanentUrl.',
+          );
+          if (requireHttps) {
+            exitCode = 2;
+            return;
+          }
+        }
+      } else if (explicitEnvPublicUrl.startsWith('https://')) {
+        stdout.writeln(
+          '[WATSafe] Using configured WATSAFE_PUBLIC_URL: $explicitEnvPublicUrl',
+        );
+        effectiveApiUrl = _stripSlash(explicitEnvPublicUrl);
+        activeUrlIsPermanent = !RelayConfig.isEphemeralTunnelUrl(
+          effectiveApiUrl,
+        );
+        await _registerDynamicPublicOrigin(
+          localRelayUrl: localRelayUrl,
+          publicHttpsUrl: effectiveApiUrl,
+        );
+      } else if (!noTunnel) {
+        stdout.writeln(
+          '[WATSafe] Starting valid-certificate HTTPS tunnel for phone QR & Web Push...',
+        );
+        final tunnelOutcome = await _startHttpsTunnel(
+          localPort: relayPort,
+          ownedProcesses: ownedProcesses,
+        );
+        if (tunnelOutcome != null) {
+          stdout.writeln(
+            '[WATSafe] Tunnel URL assigned (${tunnelOutcome.provider}): ${tunnelOutcome.httpsUrl}',
+          );
+          stdout.writeln(
+            '[WATSafe] Verifying public HTTPS certificate and /v1/health...',
+          );
+          final tlsHealthy = await _waitForHealth(
+            tunnelOutcome.httpsUrl,
+            timeout: const Duration(seconds: 18),
+          );
+          if (tlsHealthy) {
+            effectiveApiUrl = tunnelOutcome.httpsUrl;
+            await _registerDynamicPublicOrigin(
+              localRelayUrl: localRelayUrl,
+              publicHttpsUrl: effectiveApiUrl,
+            );
+            stdout.writeln(
+              '[WATSafe] Public HTTPS endpoint verified: $effectiveApiUrl',
+            );
+          } else {
+            stderr.writeln(
+              '[WATSafe] WARNING: Tunnel URL ${tunnelOutcome.httpsUrl} did not pass TLS /v1/health check in time.',
+            );
+            if (requireHttps) {
+              exitCode = 2;
+              return;
+            }
+          }
+        } else {
+          stderr.writeln(
+            '[WATSafe] WARNING: Could not establish an automatic HTTPS tunnel.',
+          );
+          stderr.writeln(
+            '          Desktop features work locally on $localRelayUrl, but iPhone Home Screen Web Push requires HTTPS.',
+          );
+          if (requireHttps) {
+            exitCode = 2;
+            return;
+          }
+        }
+      }
     }
 
-    // Persist launcher state & active endpoint so normal `WATSafe.app` launches can also discover it.
     stateFile.writeAsStringSync(
       const JsonEncoder.withIndent('  ').convert(<String, Object?>{
         'startedAtUtc': DateTime.now().toUtc().toIso8601String(),
-        'localRelayUrl': localRelayUrl,
+        'localRelayUrl': ?localRelayUrl,
         'effectiveApiUrl': effectiveApiUrl,
-        'ownedPids': ownedProcesses.map((p) => p.pid).toList(),
+        'isPermanentHttps': activeUrlIsPermanent,
+        'ownedPids': <int>[pid, ...ownedProcesses.map((p) => p.pid)],
       }),
     );
     endpointFile.writeAsStringSync(
       const JsonEncoder.withIndent('  ').convert(<String, Object?>{
         'relayEndpointUrl': effectiveApiUrl,
+        'isPermanentHttps': activeUrlIsPermanent,
         'updatedAtUtc': DateTime.now().toUtc().toIso8601String(),
       }),
     );
@@ -223,15 +347,47 @@ Future<void> main(List<String> args) async {
     stdout.writeln('');
     stdout.writeln('========================================================');
     stdout.writeln('  WATSafe Ready');
-    stdout.writeln('  Active Relay URL : $effectiveApiUrl');
-    stdout.writeln('  Local Health     : $localRelayUrl/v1/health');
+    stdout.writeln('  Active Relay URL    : $effectiveApiUrl');
+    stdout.writeln('  Phone Companion URL : $effectiveApiUrl/companion');
+    stdout.writeln(
+      '  Address Mode        : ${activeUrlIsPermanent ? 'PERMANENT HTTPS (one-time install & pair)' : 'TEMPORARY / LOCAL DEV (one-time cloud deploy pending)'}',
+    );
+    if (localRelayUrl != null) {
+      stdout.writeln('  Local Health        : $localRelayUrl/v1/health');
+    }
     stdout.writeln('========================================================');
+    if (!activeUrlIsPermanent && !checkOnly) {
+      stdout.writeln(
+        '[WATSafe] PERMANENT ADDRESS DEPENDENCY (One-time setup not yet completed):',
+      );
+      stdout.writeln(
+        '          Temporary tunnels (*.trycloudflare.com) assign a new hostname on restart,',
+      );
+      stdout.writeln(
+        '          which causes iOS Home Screen bookmarks pinned to an old tunnel to show Cloudflare 530.',
+      );
+      stdout.writeln(
+        '          To give your iPhone Home Screen icon a permanent HTTPS address once and for all:',
+      );
+      stdout.writeln(
+        '            1. Deploy `render.yaml` with `AIVEN_DATABASE_URL` set in Render environment secrets',
+      );
+      stdout.writeln(
+        '               (or run a Named Cloudflare Tunnel against your local Mac relay)',
+      );
+      stdout.writeln(
+        '            2. Verify & save once: dart run tool/verify_deployment.dart --phase=before-restart https://<your-render-service>.onrender.com',
+      );
+      stdout.writeln(
+        '               (restart relay, then: dart run tool/verify_deployment.dart --phase=after-restart --save https://<your-render-service>.onrender.com)',
+      );
+    }
     stdout.writeln('');
 
     if (checkOnly) {
-      // Verify QR initiation returns the exact effectiveApiUrl!
+      final checkTarget = localRelayUrl ?? effectiveApiUrl;
       final qrOriginOk = await _verifyPairingQrOrigin(
-        localRelayUrl: localRelayUrl,
+        targetRelayUrl: checkTarget,
         expectedOrigin: effectiveApiUrl,
       );
       if (!qrOriginOk) {
@@ -249,13 +405,12 @@ Future<void> main(List<String> args) async {
 
     if (relayOnly) {
       stdout.writeln(
-        '[WATSafe] Relay + HTTPS tunnel running. Press Ctrl+C to stop.',
+        '[WATSafe] Relay service running ($effectiveApiUrl). Press Ctrl+C to stop.',
       );
       await Completer<void>().future;
       return;
     }
 
-    // 3. Launch Flutter desktop app with WATSAFE_API_URL injected!
     final targetDevice = deviceOverride ?? _defaultDesktopDevice();
     final flutterCmd = Platform.isWindows ? 'flutter.bat' : 'flutter';
     final flutterArgs = <String>[
@@ -328,14 +483,10 @@ Future<int> _selectAvailablePort(int preferred) async {
   }
 }
 
-Future<bool> _waitForHealth(
-  String baseUrl, {
-  required Duration timeout,
-}) async {
+Future<bool> _waitForHealth(String baseUrl, {required Duration timeout}) async {
   final deadline = DateTime.now().add(timeout);
   while (DateTime.now().isBefore(deadline)) {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 3);
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 3);
     try {
       final req = await client
           .getUrl(Uri.parse('$baseUrl/v1/health'))
@@ -345,10 +496,17 @@ Future<bool> _waitForHealth(
         'Mozilla/5.0 (Macintosh; WATSafeHealthCheck/1.0)',
       );
       final resp = await req.close().timeout(const Duration(seconds: 5));
-      if (resp.statusCode == HttpStatus.ok) {
+      if (resp.statusCode == HttpStatus.ok &&
+          resp.headers.value('x-watsafe-companion') == '1') {
         final raw = await utf8.decoder.bind(resp).join();
         final decoded = jsonDecode(raw);
         if (decoded is Map && decoded['status'] == 'ok') {
+          if (decoded['storageDurable'] == false) {
+            final warn =
+                (decoded['storageDurabilityWarning'] as String?)?.trim() ??
+                'Relay storage at $baseUrl is not durable across restarts.';
+            stderr.writeln('[WATSafe] WARNING: $warn');
+          }
           return true;
         }
       } else {
@@ -383,17 +541,20 @@ Future<void> _registerDynamicPublicOrigin({
 }
 
 Future<bool> _verifyPairingQrOrigin({
-  required String localRelayUrl,
+  required String targetRelayUrl,
   required String expectedOrigin,
 }) async {
   final client = HttpClient();
   try {
     final req = await client.postUrl(
-      Uri.parse('$localRelayUrl/v1/pairing/initiate'),
+      Uri.parse('$targetRelayUrl/v1/pairing/initiate'),
     );
     req.headers.contentType = ContentType.json;
     req.write(
-      jsonEncode(<String, Object?>{'hostDisplayName': 'Launcher Smoke Check'}),
+      jsonEncode(<String, Object?>{
+        'hostDisplayName': 'Launcher Smoke Check',
+        'relayUrl': expectedOrigin,
+      }),
     );
     final resp = await req.close();
     if (resp.statusCode != HttpStatus.ok) {
@@ -406,7 +567,7 @@ Future<bool> _verifyPairingQrOrigin({
     final hostToken = body['hostToken'] as String? ?? '';
     if (hostToken.isNotEmpty) {
       final revokeReq = await client.postUrl(
-        Uri.parse('$localRelayUrl/v1/pairing/session/revoke'),
+        Uri.parse('$targetRelayUrl/v1/pairing/session/revoke'),
       );
       revokeReq.headers.set(
         HttpHeaders.authorizationHeader,
@@ -425,6 +586,38 @@ Future<bool> _verifyPairingQrOrigin({
   }
 }
 
+Future<bool> _startNamedCloudflareTunnel({
+  required String token,
+  required String publicHttpsUrl,
+  required List<Process> ownedProcesses,
+}) async {
+  final cloudflaredBin = await _resolveBinary('cloudflared');
+  if (cloudflaredBin == null) {
+    stderr.writeln(
+      '[WATSafe] ERROR: `cloudflared` binary not found for WATSAFE_CLOUDFLARE_TUNNEL_TOKEN.',
+    );
+    return false;
+  }
+  try {
+    final proc = await Process.start(cloudflaredBin, <String>[
+      'tunnel',
+      '--no-autoupdate',
+      '--protocol',
+      'http2',
+      'run',
+      '--token',
+      token,
+    ]);
+    ownedProcesses.add(proc);
+    return await _waitForHealth(
+      publicHttpsUrl,
+      timeout: const Duration(seconds: 20),
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 class _TunnelResult {
   const _TunnelResult({required this.provider, required this.httpsUrl});
   final String provider;
@@ -432,11 +625,7 @@ class _TunnelResult {
 }
 
 Future<String?> _resolveBinary(String binary) async {
-  final extraDirs = <String>[
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    '/usr/bin',
-  ];
+  final extraDirs = <String>['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
   for (final dir in extraDirs) {
     final candidate = File('$dir/$binary');
     if (candidate.existsSync()) {

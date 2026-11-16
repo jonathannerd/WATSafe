@@ -58,9 +58,8 @@ class ActivityScreen extends StatelessWidget {
             children: <Widget>[
               Text(
                 'Activity',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
+                style: Theme.of(context).textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
               const Text(
@@ -341,9 +340,8 @@ class _SelectedEventDetailCard extends StatelessWidget {
                     children: <Widget>[
                       Text(
                         entry.title,
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
+                        style: Theme.of(context).textTheme.titleLarge
+                            ?.copyWith(fontWeight: FontWeight.w800),
                       ),
                       const SizedBox(height: 3),
                       Text(
@@ -509,10 +507,7 @@ class _LocationPreviewSection extends StatelessWidget {
         Text(
           'Recorded ${_formatEventTime(location.capturedAt)}',
           key: const Key('location_recorded_time_label'),
-          style: const TextStyle(
-            fontSize: 12.5,
-            color: WatSafeTheme.warmMuted,
-          ),
+          style: const TextStyle(fontSize: 12.5, color: WatSafeTheme.warmMuted),
         ),
         const SizedBox(height: 14),
         FilledButton.icon(
@@ -577,16 +572,8 @@ class _MapGridPreviewPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );
-    canvas.drawCircle(
-      center,
-      7,
-      Paint()..color = WatSafeTheme.warmOffWhite,
-    );
-    canvas.drawCircle(
-      center,
-      5,
-      Paint()..color = WatSafeTheme.alarmCrimson,
-    );
+    canvas.drawCircle(center, 7, Paint()..color = WatSafeTheme.warmOffWhite);
+    canvas.drawCircle(center, 5, Paint()..color = WatSafeTheme.alarmCrimson);
   }
 
   @override
@@ -603,14 +590,10 @@ class _UnavailableLocationNotice extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final String message = switch (status) {
-      IncidentLocationStatus.pending =>
-        'Checking protected device location… It will appear here automatically if available.',
-      IncidentLocationStatus.permissionDenied =>
-        'Location unavailable — location permission was turned off on the protected device when this alarm triggered.',
-      IncidentLocationStatus.notRequested =>
-        'Location unavailable — location sharing on alarm was turned off in Settings.',
-      IncidentLocationStatus.unavailable || IncidentLocationStatus.attached =>
-        'Location unavailable — the protected device could not determine its location when this alarm triggered.',
+      IncidentLocationStatus.pending => 'Checking protected device location… It will appear here automatically if available.',
+      IncidentLocationStatus.permissionDenied => 'Location unavailable — location permission was turned off on the protected device when this alarm triggered.',
+      IncidentLocationStatus.notRequested => 'Location unavailable — location sharing on alarm was turned off in Settings.',
+      IncidentLocationStatus.unavailable || IncidentLocationStatus.attached => 'Location unavailable — the protected device could not determine its location when this alarm triggered.',
     };
 
     return Container(
@@ -666,9 +649,8 @@ class _EmptyActivityCard extends StatelessWidget {
             const SizedBox(height: 12),
             Text(
               'No alarm events yet',
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 6),
             const Text(

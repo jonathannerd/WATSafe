@@ -37,7 +37,7 @@ class LocalAppDataPaths {
 /// Privacy invariant: Only serializes [IncidentRecord] metadata—never camera
 /// frames or PIN credentials.
 class FileIncidentStorage implements IncidentStorageAdapter {
-  FileIncidentStorage({Directory? directory}) : _directory = directory;
+  FileIncidentStorage({this._directory});
 
   final Directory? _directory;
 
@@ -116,7 +116,7 @@ class FileIncidentStorage implements IncidentStorageAdapter {
 
 /// JSON file-backed implementation of [SettingsStorageAdapter].
 class FileSettingsStorage implements SettingsStorageAdapter {
-  FileSettingsStorage({Directory? directory}) : _directory = directory;
+  FileSettingsStorage({this._directory});
 
   final Directory? _directory;
 

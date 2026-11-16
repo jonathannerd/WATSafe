@@ -105,8 +105,7 @@ class WindowsAccelerometerDetectorAdapter implements MotionDetectorAdapter {
           type: DetectorType.windowsAccelerometer,
           status: CapabilityStatus.unsupported,
           permissionStatus: PermissionStatus.notApplicable,
-          summary:
-              'Windows accelerometer bridge returned an empty capability response.',
+          summary: 'Windows accelerometer bridge returned an empty capability response.',
         );
       }
 
@@ -123,11 +122,8 @@ class WindowsAccelerometerDetectorAdapter implements MotionDetectorAdapter {
           type: DetectorType.windowsAccelerometer,
           status: CapabilityStatus.unsupported,
           permissionStatus: PermissionStatus.notApplicable,
-          summary:
-              'No integrated 3-axis accelerometer hardware detected on this Windows PC.',
-          statusDetail:
-              detail ??
-              'Windows.Devices.Sensors.Accelerometer.GetDefault() returned null.',
+          summary: 'No integrated 3-axis accelerometer hardware detected on this Windows PC.',
+          statusDetail: detail ?? 'Windows.Devices.Sensors.Accelerometer.GetDefault() returned null.',
           guidance:
               'Standard clamshell Windows laptops often omit a WinRT accelerometer. '
               'Select "Windows Webcam Scene-Motion" below for live optical monitoring.',
@@ -168,8 +164,7 @@ class WindowsAccelerometerDetectorAdapter implements MotionDetectorAdapter {
         type: DetectorType.windowsAccelerometer,
         status: CapabilityStatus.unsupported,
         permissionStatus: PermissionStatus.notApplicable,
-        summary:
-            'Native Windows accelerometer bridge is not registered in this runner.',
+        summary: 'Native Windows accelerometer bridge is not registered in this runner.',
         guidance:
             'Rebuild and run the Windows desktop target (`flutter run -d windows`) '
             'so the native WinRT sensor bridge is active.',
@@ -468,8 +463,7 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
           statusDetail:
               response['detail'] as String? ??
               'Media Foundation MFEnumDeviceSources returned 0 video devices.',
-          guidance:
-              'Connect a USB/UVC webcam or use the manual Test Alarm to verify local siren operation.',
+          guidance: 'Connect a USB/UVC webcam or use the manual Test Alarm to verify local siren operation.',
         );
       }
 
@@ -482,8 +476,7 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
             hardwareDeviceName: deviceName ?? 'Built-in Windows Camera',
             summary:
                 'Ready — ${deviceName ?? "Windows Camera"} available with camera access enabled.',
-            statusDetail:
-                'Local 64x48 grayscale scene-motion pipeline ready via Media Foundation (no frames saved or uploaded).',
+            statusDetail: 'Local 64x48 grayscale scene-motion pipeline ready via Media Foundation (no frames saved or uploaded).',
           );
 
         case PermissionStatus.notDetermined:
@@ -492,12 +485,10 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
             status: CapabilityStatus.permissionRequired,
             permissionStatus: PermissionStatus.notDetermined,
             hardwareDeviceName: deviceName ?? 'Built-in Windows Camera',
-            summary:
-                'Camera permission required to enable Windows scene-motion monitoring.',
+            summary: 'Camera permission required to enable Windows scene-motion monitoring.',
             statusDetail:
                 'Hardware detected: ${deviceName ?? "Windows Camera"}.',
-            guidance:
-                'Click "Grant Camera Permission" below to check or open Windows Camera Privacy Settings.',
+            guidance: 'Click "Grant Camera Permission" below to check or open Windows Camera Privacy Settings.',
           );
 
         case PermissionStatus.denied:
@@ -508,10 +499,8 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
             permissionStatus: permissionStatus,
             hardwareDeviceName: deviceName ?? 'Built-in Windows Camera',
             summary: 'Camera access is disabled in Windows Privacy Settings.',
-            statusDetail:
-                'Windows ConsentStore blocked webcam access for desktop applications.',
-            guidance:
-                'Open Windows Settings → Privacy & security → Camera, enable "Camera access" and "Let desktop apps access your camera", then click Refresh Readiness.',
+            statusDetail: 'Windows ConsentStore blocked webcam access for desktop applications.',
+            guidance: 'Open Windows Settings → Privacy & security → Camera, enable "Camera access" and "Let desktop apps access your camera", then click Refresh Readiness.',
           );
 
         case PermissionStatus.notApplicable:

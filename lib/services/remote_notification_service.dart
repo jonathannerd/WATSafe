@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -20,7 +21,8 @@ class UnconfiguredRemoteNotificationService
     return const NotificationServiceStatus(
       capabilityStatus: CapabilityStatus.notConfigured,
       summary: 'No phone paired',
-      detail: 'Pair your phone on Home to receive alerts when an alarm triggers.',
+      detail:
+          'Pair your phone on Home to receive alerts when an alarm triggers.',
     );
   }
 
@@ -70,17 +72,15 @@ class ParsedPairingInput {
 class ConfigurableRemoteNotificationService
     implements MutableRemoteNotificationAdapter {
   ConfigurableRemoteNotificationService({
-    Object? storageDirectory,
+    this._storageDirectory,
     this.persistToDisk = true,
     this.enableBackgroundPolling = false,
     this.pollInterval = const Duration(seconds: 2),
     String? initialRelayEndpointUrl,
     List<PairedDeviceSummary>? initialDevices,
-    Duration httpTimeout = const Duration(seconds: 3),
+    this._httpTimeout = const Duration(seconds: 3),
     DateTime Function()? clock,
-  }) : _storageDirectory = storageDirectory,
-       _httpTimeout = httpTimeout,
-       _clock = clock ?? DateTime.now,
+  }) : _clock = clock ?? DateTime.now,
        _relayEndpointUrl = _normalizeUrl(
          initialRelayEndpointUrl ??
              const String.fromEnvironment('WATSAFE_API_URL'),
@@ -91,6 +91,7 @@ class ConfigurableRemoteNotificationService
 
   static const String _stateFileName = 'watsafe_paired_devices.json';
   static const String _outboxFileName = 'watsafe_companion_alerts.json';
+  static const String _secureCredentialKey = 'pairing_credentials';
 
   final Object? _storageDirectory;
   final bool persistToDisk;
@@ -110,14 +111,20 @@ class ConfigurableRemoteNotificationService
   List<PairedDeviceActionRecord> _actions = <PairedDeviceActionRecord>[];
 
   // Protected Laptop Host session state
+  String? _hostInstallationId;
   String? _hostPairingSessionId;
   String? _hostToken;
+  String _hostDisplayName = 'My Laptop';
+  String _hostProtectionState = 'off';
   PairingCodeInvitation? _activePairingInvitation;
   Timer? _hostSyncTimer;
   Future<List<PairedDeviceSummary>>? _inFlightHostSync;
   int _deviceMutationEpoch = 0;
+  int _consecutiveHostSyncFailures = 0;
+  DateTime? _nextAllowedBackgroundHostSyncAt;
 
   // Paired Companion Phone session state
+  String? _companionInstallationId;
   String? _companionToken;
   CompanionSessionState _companionSession = CompanionSessionState.disconnected;
   int _companionLastAlertSeq = 0;
@@ -125,12 +132,54 @@ class ConfigurableRemoteNotificationService
   List<CompanionAlertEvent> _receivedCompanionAlerts = <CompanionAlertEvent>[];
   Timer? _companionPollTimer;
   Future<List<CompanionAlertEvent>>? _inFlightPoll;
+  int _consecutiveCompanionFailures = 0;
+  DateTime? _nextAllowedBackgroundCompanionPollAt;
+
+  // Per-origin saved pairing snapshots for clean temporary -> permanent migration
+  final Map<String, Map<String, Object?>> _credentialsByOrigin =
+      <String, Map<String, Object?>>{};
 
   bool _foregroundActive = true;
   bool _disposed = false;
   bool _loadedFromDisk = false;
   int _deviceCounter = 0;
   int _actionCounter = 0;
+
+  String _ensureHostInstallationId() {
+    if (_hostInstallationId != null && _hostInstallationId!.isNotEmpty) {
+      return _hostInstallationId!;
+    }
+    final rng = Random.secure();
+    final bytes = List<int>.generate(8, (_) => rng.nextInt(256));
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    _hostInstallationId = 'host_inst_${_clock().millisecondsSinceEpoch}_$hex';
+    return _hostInstallationId!;
+  }
+
+  String _ensureCompanionInstallationId() {
+    if (_companionInstallationId != null &&
+        _companionInstallationId!.isNotEmpty) {
+      return _companionInstallationId!;
+    }
+    final rng = Random.secure();
+    final bytes = List<int>.generate(8, (_) => rng.nextInt(256));
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    _companionInstallationId =
+        'comp_inst_${_clock().millisecondsSinceEpoch}_$hex';
+    return _companionInstallationId!;
+  }
+
+  /// Stable installation device identity for the protected laptop host.
+  String get hostInstallationId => _ensureHostInstallationId();
+
+  static bool _isAuthenticErrorCode(String rawBody, String expectedErrorCode) {
+    try {
+      final decoded = jsonDecode(rawBody);
+      return decoded is Map && decoded['error'] == expectedErrorCode;
+    } catch (_) {
+      return false;
+    }
+  }
 
   static String? _normalizeUrl(String? raw) {
     if (raw == null) {
@@ -250,26 +299,87 @@ class ConfigurableRemoteNotificationService
     }
     _loadedFromDisk = true;
     if (!persistToDisk) {
+      _ensureHostInstallationId();
+      _ensureCompanionInstallationId();
       return;
     }
+    bool migratedLegacyTokens = false;
     try {
+      Map<String, Object?> decoded = const <String, Object?>{};
       final raw = await readPersistedJson(
         _stateFileName,
         storageDirectory: _storageDirectory,
       );
-      if (raw == null || raw.trim().isEmpty) {
+      if (raw != null && raw.trim().isNotEmpty) {
+        final parsed = jsonDecode(raw);
+        if (parsed is Map) {
+          decoded = Map<String, Object?>.from(parsed);
+        }
+      }
+
+      Map<String, Object?> secureDecoded = const <String, Object?>{};
+      final rawSecure = await readSecurePersistedSecret(
+        _secureCredentialKey,
+        storageDirectory: _storageDirectory,
+      );
+      if (rawSecure != null && rawSecure.trim().isNotEmpty) {
+        final parsedSecure = jsonDecode(rawSecure);
+        if (parsedSecure is Map) {
+          secureDecoded = Map<String, Object?>.from(parsedSecure);
+        }
+      }
+
+      if (decoded.isEmpty && secureDecoded.isEmpty) {
+        _ensureHostInstallationId();
+        _ensureCompanionInstallationId();
         return;
       }
-      final decoded = jsonDecode(raw) as Map<String, Object?>;
-      final savedUrl = _normalizeUrl(decoded['relayEndpointUrl'] as String?);
+
+      _hostInstallationId =
+          (secureDecoded['hostInstallationId'] as String?) ??
+          (decoded['hostInstallationId'] as String?);
+      _companionInstallationId =
+          (secureDecoded['companionInstallationId'] as String?) ??
+          (decoded['companionInstallationId'] as String?);
+      _ensureHostInstallationId();
+      _ensureCompanionInstallationId();
+
+      final rawByOrigin = secureDecoded['credentialsByOrigin'];
+      if (rawByOrigin is Map) {
+        _credentialsByOrigin.clear();
+        rawByOrigin.forEach((key, value) {
+          if (key is String && value is Map) {
+            _credentialsByOrigin[key] = Map<String, Object?>.from(value);
+          }
+        });
+      }
+
+      final savedUrl = _normalizeUrl(
+        (decoded['relayEndpointUrl'] as String?) ??
+            (secureDecoded['relayEndpointUrl'] as String?),
+      );
       if (savedUrl != null &&
           (_relayEndpointUrl == null ||
               _relayEndpointUrl!.isEmpty ||
               !RelayConfig.hasExplicitCompileOrEnvOverride)) {
         _relayEndpointUrl = savedUrl;
       }
-      _hostPairingSessionId = decoded['hostPairingSessionId'] as String?;
-      _hostToken = decoded['hostToken'] as String?;
+
+      final legacyHostToken = decoded['hostToken'] as String?;
+      final legacyCompanionToken = decoded['companionToken'] as String?;
+      if ((legacyHostToken != null && legacyHostToken.isNotEmpty) ||
+          (legacyCompanionToken != null && legacyCompanionToken.isNotEmpty)) {
+        migratedLegacyTokens = true;
+      }
+
+      final savedHostName = decoded['hostDisplayName'] as String?;
+      if (savedHostName != null && savedHostName.trim().isNotEmpty) {
+        _hostDisplayName = savedHostName.trim();
+      }
+      _hostPairingSessionId =
+          (secureDecoded['hostPairingSessionId'] as String?) ??
+          (decoded['hostPairingSessionId'] as String?);
+      _hostToken = (secureDecoded['hostToken'] as String?) ?? legacyHostToken;
 
       final rawDevices = decoded['pairedDevices'] as List<Object?>?;
       if (rawDevices != null) {
@@ -294,7 +404,8 @@ class ConfigurableRemoteNotificationService
             .toList();
       }
 
-      _companionToken = decoded['companionToken'] as String?;
+      _companionToken =
+          (secureDecoded['companionToken'] as String?) ?? legacyCompanionToken;
       _companionLastAlertSeq =
           (decoded['companionLastAlertSeq'] as num?)?.toInt() ?? 0;
       final rawSeen = decoded['seenCompanionIncidentIds'] as List<Object?>?;
@@ -340,9 +451,31 @@ class ConfigurableRemoteNotificationService
           unawaited(syncPairedDevicesFromRelay());
         }
       }
+      if (migratedLegacyTokens) {
+        await _persistState();
+      }
     } catch (_) {
       // Keep in-memory state if storage read fails
     }
+  }
+
+  void _snapshotCurrentOriginCredentials(String? origin) {
+    final normalized = _normalizeUrl(origin);
+    if (normalized == null || normalized.isEmpty) {
+      return;
+    }
+    if ((_hostToken == null || _hostToken!.isEmpty) &&
+        (_companionToken == null || _companionToken!.isEmpty) &&
+        _devices.isEmpty) {
+      _credentialsByOrigin.remove(normalized);
+      return;
+    }
+    _credentialsByOrigin[normalized] = <String, Object?>{
+      'hostPairingSessionId': _hostPairingSessionId,
+      'hostToken': _hostToken,
+      'pairedDevices': _devices.map((d) => d.toJson()).toList(),
+      'companionToken': _companionToken,
+    };
   }
 
   Future<void> _persistState() async {
@@ -350,13 +483,33 @@ class ConfigurableRemoteNotificationService
       return;
     }
     try {
-      final payload = <String, Object?>{
+      _ensureHostInstallationId();
+      _ensureCompanionInstallationId();
+      _snapshotCurrentOriginCredentials(_relayEndpointUrl);
+
+      final securePayload = <String, Object?>{
+        'hostInstallationId': _hostInstallationId,
+        'companionInstallationId': _companionInstallationId,
         'relayEndpointUrl': _relayEndpointUrl,
         'hostPairingSessionId': _hostPairingSessionId,
         'hostToken': _hostToken,
+        'companionToken': _companionToken,
+        'credentialsByOrigin': _credentialsByOrigin,
+      };
+      await writeSecurePersistedSecret(
+        _secureCredentialKey,
+        jsonEncode(securePayload),
+        storageDirectory: _storageDirectory,
+      );
+
+      // Never store raw bearer tokens (`hostToken` / `companionToken`) in plain state JSON.
+      final payload = <String, Object?>{
+        'relayEndpointUrl': _relayEndpointUrl,
+        'hostInstallationId': _hostInstallationId,
+        'hostDisplayName': _hostDisplayName,
+        'hostPairingSessionId': _hostPairingSessionId,
         'pairedDevices': _devices.map((d) => d.toJson()).toList(),
         'actionHistory': _actions.take(30).map((a) => a.toJson()).toList(),
-        'companionToken': _companionToken,
         'companionLastAlertSeq': _companionLastAlertSeq,
         'seenCompanionIncidentIds': _seenCompanionIncidentIds.toList(),
         'receivedCompanionAlerts': _receivedCompanionAlerts
@@ -409,7 +562,8 @@ class ConfigurableRemoteNotificationService
       return const NotificationServiceStatus(
         capabilityStatus: CapabilityStatus.notConfigured,
         summary: 'No phone paired',
-        detail: 'Pair your phone on Home to receive alerts when an alarm triggers.',
+        detail:
+            'Pair your phone on Home to receive alerts when an alarm triggers.',
       );
     }
 
@@ -432,7 +586,8 @@ class ConfigurableRemoteNotificationService
       capabilityStatus: CapabilityStatus.ready,
       summary:
           'Connected (${_devices.length} paired device${_devices.length == 1 ? '' : 's'})',
-      detail: 'Phone connected ($names). Alerts will be sent when an alarm triggers.',
+      detail:
+          'Phone connected ($names). Alerts will be sent when an alarm triggers.',
     );
   }
 
@@ -447,11 +602,94 @@ class ConfigurableRemoteNotificationService
     await _ensureLoaded();
     final normalized = _normalizeUrl(endpointUrl);
     if (normalized != _relayEndpointUrl) {
+      _snapshotCurrentOriginCredentials(_relayEndpointUrl);
       ++_deviceMutationEpoch;
       _relayEndpointUrl = normalized;
+      if (_companionSession.isConnected && normalized != null) {
+        _companionSession = _companionSession.copyWith(
+          relayEndpointUrl: normalized,
+        );
+      }
       _activePairingInvitation = null;
+      _consecutiveHostSyncFailures = 0;
+      _nextAllowedBackgroundHostSyncAt = null;
+
+      if (normalized != null && _credentialsByOrigin.containsKey(normalized)) {
+        final saved = _credentialsByOrigin[normalized]!;
+        final savedToken = saved['hostToken'] as String?;
+        if (savedToken != null && savedToken.isNotEmpty) {
+          _hostPairingSessionId = saved['hostPairingSessionId'] as String?;
+          _hostToken = savedToken;
+          final rawDevices = saved['pairedDevices'] as List<Object?>?;
+          if (rawDevices != null) {
+            _devices = rawDevices
+                .whereType<Map<Object?, Object?>>()
+                .map(
+                  (item) => PairedDeviceSummary.fromJson(
+                    Map<String, Object?>.from(item),
+                  ),
+                )
+                .toList();
+          }
+        }
+      }
     }
     await _persistState();
+    if (_hostToken != null &&
+        _hostToken!.isNotEmpty &&
+        _relayEndpointUrl != null &&
+        _relayEndpointUrl!.isNotEmpty) {
+      _startHostSyncTimerIfNeeded();
+    }
+  }
+
+  /// Updates the protected laptop's display name and protection state used in
+  /// host presence heartbeats so the paired phone companion accurately displays
+  /// whether the laptop is online and its current protection state.
+  Future<void> updateHostPresence({
+    String? hostDisplayName,
+    String? protectionState,
+    bool sendImmediateHeartbeat = false,
+  }) async {
+    await _ensureLoaded();
+    if (hostDisplayName != null && hostDisplayName.trim().isNotEmpty) {
+      _hostDisplayName = hostDisplayName.trim();
+    }
+    if (protectionState != null && protectionState.trim().isNotEmpty) {
+      _hostProtectionState = protectionState.trim();
+    }
+    if (sendImmediateHeartbeat) {
+      if (_hostToken != null &&
+          _hostToken!.isNotEmpty &&
+          _relayEndpointUrl != null &&
+          _relayEndpointUrl!.isNotEmpty) {
+        _nextAllowedBackgroundHostSyncAt = null;
+        await syncPairedDevicesFromRelay();
+      }
+    }
+  }
+
+  /// Explicitly marks the laptop host offline on the relay (`POST /v1/host/offline`)
+  /// when closing the laptop app while preserving all durable pairing credentials
+  /// so reopening the laptop app reconnects automatically without re-pairing.
+  Future<bool> notifyHostOffline() async {
+    await _ensureLoaded();
+    final url = _relayEndpointUrl;
+    final token = _hostToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      return false;
+    }
+    final res = await sendRelayJsonRequest(
+      method: 'POST',
+      url: '$url/v1/host/offline',
+      headers: _bearerHeaders(token),
+      body: <String, Object?>{
+        'hostDeviceId': _ensureHostInstallationId(),
+        'hostProtectionState': _hostProtectionState,
+      },
+      timeout: const Duration(milliseconds: 1200),
+    );
+    return res.isSuccess;
   }
 
   @override
@@ -468,7 +706,8 @@ class ConfigurableRemoteNotificationService
 
     final requestedName = (hostDisplayName?.trim().isNotEmpty == true)
         ? hostDisplayName!.trim()
-        : 'My Laptop';
+        : _hostDisplayName;
+    _hostDisplayName = requestedName;
 
     final response = await sendRelayJsonRequest(
       method: 'POST',
@@ -476,6 +715,8 @@ class ConfigurableRemoteNotificationService
       headers: _hostToken != null ? _bearerHeaders(_hostToken!) : null,
       body: <String, Object?>{
         'hostDisplayName': requestedName,
+        'hostDeviceId': _ensureHostInstallationId(),
+        'hostProtectionState': _hostProtectionState,
         'relayUrl': url,
       },
       timeout: _httpTimeout,
@@ -575,8 +816,7 @@ class ConfigurableRemoteNotificationService
     final expiresRaw = decoded['expiresAtUtc'] as String? ?? '';
     return PairingLookupPreview(
       pairingSessionId: decoded['pairingSessionId'] as String? ?? '',
-      hostDisplayName:
-          decoded['hostDisplayName'] as String? ?? 'Your Laptop',
+      hostDisplayName: decoded['hostDisplayName'] as String? ?? 'Your Laptop',
       pairingCode: decoded['pairingCode'] as String? ?? parsed.pairingCode,
       relayEndpointUrl: effectiveUrl,
       expiresAt:
@@ -610,15 +850,62 @@ class ConfigurableRemoteNotificationService
     }
 
     final syncEpoch = _deviceMutationEpoch;
-    final response = await sendRelayJsonRequest(
-      method: 'GET',
-      url: '$url/v1/pairing/devices',
+    var response = await sendRelayJsonRequest(
+      method: 'POST',
+      url: '$url/v1/host/heartbeat',
       headers: _bearerHeaders(token),
+      body: <String, Object?>{
+        'hostDisplayName': _hostDisplayName,
+        'hostDeviceId': _ensureHostInstallationId(),
+        'hostProtectionState': _hostProtectionState,
+      },
       timeout: _httpTimeout,
     );
-    if (!response.isSuccess || syncEpoch != _deviceMutationEpoch) {
+    if (response.statusCode == 404 || response.statusCode == 405) {
+      response = await sendRelayJsonRequest(
+        method: 'GET',
+        url: '$url/v1/pairing/devices',
+        headers: _bearerHeaders(token),
+        timeout: _httpTimeout,
+      );
+    }
+
+    if (syncEpoch != _deviceMutationEpoch) {
       return List<PairedDeviceSummary>.unmodifiable(_devices);
     }
+
+    // Clear host credentials ONLY on an authentic WATSafe 401 session revocation
+    // (never on Cloudflare 530, proxy HTML/401, 5xx, timeouts, or network blips!).
+    if (response.statusCode == 401 &&
+        response.isAuthenticWatSafe &&
+        _isAuthenticErrorCode(response.body, 'UNAUTHORIZED_HOST_SESSION')) {
+      _consecutiveHostSyncFailures = 0;
+      _nextAllowedBackgroundHostSyncAt = null;
+      _hostToken = null;
+      _hostPairingSessionId = null;
+      _activePairingInvitation = null;
+      _devices = <PairedDeviceSummary>[];
+      _credentialsByOrigin.remove(_normalizeUrl(url));
+      await _persistState();
+      _onStateChanged?.call();
+      return const <PairedDeviceSummary>[];
+    }
+
+    if (!response.isSuccess) {
+      _consecutiveHostSyncFailures += 1;
+      final shift = min(_consecutiveHostSyncFailures - 1, 4);
+      final backoffSeconds = min(
+        30,
+        max(2, pollInterval.inSeconds) * (1 << shift),
+      );
+      _nextAllowedBackgroundHostSyncAt = _clock().add(
+        Duration(seconds: backoffSeconds),
+      );
+      return List<PairedDeviceSummary>.unmodifiable(_devices);
+    }
+
+    _consecutiveHostSyncFailures = 0;
+    _nextAllowedBackgroundHostSyncAt = null;
 
     try {
       final decoded = jsonDecode(response.body) as Map<String, Object?>;
@@ -642,7 +929,9 @@ class ConfigurableRemoteNotificationService
           );
         }
         return parsed.copyWith(
-          remoteStateLabel: parsed.connected ? 'Phone connected' : 'Disconnected',
+          remoteStateLabel: parsed.connected
+              ? 'Phone connected'
+              : 'Disconnected',
         );
       }).toList();
 
@@ -695,9 +984,7 @@ class ConfigurableRemoteNotificationService
     final trimmedName = displayName.trim().isEmpty
         ? 'My Phone'
         : displayName.trim();
-    final trimmedPlatform = platform.trim().isEmpty
-        ? 'Phone'
-        : platform.trim();
+    final trimmedPlatform = platform.trim().isEmpty ? 'Phone' : platform.trim();
     final now = _clock();
     final provisionalId =
         'dev_${++_deviceCounter}_${now.millisecondsSinceEpoch}';
@@ -856,7 +1143,8 @@ class ConfigurableRemoteNotificationService
             payload?['hostState'] as String? ??
             payload?['protectionState'] as String? ??
             'Off';
-        actionSummary = 'Synced status ($hostState) to "${current.displayName}".';
+        actionSummary =
+            'Synced status ($hostState) to "${current.displayName}".';
         updated = current.copyWith(
           remoteStateLabel: 'Phone connected',
           lastActionSummary: 'Status synced',
@@ -994,6 +1282,8 @@ class ConfigurableRemoteNotificationService
       url: '$effectiveUrl/v1/pairing/complete',
       body: <String, Object?>{
         'pairingCode': parsed.pairingCode,
+        'deviceId':
+            _companionSession.deviceId ?? _ensureCompanionInstallationId(),
         'displayName': trimmedName,
         'platform': trimmedPlatform,
         'notificationsEnabled': notificationsEnabled,
@@ -1020,8 +1310,7 @@ class ConfigurableRemoteNotificationService
     final sessionId = body['pairingSessionId'] as String? ?? '';
     final companionToken = body['companionToken'] as String? ?? '';
     final deviceId = body['deviceId'] as String?;
-    final hostDisplayName =
-        body['hostDisplayName'] as String? ?? 'Your Laptop';
+    final hostDisplayName = body['hostDisplayName'] as String? ?? 'Your Laptop';
     final pushConfigured = body['pushConfigured'] as bool? ?? false;
 
     if (sessionId.isEmpty || companionToken.isEmpty) {
@@ -1164,7 +1453,13 @@ class ConfigurableRemoteNotificationService
       timeout: _httpTimeout,
     );
 
-    if (response.statusCode == 401) {
+    if (response.statusCode == 401 &&
+        response.isAuthenticWatSafe &&
+        _isAuthenticErrorCode(
+          response.body,
+          'UNAUTHORIZED_COMPANION_SESSION',
+        )) {
+      _consecutiveCompanionFailures = 0;
       _companionPollTimer?.cancel();
       _companionPollTimer = null;
       _companionToken = null;
@@ -1181,15 +1476,27 @@ class ConfigurableRemoteNotificationService
       return const <CompanionAlertEvent>[];
     }
 
-    if (!response.isSuccess) {
+    if (!response.isSuccess || !response.isAuthenticWatSafe) {
+      _consecutiveCompanionFailures += 1;
+      final shift = min(_consecutiveCompanionFailures - 1, 4);
+      final backoffSeconds = min(
+        30,
+        max(2, pollInterval.inSeconds) * (1 << shift),
+      );
+      _nextAllowedBackgroundCompanionPollAt = _clock().add(
+        Duration(seconds: backoffSeconds),
+      );
       _companionSession = _companionSession.copyWith(
         isConnected: true,
         relayEndpointUrl: url,
-        statusMessage: 'Reconnecting…',
+        statusMessage: 'Service temporarily unavailable — retrying…',
       );
       _onStateChanged?.call();
       return const <CompanionAlertEvent>[];
     }
+
+    _consecutiveCompanionFailures = 0;
+    _nextAllowedBackgroundCompanionPollAt = null;
 
     final newlyDelivered = <CompanionAlertEvent>[];
     bool updatedExistingInPlace = false;
@@ -1200,6 +1507,7 @@ class ConfigurableRemoteNotificationService
       final hostName =
           decoded['hostDisplayName'] as String? ??
           _companionSession.hostDisplayName;
+      final hostOnline = decoded['hostOnline'] as bool? ?? true;
       final rawAlerts =
           decoded['alerts'] as List<Object?>? ?? const <Object?>[];
 
@@ -1254,7 +1562,9 @@ class ConfigurableRemoteNotificationService
         isConnected: true,
         hostDisplayName: hostName,
         relayEndpointUrl: url,
-        statusMessage: 'Connected to ${hostName ?? "your laptop"}.',
+        statusMessage: hostOnline
+            ? 'Connected to ${hostName ?? "your laptop"}.'
+            : 'Laptop offline — paired with ${hostName ?? "your laptop"}.',
       );
 
       if (newlyDelivered.isNotEmpty || updatedExistingInPlace) {
@@ -1266,6 +1576,38 @@ class ConfigurableRemoteNotificationService
     }
 
     return newlyDelivered;
+  }
+
+  /// Rotates this companion phone's bearer credential cleanly via
+  /// `POST /v1/companion/token/refresh` (with a 60-second grace window on the
+  /// previous token) without re-pairing.
+  Future<bool> refreshCompanionCredential() async {
+    await _ensureLoaded();
+    final token = _companionToken;
+    final url = _companionSession.relayEndpointUrl ?? _relayEndpointUrl;
+    if (token == null || token.isEmpty || url == null || url.isEmpty) {
+      return false;
+    }
+    final res = await sendRelayJsonRequest(
+      method: 'POST',
+      url: '$url/v1/companion/token/refresh',
+      headers: _bearerHeaders(token),
+      body: const <String, Object?>{},
+      timeout: _httpTimeout,
+    );
+    if (!res.isSuccess || !res.isAuthenticWatSafe) {
+      return false;
+    }
+    try {
+      final decoded = jsonDecode(res.body) as Map<String, Object?>;
+      final rotated = decoded['companionToken'] as String?;
+      if (rotated != null && rotated.isNotEmpty) {
+        _companionToken = rotated;
+        await _persistState();
+        return true;
+      }
+    } catch (_) {}
+    return false;
   }
 
   @override
@@ -1343,12 +1685,20 @@ class ConfigurableRemoteNotificationService
     _seenCompanionIncidentIds.clear();
     _receivedCompanionAlerts = <CompanionAlertEvent>[];
     _companionSession = CompanionSessionState.disconnected;
+    _credentialsByOrigin.clear();
+    _consecutiveHostSyncFailures = 0;
+    _consecutiveCompanionFailures = 0;
+    _nextAllowedBackgroundHostSyncAt = null;
     if (defaultRelayUrl != null) {
       _relayEndpointUrl = _normalizeUrl(defaultRelayUrl);
     }
 
     if (persistToDisk) {
       try {
+        await deleteSecurePersistedSecret(
+          _secureCredentialKey,
+          storageDirectory: _storageDirectory,
+        );
         await writePersistedJson(
           _outboxFileName,
           '[]',
@@ -1509,6 +1859,10 @@ class ConfigurableRemoteNotificationService
         _hostSyncTimer = null;
         return;
       }
+      final nextAllowed = _nextAllowedBackgroundHostSyncAt;
+      if (nextAllowed != null && _clock().isBefore(nextAllowed)) {
+        return;
+      }
       unawaited(syncPairedDevicesFromRelay());
     });
   }
@@ -1523,6 +1877,10 @@ class ConfigurableRemoteNotificationService
     _companionPollTimer?.cancel();
     _companionPollTimer = Timer.periodic(pollInterval, (_) {
       if (_disposed || !_foregroundActive || _companionToken == null) {
+        return;
+      }
+      final nextAllowed = _nextAllowedBackgroundCompanionPollAt;
+      if (nextAllowed != null && _clock().isBefore(nextAllowed)) {
         return;
       }
       unawaited(pollCompanionAlertsOnce());

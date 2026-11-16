@@ -45,245 +45,232 @@ void main() {
           .setMockStreamHandler(iosEventChannel, null);
     });
 
-    test(
-      'AndroidMotionDetectorAdapter reports ready and streams calibration & trigger events',
-      () async {
-        MockStreamHandlerEventSink? eventSink;
+    test('AndroidMotionDetectorAdapter reports ready and streams calibration & trigger events', () async {
+      MockStreamHandlerEventSink? eventSink;
 
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(androidMethodChannel, (
-              MethodCall call,
-            ) async {
-              switch (call.method) {
-                case 'checkCapability':
-                  return <String, Object?>{
-                    'hasMotionHardware': true,
-                    'deviceName': 'Bosch BMI260 Linear Accelerometer',
-                    'permissionStatus': 'granted',
-                    'detail': 'Android SensorManager ready.',
-                  };
-                case 'startMonitoring':
-                  return <String, Object?>{
-                    'started': true,
-                    'message':
-                        'Monitoring active on Bosch BMI260 Linear Accelerometer.',
-                  };
-                case 'updateSensitivity':
-                case 'stopMonitoring':
-                  return null;
-              }
-              return null;
-            });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(androidMethodChannel, (
+            MethodCall call,
+          ) async {
+            switch (call.method) {
+              case 'checkCapability':
+                return <String, Object?>{
+                  'hasMotionHardware': true,
+                  'deviceName': 'Bosch BMI260 Linear Accelerometer',
+                  'permissionStatus': 'granted',
+                  'detail': 'Android SensorManager ready.',
+                };
+              case 'startMonitoring':
+                return <String, Object?>{
+                  'started': true,
+                  'message':
+                      'Monitoring active on Bosch BMI260 Linear Accelerometer.',
+                };
+              case 'updateSensitivity':
+              case 'stopMonitoring':
+                return null;
+            }
+            return null;
+          });
 
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockStreamHandler(
-              androidEventChannel,
-              MockStreamHandler.inline(
-                onListen:
-                    (Object? arguments, MockStreamHandlerEventSink events) {
-                      eventSink = events;
-                    },
-              ),
-            );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+            androidEventChannel,
+            MockStreamHandler.inline(
+              onListen: (Object? arguments, MockStreamHandlerEventSink events) {
+                eventSink = events;
+              },
+            ),
+          );
 
-        final adapter = AndroidMotionDetectorAdapter(
-          methodChannel: androidMethodChannel,
-          eventChannel: androidEventChannel,
-          isAndroidOverride: true,
-        );
+      final adapter = AndroidMotionDetectorAdapter(
+        methodChannel: androidMethodChannel,
+        eventChannel: androidEventChannel,
+        isAndroidOverride: true,
+      );
 
-        final cap = await adapter.checkCapability();
-        expect(cap.status, CapabilityStatus.ready);
-        expect(cap.canArm, isTrue);
-        expect(cap.hardwareDeviceName, 'Bosch BMI260 Linear Accelerometer');
+      final cap = await adapter.checkCapability();
+      expect(cap.status, CapabilityStatus.ready);
+      expect(cap.canArm, isTrue);
+      expect(cap.hardwareDeviceName, 'Bosch BMI260 Linear Accelerometer');
 
-        final received = <DetectorEvent>[];
-        final sub = adapter.events.listen(received.add);
+      final received = <DetectorEvent>[];
+      final sub = adapter.events.listen(received.add);
 
-        final startRes = await adapter.startMonitoring(
-          const MonitorConfig(sessionId: 'android_sess_1', sensitivity: 0.7),
-        );
-        expect(startRes.started, isTrue);
+      final startRes = await adapter.startMonitoring(
+        const MonitorConfig(sessionId: 'android_sess_1', sensitivity: 0.7),
+      );
+      expect(startRes.started, isTrue);
 
-        eventSink?.success(<String, Object?>{
-          'sessionId': 'android_sess_1',
-          'eventType': 'motionTriggered',
-          'summary': 'Android motion trigger (score 0.290 >= threshold 0.088)',
-          'motionScore': 0.29,
-          'threshold': 0.088,
-          'consecutiveFrames': 3,
-          'timestampMs': 1730000001000,
-        });
+      eventSink?.success(<String, Object?>{
+        'sessionId': 'android_sess_1',
+        'eventType': 'motionTriggered',
+        'summary': 'Android motion trigger (score 0.290 >= threshold 0.088)',
+        'motionScore': 0.29,
+        'threshold': 0.088,
+        'consecutiveFrames': 3,
+        'timestampMs': 1730000001000,
+      });
 
-        await Future<void>.delayed(Duration.zero);
-        expect(received, hasLength(1));
-        expect(received.first.eventType, DetectorEventType.motionTriggered);
-        expect(received.first.detectorType, DetectorType.androidMotionSensors);
+      await Future<void>.delayed(Duration.zero);
+      expect(received, hasLength(1));
+      expect(received.first.eventType, DetectorEventType.motionTriggered);
+      expect(received.first.detectorType, DetectorType.androidMotionSensors);
 
-        await sub.cancel();
-        await adapter.dispose();
-      },
-    );
+      await sub.cancel();
+      await adapter.dispose();
+    });
 
-    test(
-      'IosCoreMotionDetectorAdapter reports ready and handles foreground lifecycle pause/resume',
-      () async {
-        MockStreamHandlerEventSink? eventSink;
+    test('IosCoreMotionDetectorAdapter reports ready and handles foreground lifecycle pause/resume', () async {
+      MockStreamHandlerEventSink? eventSink;
 
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(iosMethodChannel, (
-              MethodCall call,
-            ) async {
-              switch (call.method) {
-                case 'checkCapability':
-                  return <String, Object?>{
-                    'hasMotionHardware': true,
-                    'deviceName': 'Apple Core Motion IMU',
-                    'permissionStatus': 'granted',
-                    'detail': 'CMMotionManager ready.',
-                  };
-                case 'startMonitoring':
-                  return <String, Object?>{
-                    'started': true,
-                    'message': 'Foreground Core Motion monitoring active.',
-                  };
-                case 'stopMonitoring':
-                  return null;
-              }
-              return null;
-            });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(iosMethodChannel, (MethodCall call) async {
+            switch (call.method) {
+              case 'checkCapability':
+                return <String, Object?>{
+                  'hasMotionHardware': true,
+                  'deviceName': 'Apple Core Motion IMU',
+                  'permissionStatus': 'granted',
+                  'detail': 'CMMotionManager ready.',
+                };
+              case 'startMonitoring':
+                return <String, Object?>{
+                  'started': true,
+                  'message': 'Foreground Core Motion monitoring active.',
+                };
+              case 'stopMonitoring':
+                return null;
+            }
+            return null;
+          });
 
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockStreamHandler(
-              iosEventChannel,
-              MockStreamHandler.inline(
-                onListen:
-                    (Object? arguments, MockStreamHandlerEventSink events) {
-                      eventSink = events;
-                    },
-              ),
-            );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+            iosEventChannel,
+            MockStreamHandler.inline(
+              onListen: (Object? arguments, MockStreamHandlerEventSink events) {
+                eventSink = events;
+              },
+            ),
+          );
 
-        final adapter = IosCoreMotionDetectorAdapter(
-          methodChannel: iosMethodChannel,
-          eventChannel: iosEventChannel,
-          isIOSOverride: true,
-        );
+      final adapter = IosCoreMotionDetectorAdapter(
+        methodChannel: iosMethodChannel,
+        eventChannel: iosEventChannel,
+        isIOSOverride: true,
+      );
 
-        final cap = await adapter.checkCapability();
-        expect(cap.status, CapabilityStatus.ready);
-        expect(cap.canArm, isTrue);
+      final cap = await adapter.checkCapability();
+      expect(cap.status, CapabilityStatus.ready);
+      expect(cap.canArm, isTrue);
 
-        final received = <DetectorEvent>[];
-        final sub = adapter.events.listen(received.add);
+      final received = <DetectorEvent>[];
+      final sub = adapter.events.listen(received.add);
 
-        final startRes = await adapter.startMonitoring(
-          const MonitorConfig(sessionId: 'ios_sess_1', sensitivity: 0.6),
-        );
-        expect(startRes.started, isTrue);
+      final startRes = await adapter.startMonitoring(
+        const MonitorConfig(sessionId: 'ios_sess_1', sensitivity: 0.6),
+      );
+      expect(startRes.started, isTrue);
 
-        eventSink?.success(<String, Object?>{
-          'sessionId': 'ios_sess_1',
-          'eventType': 'lifecyclePaused',
-          'summary': 'iOS app left foreground; Core Motion paused.',
-          'timestampMs': 1730000002000,
-        });
-        eventSink?.success(<String, Object?>{
-          'sessionId': 'ios_sess_1',
-          'eventType': 'lifecycleResumed',
-          'summary': 'iOS app returned to foreground; Core Motion resumed.',
-          'timestampMs': 1730000003000,
-        });
+      eventSink?.success(<String, Object?>{
+        'sessionId': 'ios_sess_1',
+        'eventType': 'lifecyclePaused',
+        'summary': 'iOS app left foreground; Core Motion paused.',
+        'timestampMs': 1730000002000,
+      });
+      eventSink?.success(<String, Object?>{
+        'sessionId': 'ios_sess_1',
+        'eventType': 'lifecycleResumed',
+        'summary': 'iOS app returned to foreground; Core Motion resumed.',
+        'timestampMs': 1730000003000,
+      });
 
-        await Future<void>.delayed(Duration.zero);
-        expect(received, hasLength(2));
-        expect(received[0].eventType, DetectorEventType.lifecyclePaused);
-        expect(received[1].eventType, DetectorEventType.lifecycleResumed);
+      await Future<void>.delayed(Duration.zero);
+      expect(received, hasLength(2));
+      expect(received[0].eventType, DetectorEventType.lifecyclePaused);
+      expect(received[1].eventType, DetectorEventType.lifecycleResumed);
 
-        await sub.cancel();
-        await adapter.dispose();
-      },
-    );
+      await sub.cancel();
+      await adapter.dispose();
+    });
 
-    test(
-      'AndroidMotionDetectorAdapter bridges foreground motion sensors from a paired Android companion on non-Android hosts',
-      () async {
-        final notificationService = ConfigurableRemoteNotificationService(
-          persistToDisk: false,
-        );
-        final adapter = AndroidMotionDetectorAdapter(
-          isAndroidOverride: false,
-          notificationAdapter: notificationService,
-        );
+    test('AndroidMotionDetectorAdapter bridges foreground motion sensors from a paired Android companion on non-Android hosts', () async {
+      final notificationService = ConfigurableRemoteNotificationService(
+        persistToDisk: false,
+      );
+      final adapter = AndroidMotionDetectorAdapter(
+        isAndroidOverride: false,
+        notificationAdapter: notificationService,
+      );
 
-        // Without a paired Android device, capability is unsupported
-        var cap = await adapter.checkCapability();
-        expect(cap.status, CapabilityStatus.unsupported);
+      // Without a paired Android device, capability is unsupported
+      var cap = await adapter.checkCapability();
+      expect(cap.status, CapabilityStatus.unsupported);
 
-        // Pair an Android device
-        final paired = await notificationService.pairDevice(
-          displayName: 'Aidan\'s Pixel 9',
-          platform: 'Android (FCM)',
-          pairingCode: 'WAT-777',
-        );
+      // Pair an Android device
+      final paired = await notificationService.pairDevice(
+        displayName: 'Aidan\'s Pixel 9',
+        platform: 'Android (FCM)',
+        pairingCode: 'WAT-777',
+      );
 
-        // Now AndroidMotionDetectorAdapter is ready via Paired Android Companion Sensor Bridging
-        cap = await adapter.checkCapability();
-        expect(cap.status, CapabilityStatus.ready);
-        expect(cap.canArm, isTrue);
-        expect(
-          cap.hardwareDeviceName,
-          contains('Aidan\'s Pixel 9 (Android Foreground Service)'),
-        );
+      // Now AndroidMotionDetectorAdapter is ready via Paired Android Companion Sensor Bridging
+      cap = await adapter.checkCapability();
+      expect(cap.status, CapabilityStatus.ready);
+      expect(cap.canArm, isTrue);
+      expect(
+        cap.hardwareDeviceName,
+        contains('Aidan\'s Pixel 9 (Android Foreground Service)'),
+      );
 
-        // Pause sensor forwarding and verify permissionRequired state + requestPermission re-enable
-        await notificationService.sendDeviceCommand(
-          deviceId: paired.deviceId,
-          command: PairedDeviceCommandType.toggleRemoteSensorForwarding,
-        );
-        cap = await adapter.checkCapability();
-        expect(cap.status, CapabilityStatus.permissionRequired);
+      // Pause sensor forwarding and verify permissionRequired state + requestPermission re-enable
+      await notificationService.sendDeviceCommand(
+        deviceId: paired.deviceId,
+        command: PairedDeviceCommandType.toggleRemoteSensorForwarding,
+      );
+      cap = await adapter.checkCapability();
+      expect(cap.status, CapabilityStatus.permissionRequired);
 
-        final perm = await adapter.requestPermission();
-        expect(perm, PermissionStatus.granted);
-        cap = await adapter.checkCapability();
-        expect(cap.status, CapabilityStatus.ready);
+      final perm = await adapter.requestPermission();
+      expect(perm, PermissionStatus.granted);
+      cap = await adapter.checkCapability();
+      expect(cap.status, CapabilityStatus.ready);
 
-        // Start monitoring and trigger companion motion tamper
-        final received = <DetectorEvent>[];
-        final sub = adapter.events.listen(received.add);
+      // Start monitoring and trigger companion motion tamper
+      final received = <DetectorEvent>[];
+      final sub = adapter.events.listen(received.add);
 
-        final startRes = await adapter.startMonitoring(
-          const MonitorConfig(
-            sessionId: 'bridged_android_sess_1',
-            sensitivity: 0.7,
-          ),
-        );
-        expect(startRes.started, isTrue);
+      final startRes = await adapter.startMonitoring(
+        const MonitorConfig(
+          sessionId: 'bridged_android_sess_1',
+          sensitivity: 0.7,
+        ),
+      );
+      expect(startRes.started, isTrue);
 
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-        expect(
-          received.any(
-            (e) => e.eventType == DetectorEventType.calibrationCompleted,
-          ),
-          isTrue,
-        );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(
+        received.any(
+          (e) => e.eventType == DetectorEventType.calibrationCompleted,
+        ),
+        isTrue,
+      );
 
-        await notificationService.sendDeviceCommand(
-          deviceId: paired.deviceId,
-          command: PairedDeviceCommandType.simulateCompanionMotionTrigger,
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 30));
+      await notificationService.sendDeviceCommand(
+        deviceId: paired.deviceId,
+        command: PairedDeviceCommandType.simulateCompanionMotionTrigger,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
 
-        expect(
-          received.any((e) => e.eventType == DetectorEventType.motionTriggered),
-          isTrue,
-        );
+      expect(
+        received.any((e) => e.eventType == DetectorEventType.motionTriggered),
+        isTrue,
+      );
 
-        await sub.cancel();
-        await adapter.dispose();
-      },
-    );
+      await sub.cancel();
+      await adapter.dispose();
+    });
   });
 
   group('Dynamic Permission Button Label & Icon', () {
@@ -376,113 +363,110 @@ void main() {
       await relayServer.stop();
     });
 
-    test(
-      'ConfigurableRemoteNotificationService pairs device, dispatches incident over HTTP relay, and enforces privacy boundary',
-      () async {
-        final notificationService = ConfigurableRemoteNotificationService(
-          persistToDisk: false,
-          initialRelayEndpointUrl: 'http://127.0.0.1:$relayPort',
-        );
+    test('ConfigurableRemoteNotificationService pairs device, dispatches incident over HTTP relay, and enforces privacy boundary', () async {
+      final notificationService = ConfigurableRemoteNotificationService(
+        persistToDisk: false,
+        initialRelayEndpointUrl: 'http://127.0.0.1:$relayPort',
+      );
 
-        final fakeDetector = FakeMotionDetector(
-          type: DetectorType.windowsCameraSceneMotion,
-        );
-        final fakeAudio = FakeAudioAlarmAdapter();
-        final pinStorage = InMemorySecurePinStorage();
-        final pinService = PinSecurityService(
-          storage: pinStorage,
-          pbkdf2Iterations: 500,
-        );
-        await pinService.setupInitialPin(pin: '654321', confirmPin: '654321');
+      final fakeDetector = FakeMotionDetector(
+        type: DetectorType.windowsCameraSceneMotion,
+      );
+      final fakeAudio = FakeAudioAlarmAdapter();
+      final pinStorage = InMemorySecurePinStorage();
+      final pinService = PinSecurityService(
+        storage: pinStorage,
+        pbkdf2Iterations: 500,
+      );
+      await pinService.setupInitialPin(pin: '654321', confirmPin: '654321');
 
-        final controller = AlarmController(
-          detectors: <DetectorType, MotionDetectorAdapter>{
-            DetectorType.windowsCameraSceneMotion: fakeDetector,
-          },
-          audioAdapter: fakeAudio,
-          pinService: pinService,
-          incidentStorage: InMemoryIncidentStorage(),
-          settingsStorage: InMemorySettingsStorage(
-            const ProtectionSettings(
-              selectedDetector: DetectorType.windowsCameraSceneMotion,
-              armingCountdownSeconds: 1,
-              onboardingCompleted: true,
-            ),
+      final controller = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.windowsCameraSceneMotion: fakeDetector,
+        },
+        audioAdapter: fakeAudio,
+        pinService: pinService,
+        incidentStorage: InMemoryIncidentStorage(),
+        settingsStorage: InMemorySettingsStorage(
+          const ProtectionSettings(
+            selectedDetector: DetectorType.windowsCameraSceneMotion,
+            armingCountdownSeconds: 1,
+            onboardingCompleted: true,
           ),
-          notificationAdapter: notificationService,
-        );
+        ),
+        notificationAdapter: notificationService,
+      );
 
-        await controller.initialize();
-        expect(
-          controller.notificationStatus.capabilityStatus,
-          CapabilityStatus.degraded,
-        );
+      await controller.initialize();
+      expect(
+        controller.notificationStatus.capabilityStatus,
+        CapabilityStatus.degraded,
+      );
 
-        // Pair a companion phone
-        final paired = await controller.pairCompanionDevice(
-          displayName: 'Aidan\'s S24',
-          platform: 'Android (FCM)',
-          pairingCode: 'WAT-999',
-        );
-        expect(paired, isNotNull);
-        expect(controller.pairedDevices, hasLength(1));
-        expect(
-          controller.notificationStatus.capabilityStatus,
-          CapabilityStatus.ready,
-        );
-        expect(relayServer.pairedDevices, hasLength(1));
+      // Pair a companion phone
+      final paired = await controller.pairCompanionDevice(
+        displayName: 'Aidan\'s S24',
+        platform: 'Android (FCM)',
+        pairingCode: 'WAT-999',
+      );
+      expect(paired, isNotNull);
+      expect(controller.pairedDevices, hasLength(1));
+      expect(
+        controller.notificationStatus.capabilityStatus,
+        CapabilityStatus.ready,
+      );
+      expect(relayServer.pairedDevices, hasLength(1));
 
-        // Arm and trigger a real alarm
-        await controller.startArming();
-        final sessionId = controller.activeSessionId!;
-        await controller.handleCountdownTickForSession(sessionId);
-        expect(controller.state, ProtectionState.armed);
+      // Arm and trigger a real alarm
+      await controller.startArming();
+      final sessionId = controller.activeSessionId!;
+      await controller.handleCountdownTickForSession(sessionId);
+      expect(controller.state, ProtectionState.armed);
 
-        fakeDetector.emit(
-          DetectorEvent(
-            eventId: 'evt_trigger_1',
-            sessionId: sessionId,
-            detectorType: DetectorType.windowsCameraSceneMotion,
-            eventType: DetectorEventType.motionTriggered,
-            timestamp: DateTime.utc(2026, 11, 13, 4, 0, 0),
-            summary: 'Sustained global camera ego-motion detected',
-            motionScore: 0.34,
-            threshold: 0.095,
-            consecutiveAboveThresholdFrames: 3,
-          ),
-        );
+      fakeDetector.emit(
+        DetectorEvent(
+          eventId: 'evt_trigger_1',
+          sessionId: sessionId,
+          detectorType: DetectorType.windowsCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: DateTime.utc(2026, 11, 13, 4, 0, 0),
+          summary: 'Sustained global camera ego-motion detected',
+          motionScore: 0.34,
+          threshold: 0.095,
+          consecutiveAboveThresholdFrames: 3,
+        ),
+      );
 
-        await Future<void>.delayed(const Duration(milliseconds: 120));
+      await Future<void>.delayed(const Duration(milliseconds: 120));
 
-        expect(controller.state, ProtectionState.alarming);
-        expect(relayServer.reportedIncidents, hasLength(1));
-        expect(controller.activeIncident?.remoteNotificationAttempted, isTrue);
-        expect(
-          controller.activeIncident?.remoteNotificationStatus,
-          contains('Delivered via HTTP relay to 1 paired device(s)'),
-        );
+      expect(controller.state, ProtectionState.alarming);
+      expect(relayServer.reportedIncidents, hasLength(1));
+      expect(controller.activeIncident?.remoteNotificationAttempted, isTrue);
+      expect(
+        controller.activeIncident?.remoteNotificationStatus,
+        contains('Delivered via HTTP relay to 1 paired device(s)'),
+      );
 
-        // Verify relay server rejects payloads violating privacy boundary (camera frames or PINs)
-        final client = HttpClient();
-        final req = await client.postUrl(
-          Uri.parse('http://127.0.0.1:$relayPort/v1/incidents:report'),
-        );
-        req.headers.contentType = ContentType.json;
-        req.write(
-          jsonEncode(<String, Object?>{
-            'incidentId': 'bad_inc_1',
-            'frameBytes': 'base64_camera_frame_leak',
-          }),
-        );
-        final resp = await req.close();
-        expect(resp.statusCode, HttpStatus.badRequest);
-        await resp.drain<void>();
-        client.close(force: true);
+      // Verify relay server rejects payloads violating privacy boundary (camera frames or PINs)
+      final client = HttpClient();
+      final req = await client.postUrl(
+        Uri.parse('http://127.0.0.1:$relayPort/v1/incidents:report'),
+      );
+      req.headers.contentType = ContentType.json;
+      req.write(
+        jsonEncode(<String, Object?>{
+          'incidentId': 'bad_inc_1',
+          'frameBytes': 'base64_camera_frame_leak',
+        }),
+      );
+      final resp = await req.close();
+      expect(resp.statusCode, HttpStatus.badRequest);
+      await resp.drain<void>();
+      client.close(force: true);
 
-        controller.dispose();
-        await fakeDetector.dispose();
-      },
-    );
+      controller.dispose();
+      await fakeDetector.dispose();
+    });
 
     testWidgets(
       'Home Phone connection row shows Pair your phone before pairing, and Send test alert + Disconnect phone after pairing',
@@ -599,278 +583,264 @@ void main() {
       },
     );
 
-    test(
-      'End-to-end short-lived code/QR pairing delivers alerts only to paired phone, blocks unpaired/other sessions, deduplicates reconnects, and rejects credentials',
-      () async {
-        final endpoint = 'http://127.0.0.1:$relayPort';
+    test('End-to-end short-lived code/QR pairing delivers alerts only to paired phone, blocks unpaired/other sessions, deduplicates reconnects, and rejects credentials', () async {
+      final endpoint = 'http://127.0.0.1:$relayPort';
 
-        // 1. Protected Laptop A setup
-        final laptopANotifications = ConfigurableRemoteNotificationService(
-          persistToDisk: false,
-          initialRelayEndpointUrl: endpoint,
-        );
-        final laptopADetector = FakeMotionDetector(
-          type: DetectorType.macosCameraSceneMotion,
-        );
-        final laptopAPinService = PinSecurityService(
-          storage: InMemorySecurePinStorage(),
-          pbkdf2Iterations: 500,
-        );
-        await laptopAPinService.setupInitialPin(
-          pin: '246810',
-          confirmPin: '246810',
-        );
-        final laptopAController = AlarmController(
-          detectors: <DetectorType, MotionDetectorAdapter>{
-            DetectorType.macosCameraSceneMotion: laptopADetector,
-          },
-          audioAdapter: FakeAudioAlarmAdapter(),
-          pinService: laptopAPinService,
-          incidentStorage: InMemoryIncidentStorage(),
-          settingsStorage: InMemorySettingsStorage(
-            const ProtectionSettings(
-              selectedDetector: DetectorType.macosCameraSceneMotion,
-              armingCountdownSeconds: 1,
-              onboardingCompleted: true,
-            ),
+      // 1. Protected Laptop A setup
+      final laptopANotifications = ConfigurableRemoteNotificationService(
+        persistToDisk: false,
+        initialRelayEndpointUrl: endpoint,
+      );
+      final laptopADetector = FakeMotionDetector(
+        type: DetectorType.macosCameraSceneMotion,
+      );
+      final laptopAPinService = PinSecurityService(
+        storage: InMemorySecurePinStorage(),
+        pbkdf2Iterations: 500,
+      );
+      await laptopAPinService.setupInitialPin(
+        pin: '246810',
+        confirmPin: '246810',
+      );
+      final laptopAController = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.macosCameraSceneMotion: laptopADetector,
+        },
+        audioAdapter: FakeAudioAlarmAdapter(),
+        pinService: laptopAPinService,
+        incidentStorage: InMemoryIncidentStorage(),
+        settingsStorage: InMemorySettingsStorage(
+          const ProtectionSettings(
+            selectedDetector: DetectorType.macosCameraSceneMotion,
+            armingCountdownSeconds: 1,
+            onboardingCompleted: true,
           ),
-          notificationAdapter: laptopANotifications,
-        );
-        await laptopAController.initialize();
+        ),
+        notificationAdapter: laptopANotifications,
+      );
+      await laptopAController.initialize();
 
-        // Laptop A generates a short-lived single-use pairing code + QR link
-        final inviteA = await laptopAController.initiateHostPairing(
-          hostDisplayName: 'Jonathan\'s MacBook Pro',
-        );
-        expect(inviteA.pairingCode, isNotEmpty);
-        expect(inviteA.qrPayload, contains('/pair?code='));
-        expect(laptopAController.pairedDevices, isEmpty);
+      // Laptop A generates a short-lived single-use pairing code + QR link
+      final inviteA = await laptopAController.initiateHostPairing(
+        hostDisplayName: 'Jonathan\'s MacBook Pro',
+      );
+      expect(inviteA.pairingCode, isNotEmpty);
+      expect(inviteA.qrPayload, contains('/pair?code='));
+      expect(laptopAController.pairedDevices, isEmpty);
 
-        // 2. Companion Phone A pairs using the watsafe://pair QR payload
-        final phoneANotifications = ConfigurableRemoteNotificationService(
-          persistToDisk: false,
-        );
-        final phoneADetector = FakeMotionDetector(
-          type: DetectorType.androidMotionSensors,
-        );
-        final phoneAPinService = PinSecurityService(
-          storage: InMemorySecurePinStorage(),
-          pbkdf2Iterations: 500,
-        );
-        await phoneAPinService.setupInitialPin(
-          pin: '135791',
-          confirmPin: '135791',
-        );
-        final phoneAController = AlarmController(
-          detectors: <DetectorType, MotionDetectorAdapter>{
-            DetectorType.androidMotionSensors: phoneADetector,
-          },
-          audioAdapter: FakeAudioAlarmAdapter(),
-          pinService: phoneAPinService,
-          incidentStorage: InMemoryIncidentStorage(),
-          settingsStorage: InMemorySettingsStorage(
-            const ProtectionSettings(
-              selectedDetector: DetectorType.androidMotionSensors,
-              onboardingCompleted: true,
-            ),
+      // 2. Companion Phone A pairs using the watsafe://pair QR payload
+      final phoneANotifications = ConfigurableRemoteNotificationService(
+        persistToDisk: false,
+      );
+      final phoneADetector = FakeMotionDetector(
+        type: DetectorType.androidMotionSensors,
+      );
+      final phoneAPinService = PinSecurityService(
+        storage: InMemorySecurePinStorage(),
+        pbkdf2Iterations: 500,
+      );
+      await phoneAPinService.setupInitialPin(
+        pin: '135791',
+        confirmPin: '135791',
+      );
+      final phoneAController = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.androidMotionSensors: phoneADetector,
+        },
+        audioAdapter: FakeAudioAlarmAdapter(),
+        pinService: phoneAPinService,
+        incidentStorage: InMemoryIncidentStorage(),
+        settingsStorage: InMemorySettingsStorage(
+          const ProtectionSettings(
+            selectedDetector: DetectorType.androidMotionSensors,
+            onboardingCompleted: true,
           ),
-          notificationAdapter: phoneANotifications,
-        );
-        await phoneAController.initialize();
+        ),
+        notificationAdapter: phoneANotifications,
+      );
+      await phoneAController.initialize();
 
-        final sessionStateA = await phoneAController.pairAsCompanionPhone(
-          pairingCodeOrPayload: inviteA.qrPayload,
-          displayName: 'Chuan\'s Pixel 9',
-          platform: 'Android (FCM)',
-        );
-        expect(sessionStateA.isConnected, isTrue);
-        expect(sessionStateA.hostDisplayName, 'Jonathan\'s MacBook Pro');
+      final sessionStateA = await phoneAController.pairAsCompanionPhone(
+        pairingCodeOrPayload: inviteA.qrPayload,
+        displayName: 'Chuan\'s Pixel 9',
+        platform: 'Android (FCM)',
+      );
+      expect(sessionStateA.isConnected, isTrue);
+      expect(sessionStateA.hostDisplayName, 'Jonathan\'s MacBook Pro');
 
-        // Reusing the single-use pairing code from a second client must fail
-        final roguePhone = ConfigurableRemoteNotificationService(
-          persistToDisk: false,
-          initialRelayEndpointUrl: endpoint,
-        );
-        await expectLater(
-          roguePhone.pairAsCompanionPhone(
-            pairingCodeOrPayload: inviteA.pairingCode,
-            displayName: 'Intruder Phone',
-            platform: 'Android',
-          ),
-          throwsStateError,
-        );
+      // Reusing the single-use pairing code from a second client must fail
+      final roguePhone = ConfigurableRemoteNotificationService(
+        persistToDisk: false,
+        initialRelayEndpointUrl: endpoint,
+      );
+      await expectLater(
+        roguePhone.pairAsCompanionPhone(
+          pairingCodeOrPayload: inviteA.pairingCode,
+          displayName: 'Intruder Phone',
+          platform: 'Android',
+        ),
+        throwsStateError,
+      );
 
-        // Laptop A syncs and shows Phone A is connected
-        final syncedDevices = await laptopAController
-            .syncPairedDevicesFromRelay();
-        expect(syncedDevices, hasLength(1));
-        expect(syncedDevices.first.displayName, 'Chuan\'s Pixel 9');
-        expect(syncedDevices.first.connected, isTrue);
-        expect(
-          laptopAController.notificationStatus.capabilityStatus,
-          CapabilityStatus.ready,
-        );
-        expect(
-          laptopAController.notificationStatus.summary,
-          contains('Connected (1 paired device)'),
-        );
+      // Laptop A syncs and shows Phone A is connected
+      final syncedDevices = await laptopAController
+          .syncPairedDevicesFromRelay();
+      expect(syncedDevices, hasLength(1));
+      expect(syncedDevices.first.displayName, 'Chuan\'s Pixel 9');
+      expect(syncedDevices.first.connected, isTrue);
+      expect(
+        laptopAController.notificationStatus.capabilityStatus,
+        CapabilityStatus.ready,
+      );
+      expect(
+        laptopAController.notificationStatus.summary,
+        contains('Connected (1 paired device)'),
+      );
 
-        // 3. Separate Session B (different laptop + phone) on the same relay
-        final laptopBNotifications = ConfigurableRemoteNotificationService(
-          persistToDisk: false,
-          initialRelayEndpointUrl: endpoint,
-        );
-        final inviteB = await laptopBNotifications.initiateHostPairing(
-          hostDisplayName: 'Other Student Laptop',
-        );
-        final phoneBNotifications = ConfigurableRemoteNotificationService(
-          persistToDisk: false,
-        );
-        await phoneBNotifications.pairAsCompanionPhone(
-          pairingCodeOrPayload: inviteB.qrPayload,
-          displayName: 'Phone B',
-          platform: 'iOS (APNs)',
-        );
-        expect(phoneBNotifications.companionSession.isConnected, isTrue);
+      // 3. Separate Session B (different laptop + phone) on the same relay
+      final laptopBNotifications = ConfigurableRemoteNotificationService(
+        persistToDisk: false,
+        initialRelayEndpointUrl: endpoint,
+      );
+      final inviteB = await laptopBNotifications.initiateHostPairing(
+        hostDisplayName: 'Other Student Laptop',
+      );
+      final phoneBNotifications = ConfigurableRemoteNotificationService(
+        persistToDisk: false,
+      );
+      await phoneBNotifications.pairAsCompanionPhone(
+        pairingCodeOrPayload: inviteB.qrPayload,
+        displayName: 'Phone B',
+        platform: 'iOS (APNs)',
+      );
+      expect(phoneBNotifications.companionSession.isConnected, isTrue);
 
-        // 4. Arm Laptop A and trigger a real motion alarm
-        await laptopAController.startArming();
-        final armSessionId = laptopAController.activeSessionId!;
-        await laptopAController.handleCountdownTickForSession(armSessionId);
-        expect(laptopAController.state, ProtectionState.armed);
+      // 4. Arm Laptop A and trigger a real motion alarm
+      await laptopAController.startArming();
+      final armSessionId = laptopAController.activeSessionId!;
+      await laptopAController.handleCountdownTickForSession(armSessionId);
+      expect(laptopAController.state, ProtectionState.armed);
 
-        laptopADetector.emit(
-          DetectorEvent(
-            eventId: 'evt_laptop_theft_1',
-            sessionId: armSessionId,
-            detectorType: DetectorType.macosCameraSceneMotion,
-            eventType: DetectorEventType.motionTriggered,
-            timestamp: DateTime.utc(2026, 11, 14, 18, 30, 0),
-            summary: 'Laptop lifted from desk (global optical flow 0.41)',
-            motionScore: 0.41,
-            threshold: 0.095,
-            consecutiveAboveThresholdFrames: 3,
-          ),
-        );
-        await Future<void>.delayed(const Duration(milliseconds: 120));
-        expect(laptopAController.state, ProtectionState.alarming);
+      laptopADetector.emit(
+        DetectorEvent(
+          eventId: 'evt_laptop_theft_1',
+          sessionId: armSessionId,
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: DateTime.utc(2026, 11, 14, 18, 30, 0),
+          summary: 'Laptop lifted from desk (global optical flow 0.41)',
+          motionScore: 0.41,
+          threshold: 0.095,
+          consecutiveAboveThresholdFrames: 3,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(laptopAController.state, ProtectionState.alarming);
 
-        // 5. Paired Phone A receives the alert and surfaces the remote banner
-        final alertsForPhoneA = await phoneAController
-            .pollCompanionAlertsOnce();
-        expect(alertsForPhoneA, hasLength(1));
-        expect(
-          alertsForPhoneA.first.incidentId,
-          laptopAController.activeIncident!.id,
-        );
-        expect(
-          alertsForPhoneA.first.hostDisplayName,
-          'Jonathan\'s MacBook Pro',
-        );
-        expect(
-          alertsForPhoneA.first.triggerSummary,
-          contains('Laptop lifted from desk'),
-        );
-        expect(
-          phoneAController.latestUnacknowledgedCompanionAlert?.incidentId,
-          laptopAController.activeIncident!.id,
-        );
+      // 5. Paired Phone A receives the alert and surfaces the remote banner
+      final alertsForPhoneA = await phoneAController.pollCompanionAlertsOnce();
+      expect(alertsForPhoneA, hasLength(1));
+      expect(
+        alertsForPhoneA.first.incidentId,
+        laptopAController.activeIncident!.id,
+      );
+      expect(alertsForPhoneA.first.hostDisplayName, 'Jonathan\'s MacBook Pro');
+      expect(
+        alertsForPhoneA.first.triggerSummary,
+        contains('Laptop lifted from desk'),
+      );
+      expect(
+        phoneAController.latestUnacknowledgedCompanionAlert?.incidentId,
+        laptopAController.activeIncident!.id,
+      );
 
-        // 6. Verify strict session isolation:
-        //    (a) Phone B (paired to Session B) receives ZERO alerts from Session A
-        final alertsForPhoneB = await phoneBNotifications
-            .pollCompanionAlertsOnce();
-        expect(alertsForPhoneB, isEmpty);
-        expect(phoneBNotifications.receivedCompanionAlerts, isEmpty);
+      // 6. Verify strict session isolation:
+      //    (a) Phone B (paired to Session B) receives ZERO alerts from Session A
+      final alertsForPhoneB = await phoneBNotifications
+          .pollCompanionAlertsOnce();
+      expect(alertsForPhoneB, isEmpty);
+      expect(phoneBNotifications.receivedCompanionAlerts, isEmpty);
 
-        //    (b) Unpaired HTTP client without valid companion token gets 401
-        final rawClient = HttpClient();
-        final unauthReq = await rawClient.getUrl(
-          Uri.parse('$endpoint/v1/companion/alerts?afterSeq=0'),
-        );
-        final unauthResp = await unauthReq.close();
-        expect(unauthResp.statusCode, HttpStatus.unauthorized);
-        await unauthResp.drain<void>();
+      //    (b) Unpaired HTTP client without valid companion token gets 401
+      final rawClient = HttpClient();
+      final unauthReq = await rawClient.getUrl(
+        Uri.parse('$endpoint/v1/companion/alerts?afterSeq=0'),
+      );
+      final unauthResp = await unauthReq.close();
+      expect(unauthResp.statusCode, HttpStatus.unauthorized);
+      await unauthResp.drain<void>();
 
-        // 7. Verify reconnect & retry deduplication:
-        //    Re-sending the same incident from Laptop A and replaying from seq=0 on Phone A
-        //    must NOT duplicate the alert.
-        await laptopANotifications.sendIncidentAlert(
-          laptopAController.activeIncident!,
-        );
-        final replayed = await phoneANotifications.pollCompanionAlertsOnce(
-          replayFromZero: true,
-        );
-        expect(replayed, isEmpty);
-        expect(phoneAController.receivedCompanionAlerts, hasLength(1));
+      // 7. Verify reconnect & retry deduplication:
+      //    Re-sending the same incident from Laptop A and replaying from seq=0 on Phone A
+      //    must NOT duplicate the alert.
+      await laptopANotifications.sendIncidentAlert(
+        laptopAController.activeIncident!,
+      );
+      final replayed = await phoneANotifications.pollCompanionAlertsOnce(
+        replayFromZero: true,
+      );
+      expect(replayed, isEmpty);
+      expect(phoneAController.receivedCompanionAlerts, hasLength(1));
 
-        // 8. Verify database credentials, PINs, and camera frames are blocked
-        for (final forbiddenPayload in <Map<String, Object?>>[
-          <String, Object?>{
-            'incidentId': 'leak_db_1',
-            'databaseUrl':
-                'postgres://avnadmin:secret@db.aivencloud.com/defaultdb',
-          },
-          <String, Object?>{
-            'incidentId': 'leak_conn_str',
-            'triggerSummary':
-                'postgresql://avnadmin:secret@db.aivencloud.com:25060/defaultdb',
-          },
-          <String, Object?>{'incidentId': 'leak_pin', 'pinHash': 'deadbeef'},
-        ]) {
-          final badReq = await rawClient.postUrl(
-            Uri.parse('$endpoint/v1/incidents:report'),
-          );
-          badReq.headers.contentType = ContentType.json;
-          badReq.write(jsonEncode(forbiddenPayload));
-          final badResp = await badReq.close();
-          expect(badResp.statusCode, HttpStatus.badRequest);
-          await badResp.drain<void>();
-        }
-
-        // 9. Unpairing Phone A revokes its companion token immediately
-        await laptopAController.unpairCompanionDevice(
-          syncedDevices.first.deviceId,
+      // 8. Verify database credentials, PINs, and camera frames are blocked
+      for (final forbiddenPayload in <Map<String, Object?>>[
+        <String, Object?>{
+          'incidentId': 'leak_db_1',
+          'databaseUrl':
+              'postgres://avnadmin:secret@db.aivencloud.com/defaultdb',
+        },
+        <String, Object?>{
+          'incidentId': 'leak_conn_str',
+          'triggerSummary':
+              'postgresql://avnadmin:secret@db.aivencloud.com:25060/defaultdb',
+        },
+        <String, Object?>{'incidentId': 'leak_pin', 'pinHash': 'deadbeef'},
+      ]) {
+        final badReq = await rawClient.postUrl(
+          Uri.parse('$endpoint/v1/incidents:report'),
         );
-        await phoneAController.pollCompanionAlertsOnce();
-        expect(phoneAController.companionSession.isConnected, isFalse);
+        badReq.headers.contentType = ContentType.json;
+        badReq.write(jsonEncode(forbiddenPayload));
+        final badResp = await badReq.close();
+        expect(badResp.statusCode, HttpStatus.badRequest);
+        await badResp.drain<void>();
+      }
 
-        rawClient.close(force: true);
-        roguePhone.dispose();
-        laptopBNotifications.dispose();
-        phoneBNotifications.dispose();
-        laptopAController.dispose();
-        phoneAController.dispose();
-        await laptopADetector.dispose();
-        await phoneADetector.dispose();
-      },
-    );
+      // 9. Unpairing Phone A revokes its companion token immediately
+      await laptopAController.unpairCompanionDevice(
+        syncedDevices.first.deviceId,
+      );
+      await phoneAController.pollCompanionAlertsOnce();
+      expect(phoneAController.companionSession.isConnected, isFalse);
 
-    test(
-      'PostgresRelayStore parses Aiven environment variables securely and redacts credentials',
-      () {
-        expect(
-          PostgresRelayStore.fromEnvironment(const <String, String>{}),
-          isNull,
-        );
+      rawClient.close(force: true);
+      roguePhone.dispose();
+      laptopBNotifications.dispose();
+      phoneBNotifications.dispose();
+      laptopAController.dispose();
+      phoneAController.dispose();
+      await laptopADetector.dispose();
+      await phoneADetector.dispose();
+    });
 
-        final store = PostgresRelayStore.fromEnvironment(const <String, String>{
-          'AIVEN_DATABASE_URL':
-              'postgres://avnadmin:SuperSecretPass123@pg-watsafe-test.aivencloud.com:25432/defaultdb?sslmode=require',
-          'WATSAFE_DB_TABLE_PREFIX': 'chuan_ci_',
-        });
-        expect(store, isNotNull);
-        expect(store!.backendName, 'aiven_postgres');
-        expect(
-          store.redactedDescription,
-          'postgres://avnadmin@pg-watsafe-test.aivencloud.com:25432/defaultdb',
-        );
-        expect(
-          store.redactedDescription,
-          isNot(contains('SuperSecretPass123')),
-        );
-      },
-    );
+    test('PostgresRelayStore parses Aiven environment variables securely and redacts credentials', () {
+      expect(
+        PostgresRelayStore.fromEnvironment(const <String, String>{}),
+        isNull,
+      );
+
+      final store = PostgresRelayStore.fromEnvironment(const <String, String>{
+        'AIVEN_DATABASE_URL': 'postgres://avnadmin:SuperSecretPass123@pg-watsafe-test.aivencloud.com:25432/defaultdb?sslmode=require',
+        'WATSAFE_DB_TABLE_PREFIX': 'chuan_ci_',
+      });
+      expect(store, isNotNull);
+      expect(store!.backendName, 'aiven_postgres');
+      expect(
+        store.redactedDescription,
+        'postgres://avnadmin@pg-watsafe-test.aivencloud.com:25432/defaultdb',
+      );
+      expect(store.redactedDescription, isNot(contains('SuperSecretPass123')));
+    });
 
     testWidgets(
       'Companion phone UI pairs via laptop short-lived code and displays REMOTE LAPTOP ALARM banner on trigger',
@@ -1009,7 +979,9 @@ void main() {
         );
 
         // Tap "View event" on the banner -> opens the exact event in Activity
-        await tester.tap(find.byKey(const Key('view_alert_in_activity_button')));
+        await tester.tap(
+          find.byKey(const Key('view_alert_in_activity_button')),
+        );
         await tester.pumpAndSettle();
         expect(
           find.byKey(const Key('activity_selected_event_card')),

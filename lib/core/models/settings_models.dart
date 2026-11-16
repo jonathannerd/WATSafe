@@ -13,6 +13,7 @@ class ProtectionSettings {
     this.onboardingCompleted = false,
     this.deviceDisplayName = '',
     this.shareLocationOnAlarm = true,
+    this.permanentRelayEndpointUrl = '',
   });
 
   final DetectorType selectedDetector;
@@ -35,6 +36,10 @@ class ProtectionSettings {
   /// Whether to share this device's location with the paired phone when an alarm triggers.
   final bool shareLocationOnAlarm;
 
+  /// User-configured permanent HTTPS relay/companion origin persisted across
+  /// normal desktop launches.
+  final String permanentRelayEndpointUrl;
+
   ProtectionSettings copyWith({
     DetectorType? selectedDetector,
     double? motionSensitivity,
@@ -43,6 +48,7 @@ class ProtectionSettings {
     bool? onboardingCompleted,
     String? deviceDisplayName,
     bool? shareLocationOnAlarm,
+    String? permanentRelayEndpointUrl,
   }) {
     return ProtectionSettings(
       selectedDetector: selectedDetector ?? this.selectedDetector,
@@ -56,6 +62,8 @@ class ProtectionSettings {
       onboardingCompleted: onboardingCompleted ?? this.onboardingCompleted,
       deviceDisplayName: deviceDisplayName ?? this.deviceDisplayName,
       shareLocationOnAlarm: shareLocationOnAlarm ?? this.shareLocationOnAlarm,
+      permanentRelayEndpointUrl:
+          permanentRelayEndpointUrl ?? this.permanentRelayEndpointUrl,
     );
   }
 
@@ -68,6 +76,8 @@ class ProtectionSettings {
       'onboardingCompleted': onboardingCompleted,
       'deviceDisplayName': deviceDisplayName,
       'shareLocationOnAlarm': shareLocationOnAlarm,
+      if (permanentRelayEndpointUrl.trim().isNotEmpty)
+        'permanentRelayEndpointUrl': permanentRelayEndpointUrl.trim(),
     };
   }
 
@@ -94,6 +104,8 @@ class ProtectionSettings {
       onboardingCompleted: json['onboardingCompleted'] as bool? ?? false,
       deviceDisplayName: json['deviceDisplayName'] as String? ?? '',
       shareLocationOnAlarm: json['shareLocationOnAlarm'] as bool? ?? true,
+      permanentRelayEndpointUrl:
+          (json['permanentRelayEndpointUrl'] as String? ?? '').trim(),
     );
   }
 }

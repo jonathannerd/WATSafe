@@ -2,17 +2,24 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../relay/relay_server.dart';
+import '../relay/web_push.dart';
 import 'relay_config.dart';
 
 /// Ensures desktop launches (`WATSafe.app` on macOS/Windows/Linux) always have
 /// a reachable relay service without requiring the user to open two terminals:
-/// - Prefers any reachable configured HTTPS service or active local HTTPS tunnel.
-/// - Starts an embedded in-process [WatSafeRelayServer] automatically when no
-///   external relay is running on loopback, handling occupied ports cleanly.
+/// - Prefers any configured permanent HTTPS service (persisting it across restarts
+///   and keeping it selected even during temporary offline blips).
+/// - Discovers any active local HTTPS tunnel registered with a local relay.
+/// - Starts a durable embedded [WatSafeRelayServer] (`FileRelayStore` / PostgreSQL)
+///   automatically when no external relay is running on loopback.
 class LocalRelaySupervisor {
-  LocalRelaySupervisor({this.forceEnableForTest = false});
+  LocalRelaySupervisor({
+    this.forceEnableForTest = false,
+    this.storageDirectory,
+  });
 
   final bool forceEnableForTest;
+  final String? storageDirectory;
   WatSafeRelayServer? _embeddedServer;
 
   bool get isRunningEmbeddedRelay => _embeddedServer != null;
@@ -41,12 +48,19 @@ class LocalRelaySupervisor {
       return currentEndpointUrl;
     }
 
-    final cleaned = currentEndpointUrl.trim().endsWith('/')
-        ? currentEndpointUrl.trim().substring(
-            0,
-            currentEndpointUrl.trim().length - 1,
-          )
-        : currentEndpointUrl.trim();
+    var candidateUrl = currentEndpointUrl.trim();
+    if (!forceEnableForTest &&
+        (candidateUrl.isEmpty ||
+            candidateUrl == RelayConfig.localDevelopmentRelayUrl)) {
+      final persistedPerm = RelayConfig.persistedPermanentRelayUrl;
+      if (persistedPerm != null && persistedPerm.isNotEmpty) {
+        candidateUrl = persistedPerm;
+      }
+    }
+
+    final cleaned = candidateUrl.endsWith('/')
+        ? candidateUrl.substring(0, candidateUrl.length - 1)
+        : candidateUrl;
     final parsed = Uri.tryParse(cleaned);
     final isLoopback =
         parsed == null ||
@@ -58,6 +72,9 @@ class LocalRelaySupervisor {
     if (!isLoopback) {
       final remoteHealth = await _probeHealth(cleaned);
       if (remoteHealth != null) {
+        if (!forceEnableForTest && RelayConfig.isPermanentHttpsUrl(cleaned)) {
+          await RelayConfig.savePermanentRelayUrl(cleaned);
+        }
         return cleaned;
       }
       // Keep permanent cloud HTTPS services intact across temporary offline blips;
@@ -74,6 +91,11 @@ class LocalRelaySupervisor {
     final localOrigin = 'http://127.0.0.1:$targetPort';
     final localHealth = await _probeHealth(localOrigin);
     if (localHealth != null) {
+      final permHttps = (localHealth['permanentHttpsOrigin'] as String?)
+          ?.trim();
+      if (permHttps != null && permHttps.startsWith('https://')) {
+        return permHttps;
+      }
       final publicHttps = (localHealth['publicHttpsOrigin'] as String?)?.trim();
       if (publicHttps != null && publicHttps.startsWith('https://')) {
         return publicHttps;
@@ -89,17 +111,38 @@ class LocalRelaySupervisor {
   }
 
   Future<String> _startEmbeddedRelay({required int preferredPort}) async {
-    final vapidFile = File(
-      '${Directory.systemTemp.path}/watsafe_embedded_vapid_keys.json',
-    );
-    final pushAdapter = EnvironmentPushProviderAdapter(
-      persistVapidKeysToDisk: true,
-      vapidKeyFile: vapidFile,
-    );
-    final server = WatSafeRelayServer(
-      store: InMemoryRelayStore(),
-      pushProvider: pushAdapter,
-    );
+    late final WatSafeRelayServer server;
+    if (storageDirectory != null && storageDirectory!.trim().isNotEmpty) {
+      final dir = storageDirectory!.trim();
+      final store = FileRelayStore(directory: Directory(dir));
+      final pushAdapter = EnvironmentPushProviderAdapter(
+        persistVapidKeysToDisk: true,
+        vapidKeyFile: File('$dir/vapid_keys.json'),
+      );
+      server = WatSafeRelayServer(store: store, pushProvider: pushAdapter);
+    } else if (forceEnableForTest) {
+      final vapidFile = File(
+        '${Directory.systemTemp.path}/watsafe_embedded_vapid_keys.json',
+      );
+      final pushAdapter = EnvironmentPushProviderAdapter(
+        persistVapidKeysToDisk: true,
+        vapidKeyFile: vapidFile,
+      );
+      server = WatSafeRelayServer(
+        store: InMemoryRelayStore(),
+        pushProvider: pushAdapter,
+      );
+    } else {
+      final pgStore = PostgresRelayStore.fromEnvironment();
+      final pushAdapter = EnvironmentPushProviderAdapter(
+        persistVapidKeysToDisk: true,
+        vapidKeyFile: VapidKeyPair.resolveDefaultVapidKeyFile(),
+      );
+      server = WatSafeRelayServer(
+        store: pgStore ?? FileRelayStore.fromEnvironment(),
+        pushProvider: pushAdapter,
+      );
+    }
 
     int boundPort;
     try {
