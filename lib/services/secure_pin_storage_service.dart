@@ -16,8 +16,10 @@ import 'local_storage_service.dart';
 /// falling back to restricted local storage when native channels are unavailable.
 class PlatformSecurePinStorage implements SecurePinStorageAdapter {
   PlatformSecurePinStorage({MethodChannel? channel, this._fallbackDirectory})
-    : _channel = channel ?? const MethodChannel('dev.watsafe/secure_storage');
+    : _hasExplicitChannel = channel != null,
+      _channel = channel ?? const MethodChannel('dev.watsafe/secure_storage');
 
+  final bool _hasExplicitChannel;
   final MethodChannel _channel;
   final Directory? _fallbackDirectory;
   String _backendUsed = _defaultBackendDescription();
@@ -40,7 +42,8 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
 
   bool get _supportsNativeSecureChannel =>
       !kIsWeb &&
-      (Platform.isMacOS ||
+      (_hasExplicitChannel ||
+          Platform.isMacOS ||
           Platform.isWindows ||
           Platform.isAndroid ||
           Platform.isIOS);
