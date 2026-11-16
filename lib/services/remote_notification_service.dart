@@ -1760,13 +1760,29 @@ class ConfigurableRemoteNotificationService
       if (_hostToken == null || _hostToken!.isEmpty) {
         await initiateHostPairing(hostDisplayName: incident.deviceName);
       }
-      final postResult = await sendRelayJsonRequest(
+      final isRemoteHttps = _relayEndpointUrl!.startsWith('https://');
+      final alertTimeout = isRemoteHttps && _httpTimeout.inSeconds < 25
+          ? const Duration(seconds: 25)
+          : _httpTimeout;
+      var postResult = await sendRelayJsonRequest(
         method: 'POST',
         url: '$_relayEndpointUrl/v1/incidents:report',
         headers: _hostToken != null ? _bearerHeaders(_hostToken!) : null,
         body: payload,
-        timeout: _httpTimeout,
+        timeout: alertTimeout,
       );
+      if (!postResult.isSuccess &&
+          isRemoteHttps &&
+          (postResult.statusCode == 0 || postResult.statusCode >= 500)) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+        postResult = await sendRelayJsonRequest(
+          method: 'POST',
+          url: '$_relayEndpointUrl/v1/incidents:report',
+          headers: _hostToken != null ? _bearerHeaders(_hostToken!) : null,
+          body: payload,
+          timeout: alertTimeout,
+        );
+      }
       _devices = _devices
           .map(
             (d) => d.connected

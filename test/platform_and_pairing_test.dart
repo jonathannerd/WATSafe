@@ -840,6 +840,19 @@ void main() {
         'postgres://avnadmin@pg-watsafe-test.aivencloud.com:25432/defaultdb',
       );
       expect(store.redactedDescription, isNot(contains('SuperSecretPass123')));
+
+      final neonStore = PostgresRelayStore.fromEnvironment(
+        const <String, String>{
+          'DATABASE_URL': 'postgresql://neondb_owner:NeonSecret999@ep-cool-darkness-123456-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require',
+        },
+      );
+      expect(neonStore, isNotNull);
+      expect(neonStore!.backendName, 'aiven_postgres');
+      expect(
+        neonStore.redactedDescription,
+        'postgres://neondb_owner@ep-cool-darkness-123456-pooler.us-east-2.aws.neon.tech:5432/neondb',
+      );
+      expect(neonStore.redactedDescription, isNot(contains('NeonSecret999')));
     });
 
     testWidgets(

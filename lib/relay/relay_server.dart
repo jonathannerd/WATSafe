@@ -1737,6 +1737,34 @@ class PostgresRelayStore implements RelayStore {
       }
     }
 
+    // Neon serverless PostgreSQL routes shared-IP connections by endpoint ID
+    // when the client TLS upgrade omits SNI (as package:postgres SecureSocket.secure
+    // does on resolved IP sockets). Inject `endpoint=<ep-id>;` automatically for
+    // `*.neon.tech` hosts while keeping `redactedSummary` credential-free.
+    final explicitEndpointOpt = (uri.queryParameters['options'] ?? '').trim();
+    if (password != null &&
+        password.isNotEmpty &&
+        !password.startsWith('endpoint=') &&
+        host.toLowerCase().endsWith('.neon.tech')) {
+      String? neonEndpointId;
+      final optMatch = RegExp(r'endpoint=([a-zA-Z0-9-]+)')
+          .firstMatch(explicitEndpointOpt);
+      if (optMatch != null) {
+        neonEndpointId = optMatch.group(1);
+      } else {
+        final firstLabel = host.split('.').first;
+        final stripped = firstLabel.endsWith('-pooler')
+            ? firstLabel.substring(0, firstLabel.length - '-pooler'.length)
+            : firstLabel;
+        if (stripped.startsWith('ep-')) {
+          neonEndpointId = stripped;
+        }
+      }
+      if (neonEndpointId != null && neonEndpointId.isNotEmpty) {
+        password = 'endpoint=$neonEndpointId;$password';
+      }
+    }
+
     final caCertPem = (env['AIVEN_CA_CERT'] ?? '').trim();
     final caCertPath = (env['AIVEN_CA_CERT_PATH'] ?? env['PGSSLROOTCERT'] ?? '')
         .trim();
@@ -1771,8 +1799,8 @@ class PostgresRelayStore implements RelayStore {
     );
     final settings = ConnectionSettings(
       applicationName: 'watsafe_relay',
-      connectTimeout: const Duration(seconds: 12),
-      queryTimeout: const Duration(seconds: 12),
+      connectTimeout: const Duration(seconds: 20),
+      queryTimeout: const Duration(seconds: 20),
       sslMode: sslMode,
       securityContext: securityContext,
     );
