@@ -93,14 +93,13 @@ void main() {
       await tester.tap(find.byKey(const Key('onboarding_complete_button')));
       await tester.pumpAndSettle();
 
-      // 2. Arm protection from Dashboard UI
-      expect(find.text('DISARMED'), findsWidgets);
+      // 2. Arm protection from Home UI
+      expect(find.text('Off'), findsWidgets);
       await tester.tap(find.byKey(const Key('arm_protection_button')));
       await tester.pump();
       expect(controller.state, ProtectionState.arming);
 
-      // Advance countdown 3s -> transitions to ARMED / PROTECTED
-      // (Avoid pumpAndSettle while Protected because WatSafeShieldGraphic runs a continuous wave animation.)
+      // Advance countdown 3s -> transitions to ARMED / Protected
       final armSessionId = controller.activeSessionId!;
       await tester.pump(const Duration(seconds: 3));
       while (controller.state == ProtectionState.arming &&
@@ -109,7 +108,7 @@ void main() {
       }
       await tester.pump(const Duration(milliseconds: 100));
       expect(controller.state, ProtectionState.armed);
-      expect(find.text('PROTECTED'), findsWidgets);
+      expect(find.text('Protected'), findsWidgets);
 
       // 3. Trigger motion -> transitions to ALARMING and plays looping siren
       final sessionId = controller.activeSessionId!;
@@ -130,15 +129,13 @@ void main() {
 
       // Verify visible ActiveAlarmScreen UI and native startLoopingAlarm call
       expect(controller.state, ProtectionState.alarming);
-      expect(find.text('ALARM ACTIVE — SIREN SOUNDING'), findsOneWidget);
+      expect(find.text('Alarm triggered'), findsWidgets);
       expect(find.text('Laptop lifted from desk'), findsOneWidget);
       expect(audioService.isPlaying, isTrue);
       expect(nativeAudioCalls, contains('startLoopingAlarm'));
       expect(nativeAudioCalls, isNot(contains('stopAlarm')));
 
       // 4. Submit an INCORRECT PIN in ActiveAlarmScreen -> alarm & siren stay active
-      // (Use Scrollable.ensureVisible + pump instead of tester.ensureVisible, because
-      // tester.ensureVisible calls pumpAndSettle while ActiveAlarmScreen runs its live wave animation.)
       final pinField = find.byKey(const Key('alarm_pin_input'));
       final disarmBtn = find.byKey(const Key('alarm_disarm_button'));
       await Scrollable.ensureVisible(tester.element(pinField));
@@ -156,7 +153,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(controller.state, ProtectionState.alarming);
-      expect(find.text('ALARM ACTIVE — SIREN SOUNDING'), findsOneWidget);
+      expect(find.text('Alarm triggered'), findsWidgets);
       expect(find.textContaining('Incorrect PIN'), findsWidgets);
       expect(audioService.isPlaying, isTrue);
       expect(nativeAudioCalls, isNot(contains('stopAlarm')));
@@ -182,8 +179,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(controller.state, ProtectionState.disarmed);
-      expect(find.text('ALARM ACTIVE — SIREN SOUNDING'), findsNothing);
-      expect(find.text('DISARMED'), findsWidgets);
+      expect(find.text('Alarm triggered'), findsNothing);
+      expect(find.text('Off'), findsWidgets);
       expect(audioService.isPlaying, isFalse);
       expect(nativeAudioCalls.where((m) => m == 'stopAlarm').length, equals(1));
 

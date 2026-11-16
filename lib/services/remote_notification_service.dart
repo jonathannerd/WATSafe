@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../core/contracts/platform_contracts.dart';
 import '../core/models/detector_models.dart';
 import '../core/models/incident_models.dart';
+import 'relay_config.dart';
 import 'relay_transport.dart';
 
 /// Default unconfigured implementation of [RemoteNotificationAdapter] used when
@@ -18,16 +19,13 @@ class UnconfiguredRemoteNotificationService
   Future<NotificationServiceStatus> getStatus() async {
     return const NotificationServiceStatus(
       capabilityStatus: CapabilityStatus.notConfigured,
-      summary: 'Not configured',
-      detail:
-          'Remote device pairing and APNs/FCM push notifications are not configured in this local milestone. '
-          'Server credentials remain strictly server-side once the backend service is deployed.',
+      summary: 'No phone paired',
+      detail: 'Pair your phone on Home to receive alerts when an alarm triggers.',
     );
   }
 
   @override
   Future<List<PairedDeviceSummary>> listPairedDevices() async {
-    // Never fabricate paired devices; only return real paired devices when configured.
     return const <PairedDeviceSummary>[];
   }
 
@@ -38,13 +36,13 @@ class UnconfiguredRemoteNotificationService
     return const NotificationDispatchResult(
       delivered: false,
       capabilityStatus: CapabilityStatus.notConfigured,
-      message: 'Not configured (local-only milestone)',
+      message: 'No phone paired',
     );
   }
 }
 
-/// Parsed representation of a short-lived pairing code or `watsafe://pair?...`
-/// QR link.
+/// Parsed representation of a short-lived pairing code, `https://.../pair?code=...`
+/// link, `watsafe://pair?...` link, or JSON payload.
 @immutable
 class ParsedPairingInput {
   const ParsedPairingInput({
@@ -59,16 +57,16 @@ class ParsedPairingInput {
 }
 
 /// Full-featured implementation of [MutableRemoteNotificationAdapter] supporting:
-/// - Laptop host session initiation with short-lived single-use pairing codes & QR payloads
-/// - Companion phone pairing, foreground live alert polling, and reconnect deduplication
-/// - Interactive remote commands (test push, remote locate ring, state sync,
-///   foreground sensor link, and companion motion triggers)
-/// - Authenticated session-scoped HTTP relay delivery (`POST /v1/incidents:report`)
+/// - Laptop host session initiation with scannable `/pair?code=...` QR URLs and short-lived single-use codes
+/// - Non-consuming code preview (`GET /v1/pairing/lookup`) for `"Connect to <Host>?"` confirmation
+/// - Companion phone pairing, notification status sync, foreground live alert polling, and reconnect deduplication
+/// - Asynchronous non-blocking incident location attachment (`POST /v1/incidents/location`)
+/// - Unified HTTP relay alert delivery (`POST /v1/incidents:report`) for both test alerts and real alarms
 /// - Local persistence (`watsafe_paired_devices.json`) without leaking credentials
 ///
 /// Security & Privacy invariants:
-/// - Never transmits camera frames, images, PINs/PIN hashes, or DB credentials.
-/// - Reports `CapabilityStatus.notConfigured` until a device is paired or a relay URL is configured.
+/// - Never transmits camera frames, images, PINs/PIN hashes, or DB/push credentials.
+/// - Precise coordinates are transmitted only over authenticated session requests.
 class ConfigurableRemoteNotificationService
     implements MutableRemoteNotificationAdapter {
   ConfigurableRemoteNotificationService({
@@ -116,6 +114,8 @@ class ConfigurableRemoteNotificationService
   String? _hostToken;
   PairingCodeInvitation? _activePairingInvitation;
   Timer? _hostSyncTimer;
+  Future<List<PairedDeviceSummary>>? _inFlightHostSync;
+  int _deviceMutationEpoch = 0;
 
   // Paired Companion Phone session state
   String? _companionToken;
@@ -145,20 +145,45 @@ class ConfigurableRemoteNotificationService
         : trimmed;
   }
 
-  /// Parses either a plain 6-character code (`K7M-4P9`), a `watsafe://pair?...`
-  /// QR URI, or a JSON QR object `{ "code": "...", "relay": "..." }`.
+  /// Parses a plain 6-character code (`K7M-4P9`), an `http(s)://.../pair?code=...`
+  /// QR URL, a `watsafe://pair?...` deep link, or a JSON QR object.
   static ParsedPairingInput parsePairingInput(String rawInput) {
     final trimmed = rawInput.trim();
     if (trimmed.isEmpty) {
       return const ParsedPairingInput(pairingCode: '');
     }
 
-    if (trimmed.toLowerCase().startsWith('watsafe://')) {
+    final lower = trimmed.toLowerCase();
+    if (lower.startsWith('watsafe://')) {
       final uri = Uri.tryParse(trimmed);
       if (uri != null) {
         return ParsedPairingInput(
           pairingCode: (uri.queryParameters['code'] ?? '').trim(),
           relayEndpointUrl: _normalizeUrl(uri.queryParameters['relay']),
+          pairingSessionId: uri.queryParameters['session']?.trim(),
+        );
+      }
+    }
+
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      final uri = Uri.tryParse(trimmed);
+      if (uri != null && uri.hasAuthority) {
+        final code = (uri.queryParameters['code'] ?? '').trim();
+        final explicitRelay = _normalizeUrl(uri.queryParameters['relay']);
+        var basePath = uri.path;
+        if (basePath.endsWith('/pair')) {
+          basePath = basePath.substring(0, basePath.length - 5);
+        } else if (basePath.endsWith('/companion')) {
+          basePath = basePath.substring(0, basePath.length - 10);
+        } else if (basePath == '/') {
+          basePath = '';
+        }
+        final derivedOrigin = _normalizeUrl(
+          '${uri.scheme}://${uri.authority}$basePath',
+        );
+        return ParsedPairingInput(
+          pairingCode: code,
+          relayEndpointUrl: explicitRelay ?? derivedOrigin,
           pairingSessionId: uri.queryParameters['session']?.trim(),
         );
       }
@@ -237,7 +262,10 @@ class ConfigurableRemoteNotificationService
       }
       final decoded = jsonDecode(raw) as Map<String, Object?>;
       final savedUrl = _normalizeUrl(decoded['relayEndpointUrl'] as String?);
-      if (savedUrl != null) {
+      if (savedUrl != null &&
+          (_relayEndpointUrl == null ||
+              _relayEndpointUrl!.isEmpty ||
+              !RelayConfig.hasExplicitCompileOrEnvOverride)) {
         _relayEndpointUrl = savedUrl;
       }
       _hostPairingSessionId = decoded['hostPairingSessionId'] as String?;
@@ -297,9 +325,20 @@ class ConfigurableRemoteNotificationService
           phoneDisplayName: cs['phoneDisplayName'] as String?,
           relayEndpointUrl: cs['relayEndpointUrl'] as String?,
           deliveryMode: cs['deliveryMode'] as String? ?? 'foreground_poll',
+          pushServerConfigured: cs['pushServerConfigured'] as bool? ?? false,
+          notificationsEnabled: cs['notificationsEnabled'] as bool? ?? false,
           statusMessage: cs['statusMessage'] as String?,
         );
         _startCompanionPollTimerIfNeeded();
+        if (enableBackgroundPolling) {
+          unawaited(pollCompanionAlertsOnce());
+        }
+      }
+      if (_hostToken != null && _hostToken!.isNotEmpty) {
+        _startHostSyncTimerIfNeeded();
+        if (enableBackgroundPolling) {
+          unawaited(syncPairedDevicesFromRelay());
+        }
       }
     } catch (_) {
       // Keep in-memory state if storage read fails
@@ -332,6 +371,8 @@ class ConfigurableRemoteNotificationService
           'phoneDisplayName': _companionSession.phoneDisplayName,
           'relayEndpointUrl': _companionSession.relayEndpointUrl,
           'deliveryMode': _companionSession.deliveryMode,
+          'pushServerConfigured': _companionSession.pushServerConfigured,
+          'notificationsEnabled': _companionSession.notificationsEnabled,
           'statusMessage': _companionSession.statusMessage,
         },
       };
@@ -351,23 +392,24 @@ class ConfigurableRemoteNotificationService
 
     final hasUrl = _relayEndpointUrl != null && _relayEndpointUrl!.isNotEmpty;
     if (_companionSession.isConnected && _devices.isEmpty) {
+      final hostLabel = _companionSession.hostDisplayName ?? 'your laptop';
+      final notifDetail = _companionSession.notificationsEnabled
+          ? (_companionSession.pushServerConfigured
+                ? 'Lock-screen and background notifications are enabled.'
+                : 'Notifications are enabled while WATSafe is open or running.')
+          : 'Foreground alerts are active while WATSafe is open. Enable notifications in Settings for system alerts.';
       return NotificationServiceStatus(
         capabilityStatus: CapabilityStatus.ready,
-        summary:
-            'Connected to ${_companionSession.hostDisplayName ?? "Laptop"} (Companion Mode)',
-        detail:
-            'Receiving live foreground alerts for session ${_companionSession.pairingSessionId ?? "active"} '
-            'via ${_companionSession.relayEndpointUrl ?? _relayEndpointUrl ?? "relay"}. '
-            'Keep WATSafe open in the foreground to receive alerts immediately (background push requires APNs/FCM deployment keys).',
+        summary: 'Connected to $hostLabel',
+        detail: notifDetail,
       );
     }
 
     if (_devices.isEmpty && !hasUrl) {
       return const NotificationServiceStatus(
         capabilityStatus: CapabilityStatus.notConfigured,
-        summary: 'Not configured',
-        detail:
-            'No companion devices paired yet. Pair a companion phone below or configure a backend relay URL to enable remote incident alerts and companion controls.',
+        summary: 'No phone paired',
+        detail: 'Pair your phone on Home to receive alerts when an alarm triggers.',
       );
     }
 
@@ -377,34 +419,20 @@ class ConfigurableRemoteNotificationService
       return NotificationServiceStatus(
         capabilityStatus: CapabilityStatus.degraded,
         summary: hasActiveCode
-            ? 'Awaiting phone pairing (Code ${invite.pairingCode})'
-            : 'Relay configured (0 paired devices)',
+            ? 'Waiting for phone to scan code ${invite.pairingCode}'
+            : 'Ready to pair your phone',
         detail: hasActiveCode
-            ? 'Enter pairing code ${invite.pairingCode} or scan the QR payload on your phone within '
-                  '${invite.remainingSecondsAt(_clock())}s to link it to this laptop session.'
-            : 'Connected to relay endpoint $_relayEndpointUrl, but no companion devices are paired yet. '
-                  'Generate a pairing code & QR below to connect your phone.',
+            ? 'Scan the QR code with your phone’s camera or enter ${invite.pairingCode} within ${invite.remainingSecondsAt(_clock())}s.'
+            : 'No phone is paired yet. Choose Pair your phone on Home to connect.',
       );
     }
 
-    final modeLabel = hasUrl
-        ? 'HTTP Relay ($_relayEndpointUrl)'
-        : 'Local Companion Outbox Relay';
-    final androidLinkedCount = _devices
-        .where((d) => d.isAndroidDevice && d.remoteSensorForwardingEnabled)
-        .length;
-    final sensorNote = androidLinkedCount > 0
-        ? ' Android Foreground Sensor Link active ($androidLinkedCount device${androidLinkedCount == 1 ? '' : 's'}).'
-        : '';
-
+    final names = _devices.map((d) => d.displayName).join(', ');
     return NotificationServiceStatus(
       capabilityStatus: CapabilityStatus.ready,
       summary:
           'Connected (${_devices.length} paired device${_devices.length == 1 ? '' : 's'})',
-      detail:
-          'Active session-scoped alert & command routing via $modeLabel to '
-          '${_devices.map((d) => "${d.displayName} (${d.platform})").join(", ")}.$sensorNote '
-          'Payloads contain metadata only (never camera frames, PINs, or database credentials).',
+      detail: 'Phone connected ($names). Alerts will be sent when an alarm triggers.',
     );
   }
 
@@ -419,6 +447,7 @@ class ConfigurableRemoteNotificationService
     await _ensureLoaded();
     final normalized = _normalizeUrl(endpointUrl);
     if (normalized != _relayEndpointUrl) {
+      ++_deviceMutationEpoch;
       _relayEndpointUrl = normalized;
       _activePairingInvitation = null;
     }
@@ -433,18 +462,20 @@ class ConfigurableRemoteNotificationService
     final url = _relayEndpointUrl;
     if (url == null || url.isEmpty) {
       throw StateError(
-        'Configure and save a Backend Relay URL (for example http://<laptop-lan-ip>:8787) before generating a live pairing code.',
+        'Pairing service is not configured right now. Check Advanced settings or your connection and try again.',
       );
     }
+
+    final requestedName = (hostDisplayName?.trim().isNotEmpty == true)
+        ? hostDisplayName!.trim()
+        : 'My Laptop';
 
     final response = await sendRelayJsonRequest(
       method: 'POST',
       url: '$url/v1/pairing/initiate',
       headers: _hostToken != null ? _bearerHeaders(_hostToken!) : null,
       body: <String, Object?>{
-        'hostDisplayName': (hostDisplayName?.trim().isNotEmpty == true)
-            ? hostDisplayName!.trim()
-            : 'WATSafe Laptop',
+        'hostDisplayName': requestedName,
         'relayUrl': url,
       },
       timeout: _httpTimeout,
@@ -452,7 +483,7 @@ class ConfigurableRemoteNotificationService
 
     if (!response.isSuccess) {
       throw StateError(
-        'Could not initiate pairing with relay $url (${response.errorSummary ?? "HTTP ${response.statusCode}"}).',
+        'Could not reach the pairing service. Make sure your laptop is online and try again.',
       );
     }
 
@@ -470,10 +501,15 @@ class ConfigurableRemoteNotificationService
     final qrPayload =
         decoded['qrPayload'] as String? ??
         'watsafe://pair?relay=${Uri.encodeQueryComponent(url)}&code=${Uri.encodeQueryComponent(code)}&session=${Uri.encodeQueryComponent(sessionId)}';
+    final pairingUrl =
+        decoded['pairingUrl'] as String? ??
+        '$url/pair?code=${Uri.encodeQueryComponent(code)}&session=${Uri.encodeQueryComponent(sessionId)}';
+    final resolvedHostName =
+        decoded['hostDisplayName'] as String? ?? requestedName;
 
     if (sessionId.isEmpty || hostToken.isEmpty || code.isEmpty) {
       throw StateError(
-        'Relay returned an incomplete pairing session response.',
+        'The pairing service returned an incomplete response. Please try again.',
       );
     }
 
@@ -485,6 +521,8 @@ class ConfigurableRemoteNotificationService
       expiresAt: expiresAt,
       qrPayload: qrPayload,
       relayEndpointUrl: url,
+      pairingUrl: pairingUrl,
+      hostDisplayName: resolvedHostName,
     );
 
     await _persistState();
@@ -494,7 +532,76 @@ class ConfigurableRemoteNotificationService
   }
 
   @override
-  Future<List<PairedDeviceSummary>> syncPairedDevicesFromRelay() async {
+  Future<PairingLookupPreview> lookupPairingInvitation(
+    String pairingCodeOrPayload, {
+    String? endpointUrlOverride,
+  }) async {
+    await _ensureLoaded();
+    final parsed = parsePairingInput(pairingCodeOrPayload);
+    final effectiveUrl =
+        parsed.relayEndpointUrl ??
+        _normalizeUrl(endpointUrlOverride) ??
+        _relayEndpointUrl;
+    if (effectiveUrl == null || effectiveUrl.isEmpty) {
+      throw StateError(
+        'Scan the QR code from your laptop so WATSafe knows how to connect.',
+      );
+    }
+    if (parsed.pairingCode.isEmpty) {
+      throw StateError('Enter the pairing code shown on your laptop.');
+    }
+
+    final response = await sendRelayJsonRequest(
+      method: 'GET',
+      url:
+          '$effectiveUrl/v1/pairing/lookup?code=${Uri.encodeQueryComponent(parsed.pairingCode)}',
+      timeout: _httpTimeout,
+    );
+
+    if (!response.isSuccess) {
+      String detail =
+          'That pairing code was not found or has expired. Generate a new code on your laptop and try again.';
+      try {
+        final errMap = jsonDecode(response.body) as Map<String, Object?>;
+        if (errMap['message'] is String &&
+            (errMap['message'] as String).trim().isNotEmpty) {
+          detail = errMap['message'] as String;
+        }
+      } catch (_) {}
+      throw StateError(detail);
+    }
+
+    final decoded = jsonDecode(response.body) as Map<String, Object?>;
+    final expiresRaw = decoded['expiresAtUtc'] as String? ?? '';
+    return PairingLookupPreview(
+      pairingSessionId: decoded['pairingSessionId'] as String? ?? '',
+      hostDisplayName:
+          decoded['hostDisplayName'] as String? ?? 'Your Laptop',
+      pairingCode: decoded['pairingCode'] as String? ?? parsed.pairingCode,
+      relayEndpointUrl: effectiveUrl,
+      expiresAt:
+          DateTime.tryParse(expiresRaw)?.toLocal() ??
+          _clock().add(const Duration(minutes: 5)),
+    );
+  }
+
+  @override
+  Future<List<PairedDeviceSummary>> syncPairedDevicesFromRelay() {
+    final active = _inFlightHostSync;
+    if (active != null) {
+      return active;
+    }
+    final future = _executeHostDeviceSync();
+    _inFlightHostSync = future;
+    future.whenComplete(() {
+      if (identical(_inFlightHostSync, future)) {
+        _inFlightHostSync = null;
+      }
+    });
+    return future;
+  }
+
+  Future<List<PairedDeviceSummary>> _executeHostDeviceSync() async {
     await _ensureLoaded();
     final url = _relayEndpointUrl;
     final token = _hostToken;
@@ -502,13 +609,14 @@ class ConfigurableRemoteNotificationService
       return List<PairedDeviceSummary>.unmodifiable(_devices);
     }
 
+    final syncEpoch = _deviceMutationEpoch;
     final response = await sendRelayJsonRequest(
       method: 'GET',
       url: '$url/v1/pairing/devices',
       headers: _bearerHeaders(token),
       timeout: _httpTimeout,
     );
-    if (!response.isSuccess) {
+    if (!response.isSuccess || syncEpoch != _deviceMutationEpoch) {
       return List<PairedDeviceSummary>.unmodifiable(_devices);
     }
 
@@ -525,18 +633,22 @@ class ConfigurableRemoteNotificationService
         final prior = existingById[parsed.deviceId];
         if (prior != null) {
           return parsed.copyWith(
-            remoteStateLabel: prior.remoteStateLabel,
+            remoteStateLabel: parsed.connected
+                ? prior.remoteStateLabel
+                : 'Disconnected',
             remoteSensorForwardingEnabled: prior.remoteSensorForwardingEnabled,
             isRingingRemotely: prior.isRingingRemotely,
             lastActionSummary: prior.lastActionSummary,
           );
         }
         return parsed.copyWith(
-          remoteStateLabel: parsed.isAndroidDevice
-              ? 'Connected • Foreground Sensor Link Ready'
-              : 'Connected • Standby',
+          remoteStateLabel: parsed.connected ? 'Phone connected' : 'Disconnected',
         );
       }).toList();
+
+      if (syncEpoch != _deviceMutationEpoch) {
+        return List<PairedDeviceSummary>.unmodifiable(_devices);
+      }
 
       final changed = !_sameDeviceList(_devices, updated);
       _devices = updated;
@@ -564,7 +676,9 @@ class ConfigurableRemoteNotificationService
     for (var i = 0; i < a.length; i++) {
       if (a[i].deviceId != b[i].deviceId ||
           a[i].connected != b[i].connected ||
-          a[i].displayName != b[i].displayName) {
+          a[i].displayName != b[i].displayName ||
+          a[i].notificationsEnabled != b[i].notificationsEnabled ||
+          a[i].notificationChannel != b[i].notificationChannel) {
         return false;
       }
     }
@@ -579,13 +693,12 @@ class ConfigurableRemoteNotificationService
   }) async {
     await _ensureLoaded();
     final trimmedName = displayName.trim().isEmpty
-        ? 'Companion Phone'
+        ? 'My Phone'
         : displayName.trim();
     final trimmedPlatform = platform.trim().isEmpty
-        ? 'Android (FCM)'
+        ? 'Phone'
         : platform.trim();
     final now = _clock();
-    final isAndroid = trimmedPlatform.toLowerCase().contains('android');
     final provisionalId =
         'dev_${++_deviceCounter}_${now.millisecondsSinceEpoch}';
     final effectiveCode = pairingCode?.isNotEmpty == true
@@ -611,19 +724,18 @@ class ConfigurableRemoteNotificationService
       );
       if (!postRes.isSuccess) {
         throw StateError(
-          'Relay pairing failed (${postRes.errorSummary ?? "HTTP ${postRes.statusCode}"}).',
+          'Could not pair phone right now. Check your connection and try again.',
         );
       }
       final body = jsonDecode(postRes.body) as Map<String, Object?>;
       final serverDevice = PairedDeviceSummary.fromJson(body).copyWith(
-        remoteStateLabel: isAndroid
-            ? 'Connected • Foreground Sensor Link Ready'
-            : 'Connected • Standby',
+        remoteStateLabel: 'Phone connected',
         remoteSensorForwardingEnabled: true,
         isRingingRemotely: false,
-        lastActionSummary: 'Paired with code $effectiveCode',
+        lastActionSummary: 'Paired',
         lastSeenAt: now,
       );
+      ++_deviceMutationEpoch;
       _devices = <PairedDeviceSummary>[
         ..._devices.where((d) => d.deviceId != serverDevice.deviceId),
         serverDevice,
@@ -635,10 +747,10 @@ class ConfigurableRemoteNotificationService
         commandType: PairedDeviceCommandType.syncProtectionState,
         timestamp: now,
         delivered: true,
-        summary:
-            'Paired "${serverDevice.displayName}" (${serverDevice.platform}). Push & remote command channel ready.',
+        summary: 'Connected "${serverDevice.displayName}".',
       );
       await _persistState();
+      _startHostSyncTimerIfNeeded();
       return serverDevice;
     }
 
@@ -649,12 +761,11 @@ class ConfigurableRemoteNotificationService
       pairedAt: now,
       pushChannelReady: true,
       connected: true,
-      remoteStateLabel: isAndroid
-          ? 'Connected • Foreground Sensor Link Ready'
-          : 'Connected • Standby',
+      notificationsEnabled: true,
+      remoteStateLabel: 'Phone connected',
       remoteSensorForwardingEnabled: true,
       isRingingRemotely: false,
-      lastActionSummary: 'Paired with code $effectiveCode',
+      lastActionSummary: 'Paired',
       lastSeenAt: now,
     );
     _devices = <PairedDeviceSummary>[..._devices, device];
@@ -664,8 +775,7 @@ class ConfigurableRemoteNotificationService
       commandType: PairedDeviceCommandType.syncProtectionState,
       timestamp: now,
       delivered: true,
-      summary:
-          'Paired "${device.displayName}" (${device.platform}). Push & remote command channel ready.',
+      summary: 'Connected "${device.displayName}".',
     );
     await _persistState();
     return device;
@@ -674,6 +784,7 @@ class ConfigurableRemoteNotificationService
   @override
   Future<void> unpairDevice(String deviceId) async {
     await _ensureLoaded();
+    ++_deviceMutationEpoch;
     final existing = _devices.where((d) => d.deviceId == deviceId).firstOrNull;
     if (_relayEndpointUrl != null &&
         _relayEndpointUrl!.isNotEmpty &&
@@ -687,6 +798,7 @@ class ConfigurableRemoteNotificationService
         timeout: _httpTimeout,
       );
     }
+    ++_deviceMutationEpoch;
     _devices = _devices.where((d) => d.deviceId != deviceId).toList();
     if (existing != null) {
       _recordAction(
@@ -695,7 +807,7 @@ class ConfigurableRemoteNotificationService
         commandType: PairedDeviceCommandType.syncProtectionState,
         timestamp: _clock(),
         delivered: true,
-        summary: 'Unpaired "${existing.displayName}".',
+        summary: 'Disconnected "${existing.displayName}".',
       );
     }
     await _persistState();
@@ -710,7 +822,7 @@ class ConfigurableRemoteNotificationService
     await _ensureLoaded();
     final index = _devices.indexWhere((d) => d.deviceId == deviceId);
     if (index < 0) {
-      throw StateError('Paired device $deviceId not found.');
+      throw StateError('Paired phone not found.');
     }
 
     final current = _devices[index];
@@ -720,30 +832,22 @@ class ConfigurableRemoteNotificationService
 
     switch (command) {
       case PairedDeviceCommandType.sendTestPush:
-        actionSummary =
-            'Test push alert delivered to "${current.displayName}" (${current.platform}).';
+        actionSummary = 'Test alert sent to "${current.displayName}".';
         updated = current.copyWith(
-          remoteStateLabel: 'Connected • Alert Verified',
-          lastActionSummary: 'Test push alert delivered',
+          remoteStateLabel: 'Phone connected',
+          lastActionSummary: 'Test alert sent',
           lastSeenAt: now,
         );
 
       case PairedDeviceCommandType.toggleRemoteRing:
         final nextRinging = !current.isRingingRemotely;
         actionSummary = nextRinging
-            ? 'Remote locator ring started on "${current.displayName}".'
-            : 'Remote locator ring stopped on "${current.displayName}".';
+            ? 'Locator ring started on "${current.displayName}".'
+            : 'Locator ring stopped on "${current.displayName}".';
         updated = current.copyWith(
           isRingingRemotely: nextRinging,
-          remoteStateLabel: nextRinging
-              ? 'Ringing (Remote Locate Active)'
-              : (current.remoteSensorForwardingEnabled &&
-                        current.isAndroidDevice
-                    ? 'Connected • Foreground Sensor Link Ready'
-                    : 'Connected • Standby'),
-          lastActionSummary: nextRinging
-              ? 'Remote locator ring active'
-              : 'Remote locator ring stopped',
+          remoteStateLabel: nextRinging ? 'Ringing' : 'Phone connected',
+          lastActionSummary: actionSummary,
           lastSeenAt: now,
         );
 
@@ -751,41 +855,31 @@ class ConfigurableRemoteNotificationService
         final hostState =
             payload?['hostState'] as String? ??
             payload?['protectionState'] as String? ??
-            'Disarmed';
-        final detectorName =
-            payload?['detector'] as String? ??
-            payload?['selectedDetector'] as String? ??
-            'Active Detector';
-        actionSummary =
-            'Synced host state ($hostState • $detectorName) to "${current.displayName}".';
+            'Off';
+        actionSummary = 'Synced status ($hostState) to "${current.displayName}".';
         updated = current.copyWith(
-          remoteStateLabel: 'Synced ($hostState)',
-          lastActionSummary: 'Synced state: $hostState',
+          remoteStateLabel: 'Phone connected',
+          lastActionSummary: 'Status synced',
           lastSeenAt: now,
         );
 
       case PairedDeviceCommandType.toggleRemoteSensorForwarding:
         final nextEnabled = !current.remoteSensorForwardingEnabled;
         actionSummary = nextEnabled
-            ? 'Enabled remote foreground motion sensor link on "${current.displayName}".'
-            : 'Paused remote foreground motion sensor link on "${current.displayName}".';
+            ? 'Enabled motion sensor link on "${current.displayName}".'
+            : 'Paused motion sensor link on "${current.displayName}".';
         updated = current.copyWith(
           remoteSensorForwardingEnabled: nextEnabled,
-          remoteStateLabel: nextEnabled
-              ? 'Connected • Foreground Sensor Link Ready'
-              : 'Connected • Sensor Link Paused',
-          lastActionSummary: nextEnabled
-              ? 'Foreground sensor link enabled'
-              : 'Foreground sensor link paused',
+          remoteStateLabel: 'Phone connected',
+          lastActionSummary: actionSummary,
           lastSeenAt: now,
         );
 
       case PairedDeviceCommandType.simulateCompanionMotionTrigger:
-        actionSummary =
-            'Companion device "${current.displayName}" reported sustained 3-axis motion tamper (score 0.380 >= threshold).';
+        actionSummary = 'Motion detected on "${current.displayName}".';
         updated = current.copyWith(
-          remoteStateLabel: 'Motion Tamper Reported!',
-          lastActionSummary: 'Reported 3-axis motion tamper (0.38g delta)',
+          remoteStateLabel: 'Motion detected',
+          lastActionSummary: actionSummary,
           lastSeenAt: now,
         );
         if (!_companionSensorController.isClosed) {
@@ -794,8 +888,7 @@ class ConfigurableRemoteNotificationService
             'deviceId': current.deviceId,
             'deviceName': current.displayName,
             'motionScore': 0.38,
-            'summary':
-                'Sustained motion detected on paired device ${current.displayName} (score 0.380, 0.32g delta)',
+            'summary': 'Sustained motion detected on ${current.displayName}',
             'timestampMs': now.millisecondsSinceEpoch,
           });
         }
@@ -823,10 +916,6 @@ class ConfigurableRemoteNotificationService
         timeout: _httpTimeout,
       );
       delivered = postOutcome.isSuccess;
-      if (!delivered) {
-        actionSummary =
-            '$actionSummary (Relay warning: ${postOutcome.errorSummary}; saved to local companion outbox)';
-      }
     }
 
     await _appendAlertToLocalOutbox(commandPayload);
@@ -874,6 +963,9 @@ class ConfigurableRemoteNotificationService
     required String displayName,
     required String platform,
     String? endpointUrlOverride,
+    bool notificationsEnabled = false,
+    String notificationChannel = 'foreground_only',
+    String? pushToken,
   }) async {
     await _ensureLoaded();
     final parsed = parsePairingInput(pairingCodeOrPayload);
@@ -883,7 +975,7 @@ class ConfigurableRemoteNotificationService
         _relayEndpointUrl;
     if (effectiveUrl == null || effectiveUrl.isEmpty) {
       throw StateError(
-        'Enter the Laptop Relay URL or paste a watsafe://pair QR link.',
+        'Scan the QR code on your laptop so WATSafe knows where to connect.',
       );
     }
     if (parsed.pairingCode.isEmpty) {
@@ -893,11 +985,9 @@ class ConfigurableRemoteNotificationService
     }
 
     final trimmedName = displayName.trim().isEmpty
-        ? 'Companion Phone'
+        ? 'My Phone'
         : displayName.trim();
-    final trimmedPlatform = platform.trim().isEmpty
-        ? 'Android (Live Companion)'
-        : platform.trim();
+    final trimmedPlatform = platform.trim().isEmpty ? 'Phone' : platform.trim();
 
     final response = await sendRelayJsonRequest(
       method: 'POST',
@@ -906,15 +996,20 @@ class ConfigurableRemoteNotificationService
         'pairingCode': parsed.pairingCode,
         'displayName': trimmedName,
         'platform': trimmedPlatform,
+        'notificationsEnabled': notificationsEnabled,
+        'deliveryChannel': notificationChannel,
+        'pushToken': ?pushToken,
       },
       timeout: _httpTimeout,
     );
 
     if (!response.isSuccess) {
-      String detail = response.errorSummary ?? 'HTTP ${response.statusCode}';
+      String detail =
+          'Could not connect with that pairing code. Generate a new code on your laptop and try again.';
       try {
         final errMap = jsonDecode(response.body) as Map<String, Object?>;
-        if (errMap['message'] is String) {
+        if (errMap['message'] is String &&
+            (errMap['message'] as String).trim().isNotEmpty) {
           detail = errMap['message'] as String;
         }
       } catch (_) {}
@@ -926,10 +1021,13 @@ class ConfigurableRemoteNotificationService
     final companionToken = body['companionToken'] as String? ?? '';
     final deviceId = body['deviceId'] as String?;
     final hostDisplayName =
-        body['hostDisplayName'] as String? ?? 'WATSafe Laptop';
+        body['hostDisplayName'] as String? ?? 'Your Laptop';
+    final pushConfigured = body['pushConfigured'] as bool? ?? false;
 
     if (sessionId.isEmpty || companionToken.isEmpty) {
-      throw StateError('Relay did not return a valid companion session token.');
+      throw StateError(
+        'The pairing service did not finish connecting. Please try again.',
+      );
     }
 
     final isSameSession =
@@ -951,8 +1049,9 @@ class ConfigurableRemoteNotificationService
       phoneDisplayName: trimmedName,
       relayEndpointUrl: effectiveUrl,
       deliveryMode: body['deliveryMode'] as String? ?? 'foreground_poll',
-      statusMessage:
-          'Connected to $hostDisplayName. Live alerts active while WATSafe is open in the foreground.',
+      pushServerConfigured: pushConfigured,
+      notificationsEnabled: notificationsEnabled,
+      statusMessage: 'Connected to $hostDisplayName.',
     );
 
     await _persistState();
@@ -960,6 +1059,69 @@ class ConfigurableRemoteNotificationService
     _startCompanionPollTimerIfNeeded();
     _onStateChanged?.call();
     return _companionSession;
+  }
+
+  @override
+  Future<void> updateCompanionNotificationStatus({
+    required bool notificationsEnabled,
+    required String deliveryChannel,
+    String? pushToken,
+  }) async {
+    await _ensureLoaded();
+    final token = _companionToken;
+    final url = _companionSession.relayEndpointUrl ?? _relayEndpointUrl;
+    _companionSession = _companionSession.copyWith(
+      notificationsEnabled: notificationsEnabled,
+      deliveryMode: deliveryChannel,
+    );
+    if (token != null &&
+        token.isNotEmpty &&
+        url != null &&
+        url.isNotEmpty &&
+        _companionSession.isConnected) {
+      await sendRelayJsonRequest(
+        method: 'POST',
+        url: '$url/v1/companion/status',
+        headers: _bearerHeaders(token),
+        body: <String, Object?>{
+          'notificationsEnabled': notificationsEnabled,
+          'deliveryChannel': deliveryChannel,
+          'pushToken': ?pushToken,
+        },
+        timeout: _httpTimeout,
+      );
+    }
+    await _persistState();
+    _onStateChanged?.call();
+  }
+
+  @override
+  Future<bool> updateIncidentLocation({
+    required String incidentId,
+    DeviceLocationSnapshot? location,
+    required IncidentLocationStatus locationStatus,
+  }) async {
+    await _ensureLoaded();
+    final url = _relayEndpointUrl;
+    final token = _hostToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      return false;
+    }
+
+    final body = <String, Object?>{
+      'incidentId': incidentId,
+      'locationStatus': locationStatus.name,
+      if (location != null) 'location': location.toJson(),
+    };
+
+    final response = await sendRelayJsonRequest(
+      method: 'POST',
+      url: '$url/v1/incidents/location',
+      headers: _bearerHeaders(token),
+      body: body,
+      timeout: _httpTimeout,
+    );
+    return response.isSuccess;
   }
 
   /// Polls the authenticated companion alert feed once (`GET /v1/companion/alerts`).
@@ -1012,8 +1174,7 @@ class ConfigurableRemoteNotificationService
         hostDisplayName: _companionSession.hostDisplayName,
         phoneDisplayName: _companionSession.phoneDisplayName,
         relayEndpointUrl: url,
-        statusMessage:
-            'Disconnected — this phone was unpaired or the laptop session ended.',
+        statusMessage: 'Disconnected — this phone is no longer paired.',
       );
       await _persistState();
       _onStateChanged?.call();
@@ -1021,22 +1182,17 @@ class ConfigurableRemoteNotificationService
     }
 
     if (!response.isSuccess) {
-      _companionSession = CompanionSessionState(
+      _companionSession = _companionSession.copyWith(
         isConnected: true,
-        pairingSessionId: _companionSession.pairingSessionId,
-        hostDisplayName: _companionSession.hostDisplayName,
-        deviceId: _companionSession.deviceId,
-        phoneDisplayName: _companionSession.phoneDisplayName,
         relayEndpointUrl: url,
-        deliveryMode: _companionSession.deliveryMode,
-        statusMessage:
-            'Reconnecting to relay (${response.errorSummary ?? "HTTP ${response.statusCode}"})…',
+        statusMessage: 'Reconnecting…',
       );
       _onStateChanged?.call();
       return const <CompanionAlertEvent>[];
     }
 
     final newlyDelivered = <CompanionAlertEvent>[];
+    bool updatedExistingInPlace = false;
     try {
       final decoded = jsonDecode(response.body) as Map<String, Object?>;
       final latestSeq =
@@ -1051,20 +1207,41 @@ class ConfigurableRemoteNotificationService
         final alert = CompanionAlertEvent.fromJson(
           Map<String, Object?>.from(item),
         );
-        if (alert.alertSeq > _companionLastAlertSeq) {
-          _companionLastAlertSeq = alert.alertSeq;
+        if (alert.effectiveCursorSeq > _companionLastAlertSeq) {
+          _companionLastAlertSeq = alert.effectiveCursorSeq;
         }
-        // Client-side incidentId deduplication ensures reconnects or cursor
-        // replays never produce duplicate phone alerts.
-        if (alert.incidentId.isNotEmpty &&
-            _seenCompanionIncidentIds.add(alert.incidentId)) {
-          newlyDelivered.add(alert);
-          _receivedCompanionAlerts = <CompanionAlertEvent>[
-            alert,
-            ..._receivedCompanionAlerts,
-          ];
-          if (!_incomingAlertsController.isClosed) {
-            _incomingAlertsController.add(alert);
+        // Client-side incidentId deduplication ensures reconnects, cursor
+        // replays, or asynchronous location updates never emit duplicate alerts.
+        if (alert.incidentId.isNotEmpty) {
+          if (_seenCompanionIncidentIds.add(alert.incidentId)) {
+            newlyDelivered.add(alert);
+            _receivedCompanionAlerts = <CompanionAlertEvent>[
+              alert,
+              ..._receivedCompanionAlerts,
+            ];
+            if (!_incomingAlertsController.isClosed) {
+              _incomingAlertsController.add(alert);
+            }
+          } else {
+            final idx = _receivedCompanionAlerts.indexWhere(
+              (existing) => existing.incidentId == alert.incidentId,
+            );
+            if (idx >= 0) {
+              final prior = _receivedCompanionAlerts[idx];
+              if (alert.location != null ||
+                  alert.locationStatus != prior.locationStatus) {
+                final nextList = List<CompanionAlertEvent>.from(
+                  _receivedCompanionAlerts,
+                );
+                nextList[idx] = prior.copyWith(
+                  updatedSeq: alert.updatedSeq ?? prior.updatedSeq,
+                  location: alert.location ?? prior.location,
+                  locationStatus: alert.locationStatus,
+                );
+                _receivedCompanionAlerts = nextList;
+                updatedExistingInPlace = true;
+              }
+            }
           }
         }
       }
@@ -1073,19 +1250,14 @@ class ConfigurableRemoteNotificationService
         _companionLastAlertSeq = latestSeq;
       }
 
-      _companionSession = CompanionSessionState(
+      _companionSession = _companionSession.copyWith(
         isConnected: true,
-        pairingSessionId: _companionSession.pairingSessionId,
         hostDisplayName: hostName,
-        deviceId: _companionSession.deviceId,
-        phoneDisplayName: _companionSession.phoneDisplayName,
         relayEndpointUrl: url,
-        deliveryMode: _companionSession.deliveryMode,
-        statusMessage:
-            'Connected to ${hostName ?? "WATSafe Laptop"}. Live foreground alerts active.',
+        statusMessage: 'Connected to ${hostName ?? "your laptop"}.',
       );
 
-      if (newlyDelivered.isNotEmpty) {
+      if (newlyDelivered.isNotEmpty || updatedExistingInPlace) {
         await _persistState();
       }
       _onStateChanged?.call();
@@ -1099,10 +1271,91 @@ class ConfigurableRemoteNotificationService
   @override
   Future<void> disconnectCompanionSession() async {
     await _ensureLoaded();
+    final token = _companionToken;
+    final url = _companionSession.relayEndpointUrl ?? _relayEndpointUrl;
     _companionPollTimer?.cancel();
     _companionPollTimer = null;
     _companionToken = null;
     _companionSession = CompanionSessionState.disconnected;
+    if (token != null && token.isNotEmpty && url != null && url.isNotEmpty) {
+      await sendRelayJsonRequest(
+        method: 'POST',
+        url: '$url/v1/companion/disconnect',
+        headers: _bearerHeaders(token),
+        body: const <String, Object?>{},
+        timeout: _httpTimeout,
+      );
+    }
+    await _persistState();
+    _onStateChanged?.call();
+  }
+
+  @override
+  Future<void> resetInstallationPairingAndPush({
+    String? defaultRelayUrl,
+  }) async {
+    await _ensureLoaded();
+    ++_deviceMutationEpoch;
+    _hostSyncTimer?.cancel();
+    _hostSyncTimer = null;
+    _companionPollTimer?.cancel();
+    _companionPollTimer = null;
+
+    final currentUrl = _relayEndpointUrl;
+    final currentHostToken = _hostToken;
+    final companionUrl = _companionSession.relayEndpointUrl ?? currentUrl;
+    final currentCompanionToken = _companionToken;
+
+    if (currentUrl != null &&
+        currentUrl.isNotEmpty &&
+        currentHostToken != null &&
+        currentHostToken.isNotEmpty) {
+      await sendRelayJsonRequest(
+        method: 'POST',
+        url: '$currentUrl/v1/pairing/session/revoke',
+        headers: _bearerHeaders(currentHostToken),
+        body: const <String, Object?>{},
+        timeout: _httpTimeout,
+      );
+    }
+
+    if (companionUrl != null &&
+        companionUrl.isNotEmpty &&
+        currentCompanionToken != null &&
+        currentCompanionToken.isNotEmpty) {
+      await sendRelayJsonRequest(
+        method: 'POST',
+        url: '$companionUrl/v1/companion/disconnect',
+        headers: _bearerHeaders(currentCompanionToken),
+        body: const <String, Object?>{},
+        timeout: _httpTimeout,
+      );
+    }
+
+    ++_deviceMutationEpoch;
+    _hostPairingSessionId = null;
+    _hostToken = null;
+    _activePairingInvitation = null;
+    _devices = <PairedDeviceSummary>[];
+    _actions = <PairedDeviceActionRecord>[];
+    _companionToken = null;
+    _companionLastAlertSeq = 0;
+    _seenCompanionIncidentIds.clear();
+    _receivedCompanionAlerts = <CompanionAlertEvent>[];
+    _companionSession = CompanionSessionState.disconnected;
+    if (defaultRelayUrl != null) {
+      _relayEndpointUrl = _normalizeUrl(defaultRelayUrl);
+    }
+
+    if (persistToDisk) {
+      try {
+        await writePersistedJson(
+          _outboxFileName,
+          '[]',
+          storageDirectory: _storageDirectory,
+        );
+      } catch (_) {}
+    }
     await _persistState();
     _onStateChanged?.call();
   }
@@ -1117,7 +1370,7 @@ class ConfigurableRemoteNotificationService
       return const NotificationDispatchResult(
         delivered: false,
         capabilityStatus: CapabilityStatus.notConfigured,
-        message: 'Not configured (no paired devices)',
+        message: 'No phone paired',
       );
     }
 
@@ -1127,11 +1380,12 @@ class ConfigurableRemoteNotificationService
       await syncPairedDevicesFromRelay();
     }
 
-    if (_devices.isEmpty) {
+    final connectedDevices = _devices.where((d) => d.connected).toList();
+    if (connectedDevices.isEmpty) {
       return const NotificationDispatchResult(
         delivered: false,
         capabilityStatus: CapabilityStatus.degraded,
-        message: 'Not sent (0 paired devices registered)',
+        message: 'No connected phone to alert',
       );
     }
 
@@ -1146,12 +1400,15 @@ class ConfigurableRemoteNotificationService
       'triggeredAtUtc': incident.triggeredAt.toUtc().toIso8601String(),
       'peakMotionScore': incident.peakMotionScore,
       'triggerSummary': incident.triggerSummary,
+      'deviceName': ?incident.deviceName,
       'isTest': incident.isTest,
+      'locationStatus': incident.locationStatus.name,
+      if (incident.location != null) 'location': incident.location!.toJson(),
     };
 
     if (hasUrl) {
       if (_hostToken == null || _hostToken!.isEmpty) {
-        await initiateHostPairing();
+        await initiateHostPairing(hostDisplayName: incident.deviceName);
       }
       final postResult = await sendRelayJsonRequest(
         method: 'POST',
@@ -1162,16 +1419,20 @@ class ConfigurableRemoteNotificationService
       );
       _devices = _devices
           .map(
-            (d) => d.copyWith(
-              remoteStateLabel: postResult.isSuccess
-                  ? 'Emergency Alert Dispatched'
-                  : 'Alert Relay Warning',
-              lastActionSummary: 'Incident alert: ${incident.triggerSummary}',
-              lastSeenAt: now,
-            ),
+            (d) => d.connected
+                ? d.copyWith(
+                    remoteStateLabel: postResult.isSuccess
+                        ? 'Phone connected'
+                        : 'Connection issue',
+                    lastActionSummary: incident.isTest
+                        ? 'Test alert sent'
+                        : 'Alarm alert sent',
+                    lastSeenAt: now,
+                  )
+                : d,
           )
           .toList();
-      for (final d in _devices) {
+      for (final d in connectedDevices) {
         _recordAction(
           deviceId: d.deviceId,
           deviceName: d.displayName,
@@ -1179,8 +1440,8 @@ class ConfigurableRemoteNotificationService
           timestamp: now,
           delivered: postResult.isSuccess,
           summary: postResult.isSuccess
-              ? 'Emergency incident alert dispatched to "${d.displayName}": ${incident.triggerSummary}'
-              : 'Incident alert relay failed for "${d.displayName}" (${postResult.errorSummary})',
+              ? '${incident.isTest ? "Test alert" : "Alarm alert"} sent to "${d.displayName}".'
+              : 'Could not reach "${d.displayName}" right now.',
         );
       }
       if (postResult.isSuccess) {
@@ -1190,27 +1451,29 @@ class ConfigurableRemoteNotificationService
           delivered: true,
           capabilityStatus: CapabilityStatus.ready,
           message:
-              'Delivered via HTTP relay to ${_devices.length} paired device(s)',
+              'Delivered via HTTP relay to ${connectedDevices.length} paired device(s)',
         );
       }
       await _persistState();
-      return NotificationDispatchResult(
+      return const NotificationDispatchResult(
         delivered: false,
         capabilityStatus: CapabilityStatus.degraded,
-        message: 'HTTP relay failed (${postResult.errorSummary})',
+        message: 'Could not reach phone alert service right now',
       );
     }
 
     _devices = _devices
         .map(
           (d) => d.copyWith(
-            remoteStateLabel: 'Emergency Alert Dispatched',
-            lastActionSummary: 'Incident alert: ${incident.triggerSummary}',
+            remoteStateLabel: 'Phone connected',
+            lastActionSummary: incident.isTest
+                ? 'Test alert sent'
+                : 'Alarm alert sent',
             lastSeenAt: now,
           ),
         )
         .toList();
-    for (final d in _devices) {
+    for (final d in connectedDevices) {
       _recordAction(
         deviceId: d.deviceId,
         deviceName: d.displayName,
@@ -1218,16 +1481,17 @@ class ConfigurableRemoteNotificationService
         timestamp: now,
         delivered: true,
         summary:
-            'Emergency incident alert dispatched to "${d.displayName}": ${incident.triggerSummary}',
+            '${incident.isTest ? "Test alert" : "Alarm alert"} sent to "${d.displayName}".',
       );
     }
     await _appendAlertToLocalOutbox(payload);
     await _persistState();
-    final names = _devices.map((d) => d.displayName).join(', ');
+    final names = connectedDevices.map((d) => d.displayName).join(', ');
     return NotificationDispatchResult(
       delivered: true,
       capabilityStatus: CapabilityStatus.ready,
-      message: 'Dispatched to ${_devices.length} paired device(s): $names',
+      message:
+          'Dispatched to ${connectedDevices.length} paired device(s): $names',
     );
   }
 
@@ -1240,8 +1504,7 @@ class ConfigurableRemoteNotificationService
       if (_disposed || !_foregroundActive) {
         return;
       }
-      final invite = _activePairingInvitation;
-      if (_hostToken == null || (invite == null && _devices.isEmpty)) {
+      if (_hostToken == null || _hostToken!.isEmpty) {
         _hostSyncTimer?.cancel();
         _hostSyncTimer = null;
         return;
@@ -1278,8 +1541,7 @@ class ConfigurableRemoteNotificationService
       _companionPollTimer?.cancel();
       _companionPollTimer = null;
     } else {
-      if (_hostToken != null &&
-          (_activePairingInvitation != null || _devices.isNotEmpty)) {
+      if (_hostToken != null && _hostToken!.isNotEmpty) {
         unawaited(syncPairedDevicesFromRelay());
         _startHostSyncTimerIfNeeded();
       }

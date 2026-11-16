@@ -1,0 +1,25 @@
+# Free-tier Render Blueprint for a persistent HTTPS WATSafe Relay
+# (Automatic Let's Encrypt TLS certificate — zero paid services required)
+services:
+  - type: web
+    name: watsafe-relay
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /v1/health
+    envVars:
+      - key: PORT
+        value: "8787"
+      - key: WATSAFE_BIND_HOST
+        value: "0.0.0.0"
+      - key: VAPID_SUBJECT
+        value: "mailto:alerts@watsafe.app"
+      # Generate once locally via `dart run tool/generate_vapid_keys.dart`
+      # and paste into Render Dashboard so push subscriptions survive restarts:
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      # Optional persistent PostgreSQL database URI:
+      - key: AIVEN_DATABASE_URL
+        sync: false

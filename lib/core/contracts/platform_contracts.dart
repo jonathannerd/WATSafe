@@ -137,6 +137,54 @@ abstract class SettingsStorageAdapter {
   Future<void> saveSettings(ProtectionSettings settings);
 }
 
+/// Contract for non-blocking device location lookup when an alarm triggers.
+abstract class LocationServiceAdapter {
+  bool get isSupported;
+
+  Future<PermissionStatus> checkPermission();
+
+  Future<PermissionStatus> requestPermission();
+
+  Future<({DeviceLocationSnapshot? location, IncidentLocationStatus status})>
+  captureCurrentLocation({Duration timeout = const Duration(seconds: 6)});
+}
+
+/// Contract for OS / Browser notification permissions, local notification
+/// display, push token inspection, and tap-to-open-event routing.
+abstract class LocalNotificationAdapter {
+  bool get isSupported;
+
+  /// Label describing the underlying notification channel ('os', 'browser', 'none').
+  String get channelKind;
+
+  Future<PermissionStatus> checkPermission();
+
+  Future<PermissionStatus> requestPermission();
+
+  /// Displays a lock-screen-safe notification (device name + message ONLY,
+  /// never coordinates), deduplicated by [incidentId].
+  Future<bool> showAlertNotification({
+    required String incidentId,
+    required String deviceName,
+    required String message,
+    bool isTest = false,
+  });
+
+  /// Emits `incidentId` whenever the user taps a delivered notification.
+  Stream<String> get notificationTaps;
+
+  /// Returns and clears any `incidentId` from a cold-launch notification tap.
+  String? consumeInitialTappedIncidentId();
+
+  /// Returns an APNs/FCM/WebPush registration token if available on this client.
+  Future<String?> getPushRegistrationToken();
+
+  /// Opens external URLs (such as Open in Maps or OS settings) safely.
+  Future<bool> openExternalUrl(String url);
+
+  void dispose();
+}
+
 /// Summary of a paired remote device (for cloud/push or companion relay integration).
 @immutable
 class PairedDeviceSummary {
@@ -147,8 +195,10 @@ class PairedDeviceSummary {
     required this.pairedAt,
     required this.pushChannelReady,
     this.connected = true,
+    this.notificationsEnabled = true,
+    this.notificationChannel = 'push',
     this.pairingSessionId,
-    this.remoteStateLabel = 'Connected • Standby',
+    this.remoteStateLabel = 'Connected',
     this.remoteSensorForwardingEnabled = true,
     this.isRingingRemotely = false,
     this.lastActionSummary,
@@ -161,6 +211,8 @@ class PairedDeviceSummary {
   final DateTime pairedAt;
   final bool pushChannelReady;
   final bool connected;
+  final bool notificationsEnabled;
+  final String notificationChannel;
   final String? pairingSessionId;
   final String remoteStateLabel;
   final bool remoteSensorForwardingEnabled;
@@ -178,6 +230,8 @@ class PairedDeviceSummary {
     DateTime? pairedAt,
     bool? pushChannelReady,
     bool? connected,
+    bool? notificationsEnabled,
+    String? notificationChannel,
     String? pairingSessionId,
     String? remoteStateLabel,
     bool? remoteSensorForwardingEnabled,
@@ -192,6 +246,8 @@ class PairedDeviceSummary {
       pairedAt: pairedAt ?? this.pairedAt,
       pushChannelReady: pushChannelReady ?? this.pushChannelReady,
       connected: connected ?? this.connected,
+      notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
+      notificationChannel: notificationChannel ?? this.notificationChannel,
       pairingSessionId: pairingSessionId ?? this.pairingSessionId,
       remoteStateLabel: remoteStateLabel ?? this.remoteStateLabel,
       remoteSensorForwardingEnabled:
@@ -210,7 +266,9 @@ class PairedDeviceSummary {
       'pairedAtUtcIso': pairedAt.toUtc().toIso8601String(),
       'pushChannelReady': pushChannelReady,
       'connected': connected,
-      if (pairingSessionId != null) 'pairingSessionId': pairingSessionId,
+      'notificationsEnabled': notificationsEnabled,
+      'notificationChannel': notificationChannel,
+      'pairingSessionId': ?pairingSessionId,
       'remoteStateLabel': remoteStateLabel,
       'remoteSensorForwardingEnabled': remoteSensorForwardingEnabled,
       'isRingingRemotely': isRingingRemotely,
@@ -222,18 +280,20 @@ class PairedDeviceSummary {
   factory PairedDeviceSummary.fromJson(Map<String, Object?> json) {
     final pairedAtRaw = json['pairedAtUtcIso'] as String? ?? '';
     final lastSeenRaw = json['lastSeenAtUtcIso'] as String?;
+    final pushReady = json['pushChannelReady'] as bool? ?? true;
     return PairedDeviceSummary(
       deviceId: json['deviceId'] as String? ?? 'dev_unknown',
-      displayName: json['displayName'] as String? ?? 'Companion Device',
-      platform: json['platform'] as String? ?? 'Android',
+      displayName: json['displayName'] as String? ?? 'Phone',
+      platform: json['platform'] as String? ?? 'Phone',
       pairedAt:
           DateTime.tryParse(pairedAtRaw)?.toLocal() ??
           DateTime.fromMillisecondsSinceEpoch(0),
-      pushChannelReady: json['pushChannelReady'] as bool? ?? true,
+      pushChannelReady: pushReady,
       connected: json['connected'] as bool? ?? true,
+      notificationsEnabled: json['notificationsEnabled'] as bool? ?? pushReady,
+      notificationChannel: json['notificationChannel'] as String? ?? 'push',
       pairingSessionId: json['pairingSessionId'] as String?,
-      remoteStateLabel:
-          json['remoteStateLabel'] as String? ?? 'Connected • Standby',
+      remoteStateLabel: json['remoteStateLabel'] as String? ?? 'Connected',
       remoteSensorForwardingEnabled:
           json['remoteSensorForwardingEnabled'] as bool? ?? true,
       isRingingRemotely: json['isRingingRemotely'] as bool? ?? false,
@@ -254,6 +314,8 @@ class PairingCodeInvitation {
     required this.expiresAt,
     required this.qrPayload,
     required this.relayEndpointUrl,
+    this.pairingUrl,
+    this.hostDisplayName,
   });
 
   final String pairingSessionId;
@@ -261,6 +323,10 @@ class PairingCodeInvitation {
   final DateTime expiresAt;
   final String qrPayload;
   final String relayEndpointUrl;
+  final String? pairingUrl;
+  final String? hostDisplayName;
+
+  String get effectiveScanUrl => pairingUrl ?? qrPayload;
 
   bool isExpiredAt(DateTime now) => !now.isBefore(expiresAt);
 
@@ -268,6 +334,25 @@ class PairingCodeInvitation {
     final diff = expiresAt.difference(now).inSeconds;
     return diff > 0 ? diff : 0;
   }
+}
+
+/// Non-consuming preview of a pairing code so the phone can prompt
+/// `"Connect to <Host Name>?"` with one Connect button.
+@immutable
+class PairingLookupPreview {
+  const PairingLookupPreview({
+    required this.pairingSessionId,
+    required this.hostDisplayName,
+    required this.pairingCode,
+    required this.relayEndpointUrl,
+    required this.expiresAt,
+  });
+
+  final String pairingSessionId;
+  final String hostDisplayName;
+  final String pairingCode;
+  final String relayEndpointUrl;
+  final DateTime expiresAt;
 }
 
 /// Connection state when this device is paired as a companion phone receiving
@@ -282,6 +367,8 @@ class CompanionSessionState {
     this.phoneDisplayName,
     this.relayEndpointUrl,
     this.deliveryMode = 'foreground_poll',
+    this.pushServerConfigured = false,
+    this.notificationsEnabled = false,
     this.statusMessage,
   });
 
@@ -296,7 +383,35 @@ class CompanionSessionState {
   final String? phoneDisplayName;
   final String? relayEndpointUrl;
   final String deliveryMode;
+  final bool pushServerConfigured;
+  final bool notificationsEnabled;
   final String? statusMessage;
+
+  CompanionSessionState copyWith({
+    bool? isConnected,
+    String? pairingSessionId,
+    String? hostDisplayName,
+    String? deviceId,
+    String? phoneDisplayName,
+    String? relayEndpointUrl,
+    String? deliveryMode,
+    bool? pushServerConfigured,
+    bool? notificationsEnabled,
+    String? statusMessage,
+  }) {
+    return CompanionSessionState(
+      isConnected: isConnected ?? this.isConnected,
+      pairingSessionId: pairingSessionId ?? this.pairingSessionId,
+      hostDisplayName: hostDisplayName ?? this.hostDisplayName,
+      deviceId: deviceId ?? this.deviceId,
+      phoneDisplayName: phoneDisplayName ?? this.phoneDisplayName,
+      relayEndpointUrl: relayEndpointUrl ?? this.relayEndpointUrl,
+      deliveryMode: deliveryMode ?? this.deliveryMode,
+      pushServerConfigured: pushServerConfigured ?? this.pushServerConfigured,
+      notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
+      statusMessage: statusMessage ?? this.statusMessage,
+    );
+  }
 }
 
 /// Sanitized metadata-only alert delivered to a paired companion phone.
@@ -311,12 +426,16 @@ class CompanionAlertEvent {
     required this.detectorType,
     required this.triggeredAt,
     required this.triggerSummary,
+    this.updatedSeq,
     this.peakMotionScore,
     this.hostDisplayName,
     this.isTest = false,
+    this.location,
+    this.locationStatus = IncidentLocationStatus.notRequested,
   });
 
   final int alertSeq;
+  final int? updatedSeq;
   final String pairingSessionId;
   final String incidentId;
   final String sessionId;
@@ -327,10 +446,51 @@ class CompanionAlertEvent {
   final double? peakMotionScore;
   final String? hostDisplayName;
   final bool isTest;
+  final DeviceLocationSnapshot? location;
+  final IncidentLocationStatus locationStatus;
+
+  int get effectiveCursorSeq => updatedSeq != null && updatedSeq! > alertSeq
+      ? updatedSeq!
+      : alertSeq;
+
+  CompanionAlertEvent copyWith({
+    int? alertSeq,
+    int? updatedSeq,
+    String? pairingSessionId,
+    String? incidentId,
+    String? sessionId,
+    String? kind,
+    String? detectorType,
+    DateTime? triggeredAt,
+    String? triggerSummary,
+    double? peakMotionScore,
+    String? hostDisplayName,
+    bool? isTest,
+    DeviceLocationSnapshot? location,
+    IncidentLocationStatus? locationStatus,
+  }) {
+    return CompanionAlertEvent(
+      alertSeq: alertSeq ?? this.alertSeq,
+      updatedSeq: updatedSeq ?? this.updatedSeq,
+      pairingSessionId: pairingSessionId ?? this.pairingSessionId,
+      incidentId: incidentId ?? this.incidentId,
+      sessionId: sessionId ?? this.sessionId,
+      kind: kind ?? this.kind,
+      detectorType: detectorType ?? this.detectorType,
+      triggeredAt: triggeredAt ?? this.triggeredAt,
+      triggerSummary: triggerSummary ?? this.triggerSummary,
+      peakMotionScore: peakMotionScore ?? this.peakMotionScore,
+      hostDisplayName: hostDisplayName ?? this.hostDisplayName,
+      isTest: isTest ?? this.isTest,
+      location: location ?? this.location,
+      locationStatus: locationStatus ?? this.locationStatus,
+    );
+  }
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
       'alertSeq': alertSeq,
+      'updatedSeq': ?updatedSeq,
       'pairingSessionId': pairingSessionId,
       'incidentId': incidentId,
       'sessionId': sessionId,
@@ -338,46 +498,60 @@ class CompanionAlertEvent {
       'detectorType': detectorType,
       'triggeredAtUtc': triggeredAt.toUtc().toIso8601String(),
       'triggerSummary': triggerSummary,
-      if (peakMotionScore != null) 'peakMotionScore': peakMotionScore,
-      if (hostDisplayName != null) 'hostDisplayName': hostDisplayName,
+      'peakMotionScore': ?peakMotionScore,
+      'hostDisplayName': ?hostDisplayName,
       'isTest': isTest,
+      if (location != null) 'location': location!.toJson(),
+      'locationStatus': locationStatus.name,
     };
   }
 
   factory CompanionAlertEvent.fromJson(Map<String, Object?> json) {
     final triggeredRaw = json['triggeredAtUtc'] as String? ?? '';
+    final rawLocation = json['location'];
+    final parsedLocation = rawLocation is Map
+        ? DeviceLocationSnapshot.fromJson(Map<String, Object?>.from(rawLocation))
+        : null;
+    final parsedLocStatus = IncidentLocationStatus.fromName(
+      json['locationStatus'] as String?,
+    );
     return CompanionAlertEvent(
       alertSeq: (json['alertSeq'] as num?)?.toInt() ?? 0,
+      updatedSeq: (json['updatedSeq'] as num?)?.toInt(),
       pairingSessionId: json['pairingSessionId'] as String? ?? '',
       incidentId: json['incidentId'] as String? ?? '',
       sessionId: json['sessionId'] as String? ?? '',
       kind: json['kind'] as String? ?? 'realDetectorTrigger',
       detectorType: json['detectorType'] as String? ?? 'unknown',
       triggeredAt: DateTime.tryParse(triggeredRaw)?.toLocal() ?? DateTime.now(),
-      triggerSummary:
-          json['triggerSummary'] as String? ?? 'Laptop alarm triggered',
+      triggerSummary: json['triggerSummary'] as String? ?? 'Alarm triggered',
       peakMotionScore: (json['peakMotionScore'] as num?)?.toDouble(),
       hostDisplayName: json['hostDisplayName'] as String?,
       isTest: json['isTest'] as bool? ?? false,
+      location: parsedLocation,
+      locationStatus: parsedLocation != null &&
+              parsedLocStatus == IncidentLocationStatus.notRequested
+          ? IncidentLocationStatus.attached
+          : parsedLocStatus,
     );
   }
 }
 
 /// Interactive commands and actions that can be executed on a paired device.
 enum PairedDeviceCommandType {
-  sendTestPush(id: 'send_test_push', displayName: 'Send Test Alert'),
+  sendTestPush(id: 'send_test_push', displayName: 'Send test alert'),
   toggleRemoteRing(id: 'toggle_remote_ring', displayName: 'Ring / Locate'),
   syncProtectionState(
     id: 'sync_protection_state',
-    displayName: 'Sync Protection State',
+    displayName: 'Sync protection state',
   ),
   toggleRemoteSensorForwarding(
     id: 'toggle_remote_sensor',
-    displayName: 'Toggle Sensor Link',
+    displayName: 'Toggle sensor link',
   ),
   simulateCompanionMotionTrigger(
     id: 'simulate_companion_motion',
-    displayName: 'Trigger Companion Motion',
+    displayName: 'Trigger companion motion',
   );
 
   const PairedDeviceCommandType({required this.id, required this.displayName});
@@ -434,7 +608,7 @@ class PairedDeviceActionRecord {
     return PairedDeviceActionRecord(
       actionId: json['actionId'] as String? ?? 'act_unknown',
       deviceId: json['deviceId'] as String? ?? 'dev_unknown',
-      deviceName: json['deviceName'] as String? ?? 'Companion Device',
+      deviceName: json['deviceName'] as String? ?? 'Phone',
       commandType: PairedDeviceCommandType.fromId(
         json['commandType'] as String? ?? 'send_test_push',
       ),
@@ -484,7 +658,7 @@ abstract class RemoteNotificationAdapter {
 
 /// Extended contract for notification adapters that support interactive device
 /// pairing, short-lived code/QR initiation, companion alert reception, remote
-/// companion commands, sensor telemetry bridging, unpairing, and backend relay
+/// companion commands, location updates, unpairing, and backend relay
 /// endpoint configuration.
 abstract class MutableRemoteNotificationAdapter
     extends RemoteNotificationAdapter {
@@ -508,6 +682,11 @@ abstract class MutableRemoteNotificationAdapter
 
   Future<PairingCodeInvitation> initiateHostPairing({String? hostDisplayName});
 
+  Future<PairingLookupPreview> lookupPairingInvitation(
+    String pairingCodeOrPayload, {
+    String? endpointUrlOverride,
+  });
+
   Future<List<PairedDeviceSummary>> syncPairedDevicesFromRelay();
 
   Future<PairedDeviceSummary> pairDevice({
@@ -529,11 +708,31 @@ abstract class MutableRemoteNotificationAdapter
     required String displayName,
     required String platform,
     String? endpointUrlOverride,
+    bool notificationsEnabled = false,
+    String notificationChannel = 'foreground_only',
+    String? pushToken,
+  });
+
+  Future<void> updateCompanionNotificationStatus({
+    required bool notificationsEnabled,
+    required String deliveryChannel,
+    String? pushToken,
+  });
+
+  Future<bool> updateIncidentLocation({
+    required String incidentId,
+    DeviceLocationSnapshot? location,
+    required IncidentLocationStatus locationStatus,
   });
 
   Future<List<CompanionAlertEvent>> pollCompanionAlertsOnce();
 
   Future<void> disconnectCompanionSession();
+
+  /// Revokes this installation's host pairing session, paired bonds, push
+  /// registrations, and companion session on the relay, then clears local
+  /// pairing state and restores [defaultRelayUrl].
+  Future<void> resetInstallationPairingAndPush({String? defaultRelayUrl});
 
   void setForegroundActive(bool active);
 

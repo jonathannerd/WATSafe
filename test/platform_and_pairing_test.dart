@@ -485,7 +485,7 @@ void main() {
     );
 
     testWidgets(
-      'PairedDevicesScreen interactively pairs and unpairs a companion device',
+      'Home Phone connection row shows Pair your phone before pairing, and Send test alert + Disconnect phone after pairing',
       (WidgetTester tester) async {
         await tester.binding.setSurfaceSize(const Size(1100, 900));
 
@@ -508,10 +508,12 @@ void main() {
             const ProtectionSettings(
               selectedDetector: DetectorType.macosCameraSceneMotion,
               onboardingCompleted: true,
+              deviceDisplayName: 'Jonathan’s MacBook',
             ),
           ),
           notificationAdapter: ConfigurableRemoteNotificationService(
             persistToDisk: false,
+            initialRelayEndpointUrl: 'http://127.0.0.1:$relayPort',
           ),
         );
 
@@ -519,95 +521,75 @@ void main() {
         await tester.pumpWidget(WatSafeApp(controller: controller));
         await tester.pumpAndSettle();
 
-        // Open Paired Devices tab
-        await tester.tap(find.text('Paired Devices'));
-        await tester.pumpAndSettle();
+        // Initially shows "Pair your phone" row on Home
+        expect(find.text('Pair your phone'), findsOneWidget);
 
-        // Initially unconfigured
+        // Tap "Pair your phone" -> opens real QR code sheet with one-time code
+        await tester.runAsync(() async {
+          await controller.initiateHostPairing();
+        });
+        await tester.tap(find.byKey(const Key('pair_your_phone_row')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
         expect(
-          find.text('No Paired Devices (Service Not Configured)'),
+          find.text('Scan this with your phone’s camera.'),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('pairing_qr_matrix')), findsOneWidget);
+        expect(
+          find.byKey(const Key('active_pairing_code_label')),
           findsOneWidget,
         );
 
-        // Enter companion device name and tap Pair Companion Device
-        await tester.enterText(
-          find.byKey(const Key('pair_device_name_input')),
-          'Aidan\'s S24',
-        );
-        final pairBtn = find.byKey(const Key('pair_device_submit_button'));
-        await tester.ensureVisible(pairBtn);
-        await tester.tap(pairBtn);
+        // Close modal and pair a phone
+        await tester.tap(find.byTooltip('Close'));
         await tester.pumpAndSettle();
 
+        await tester.runAsync(() async {
+          final phone = ConfigurableRemoteNotificationService(
+            persistToDisk: false,
+          );
+          await phone.pairAsCompanionPhone(
+            pairingCodeOrPayload:
+                controller.activePairingInvitation!.effectiveScanUrl,
+            displayName: 'Aidan\'s S24',
+            platform: 'Android',
+            notificationsEnabled: true,
+          );
+          await controller.syncPairedDevicesFromRelay();
+          phone.dispose();
+        });
+        await tester.pumpAndSettle();
+
+        // Home row now shows the phone's name, connection status, and notification state
         expect(find.text('Aidan\'s S24'), findsOneWidget);
-        expect(find.text('PUSH READY'), findsOneWidget);
+        expect(
+          find.textContaining('Phone connected • Notifications on'),
+          findsOneWidget,
+        );
         expect(controller.pairedDevices, hasLength(1));
 
-        final deviceId = controller.pairedDevices.first.deviceId;
-
-        // 1. Send Test Alert to paired device
-        final testPushBtn = find.byKey(Key('cmd_test_push_$deviceId'));
-        await tester.ensureVisible(testPushBtn);
-        await tester.tap(testPushBtn);
+        // Open connected phone details -> Send test alert & Disconnect phone
+        await tester.tap(find.byKey(const Key('paired_phone_details_trigger')));
         await tester.pumpAndSettle();
-        expect(controller.pairedDeviceActions, isNotEmpty);
-        expect(
-          controller.pairedDeviceActions.first.commandType,
-          PairedDeviceCommandType.sendTestPush,
-        );
-        expect(
-          find.byKey(const Key('paired_device_activity_log_card')),
-          findsOneWidget,
-        );
 
-        // 2. Ring / Locate paired device and verify badge updates to RINGING
-        final ringBtn = find.byKey(Key('cmd_ring_$deviceId'));
-        await tester.ensureVisible(ringBtn);
-        await tester.tap(ringBtn);
+        final sendTestBtn = find.byKey(const Key('send_test_alert_button'));
+        expect(sendTestBtn, findsOneWidget);
+        await tester.runAsync(() async {
+          final res = await controller.sendTestAlertToPairedPhone();
+          expect(res.delivered, isTrue);
+        });
         await tester.pumpAndSettle();
-        expect(controller.pairedDevices.first.isRingingRemotely, isTrue);
-        expect(find.text('RINGING'), findsOneWidget);
-        expect(find.text('Stop Ringing'), findsOneWidget);
+        expect(controller.incidents, hasLength(1));
+        expect(controller.incidents.first.isTest, isTrue);
 
-        // Stop ringing
-        await tester.tap(ringBtn);
-        await tester.pumpAndSettle();
-        expect(controller.pairedDevices.first.isRingingRemotely, isFalse);
-
-        // 3. Sync Protection Status to paired device
-        final syncBtn = find.byKey(Key('cmd_sync_$deviceId'));
-        await tester.ensureVisible(syncBtn);
-        await tester.tap(syncBtn);
-        await tester.pumpAndSettle();
-        expect(
-          controller.pairedDeviceActions.first.commandType,
-          PairedDeviceCommandType.syncProtectionState,
-        );
-
-        // 4. Toggle Foreground Sensor Link
-        final sensorBtn = find.byKey(Key('cmd_toggle_sensor_$deviceId'));
-        await tester.ensureVisible(sensorBtn);
-        await tester.tap(sensorBtn);
-        await tester.pumpAndSettle();
-        expect(
-          controller.pairedDevices.first.remoteSensorForwardingEnabled,
-          isFalse,
-        );
-        expect(find.text('SENSOR LINK PAUSED'), findsOneWidget);
-
-        // Re-enable Foreground Sensor Link
-        await tester.tap(sensorBtn);
-        await tester.pumpAndSettle();
-        expect(
-          controller.pairedDevices.first.remoteSensorForwardingEnabled,
-          isTrue,
-        );
-        expect(find.text('SENSOR LINK ACTIVE'), findsOneWidget);
-
-        // Unpair the device
-        final unpairBtn = find.byKey(Key('unpair_device_$deviceId'));
-        await tester.ensureVisible(unpairBtn);
-        await tester.tap(unpairBtn);
+        // Disconnect phone
+        await tester.runAsync(() async {
+          await controller.unpairCompanionDevice(
+            controller.pairedDevices.first.deviceId,
+          );
+        });
         await tester.pumpAndSettle();
 
         expect(controller.pairedDevices, isEmpty);
@@ -661,7 +643,7 @@ void main() {
           hostDisplayName: 'Jonathan\'s MacBook Pro',
         );
         expect(inviteA.pairingCode, isNotEmpty);
-        expect(inviteA.qrPayload, startsWith('watsafe://pair?'));
+        expect(inviteA.qrPayload, contains('/pair?code='));
         expect(laptopAController.pairedDevices, isEmpty);
 
         // 2. Companion Phone A pairs using the watsafe://pair QR payload
@@ -962,30 +944,31 @@ void main() {
         );
         await phoneController.initialize();
 
-        await tester.pumpWidget(WatSafeApp(controller: phoneController));
-        await tester.pumpAndSettle();
-
-        // Navigate to Paired Devices tab on the phone
-        await tester.tap(find.text('Paired Devices'));
-        await tester.pumpAndSettle();
-
-        await tester.enterText(
-          find.byKey(const Key('companion_code_or_qr_input')),
-          invite.qrPayload,
+        await tester.pumpWidget(
+          WatSafeApp(
+            controller: phoneController,
+            initialPairingPayload: invite.effectiveScanUrl,
+          ),
         );
-        final connectBtn = find.byKey(
-          const Key('connect_companion_phone_button'),
-        );
-        await tester.ensureVisible(connectBtn);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
         await tester.runAsync(() async {
           await phoneController.pairAsCompanionPhone(
-            pairingCodeOrPayload: invite.qrPayload,
+            pairingCodeOrPayload: invite.effectiveScanUrl,
             displayName: 'Test iPhone',
-            platform: 'iOS (APNs)',
+            platform: 'iOS',
           );
           await laptopController.syncPairedDevicesFromRelay();
         });
         await tester.pumpAndSettle();
+
+        // Dismiss the pairing notification modal if open
+        final finishBtn = find.byKey(const Key('finish_phone_pairing_button'));
+        if (finishBtn.evaluate().isNotEmpty) {
+          await tester.tap(finishBtn);
+          await tester.pumpAndSettle();
+        }
 
         expect(
           find.byKey(const Key('companion_connected_badge')),
@@ -1021,7 +1004,15 @@ void main() {
           findsOneWidget,
         );
         expect(
-          find.textContaining('REMOTE LAPTOP ALARM: Library MacBook'),
+          find.textContaining('Library MacBook • Alarm triggered'),
+          findsOneWidget,
+        );
+
+        // Tap "View event" on the banner -> opens the exact event in Activity
+        await tester.tap(find.byKey(const Key('view_alert_in_activity_button')));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('activity_selected_event_card')),
           findsOneWidget,
         );
 

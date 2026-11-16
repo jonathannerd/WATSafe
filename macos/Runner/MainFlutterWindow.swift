@@ -1,12 +1,16 @@
 import AVFoundation
 import Cocoa
+import CoreLocation
 import FlutterMacOS
 import Security
+import UserNotifications
 
 class MainFlutterWindow: NSWindow {
   private var cameraBridge: MacOSCameraMotionBridge?
   private var audioBridge: MacOSAudioAlarmBridge?
   private var secureStorageBridge: MacOSSecureStorageBridge?
+  private var locationBridge: MacOSLocationBridge?
+  private var notificationBridge: MacOSLocalNotificationBridge?
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -22,6 +26,8 @@ class MainFlutterWindow: NSWindow {
     cameraBridge = MacOSCameraMotionBridge(messenger: messenger)
     audioBridge = MacOSAudioAlarmBridge(messenger: messenger)
     secureStorageBridge = MacOSSecureStorageBridge(messenger: messenger)
+    locationBridge = MacOSLocationBridge(messenger: messenger)
+    notificationBridge = MacOSLocalNotificationBridge(messenger: messenger)
 
     super.awakeFromNib()
   }
@@ -1355,5 +1361,285 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     DispatchQueue.main.async { [weak self] in
       self?.eventSink?(payload)
     }
+  }
+}
+
+// MARK: - macOS CoreLocation Bridge
+
+final class MacOSLocationBridge: NSObject, CLLocationManagerDelegate {
+  private let channel: FlutterMethodChannel
+  private let locationManager = CLLocationManager()
+  private var pendingAuthCallback: FlutterResult?
+  private var pendingLocationCallbacks: [FlutterResult] = []
+  private var locationTimeoutWorkItem: DispatchWorkItem?
+
+  init(messenger: FlutterBinaryMessenger) {
+    channel = FlutterMethodChannel(
+      name: "dev.watsafe/location",
+      binaryMessenger: messenger
+    )
+    super.init()
+    locationManager.delegate = self
+    locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    channel.setMethodCallHandler { [weak self] call, result in
+      self?.handle(call: call, result: result)
+    }
+  }
+
+  private func mapAuthStatus(_ status: CLAuthorizationStatus) -> String {
+    switch status {
+    case .authorizedAlways, .authorized:
+      return "granted"
+    case .denied, .restricted:
+      return "denied"
+    case .notDetermined:
+      return "notDetermined"
+    @unknown default:
+      return "notDetermined"
+    }
+  }
+
+  private func currentAuthStatus() -> CLAuthorizationStatus {
+    return locationManager.authorizationStatus
+  }
+
+  private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "checkPermission":
+      if !CLLocationManager.locationServicesEnabled() {
+        result("denied")
+        return
+      }
+      result(mapAuthStatus(currentAuthStatus()))
+
+    case "requestPermission":
+      let status = currentAuthStatus()
+      if status != .notDetermined {
+        result(mapAuthStatus(status))
+        return
+      }
+      pendingAuthCallback = result
+      if #available(macOS 10.15, *) {
+        locationManager.requestWhenInUseAuthorization()
+      } else {
+        locationManager.startUpdatingLocation()
+        locationManager.stopUpdatingLocation()
+        pendingAuthCallback = nil
+        result(mapAuthStatus(currentAuthStatus()))
+      }
+
+    case "captureCurrentLocation":
+      guard CLLocationManager.locationServicesEnabled() else {
+        result(["status": "unavailable"])
+        return
+      }
+      let status = currentAuthStatus()
+      if status == .denied || status == .restricted {
+        result(["status": "permissionDenied"])
+        return
+      }
+      let args = call.arguments as? [String: Any]
+      let timeoutMs = (args?["timeoutMs"] as? NSNumber)?.intValue ?? 6000
+      pendingLocationCallbacks.append(result)
+      if pendingLocationCallbacks.count == 1 {
+        let timeoutItem = DispatchWorkItem { [weak self] in
+          self?.resolvePendingWithFallbackOrUnavailable()
+        }
+        locationTimeoutWorkItem = timeoutItem
+        DispatchQueue.main.asyncAfter(
+          deadline: .now() + .milliseconds(max(1000, timeoutMs)),
+          execute: timeoutItem
+        )
+        locationManager.requestLocation()
+      }
+
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func serializeLocation(_ loc: CLLocation, isLastKnown: Bool) -> [String: Any] {
+    var reducedAccuracy = loc.horizontalAccuracy > 100.0
+    if #available(macOS 11.0, *) {
+      if locationManager.accuracyAuthorization == .reducedAccuracy {
+        reducedAccuracy = true
+      }
+    }
+    return [
+      "status": "attached",
+      "latitude": loc.coordinate.latitude,
+      "longitude": loc.coordinate.longitude,
+      "accuracyMeters": max(0.0, loc.horizontalAccuracy),
+      "capturedAtMs": Int64(loc.timestamp.timeIntervalSince1970 * 1000.0),
+      "isApproximate": reducedAccuracy,
+      "isLastKnown": isLastKnown,
+    ]
+  }
+
+  private func finishPendingLocations(with payload: [String: Any]) {
+    locationTimeoutWorkItem?.cancel()
+    locationTimeoutWorkItem = nil
+    let callbacks = pendingLocationCallbacks
+    pendingLocationCallbacks.removeAll()
+    for cb in callbacks {
+      cb(payload)
+    }
+  }
+
+  private func resolvePendingWithFallbackOrUnavailable() {
+    if let cached = locationManager.location {
+      finishPendingLocations(with: serializeLocation(cached, isLastKnown: true))
+    } else {
+      finishPendingLocations(with: ["status": "unavailable"])
+    }
+  }
+
+  func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    if let cb = pendingAuthCallback {
+      let current = currentAuthStatus()
+      if current != .notDetermined {
+        pendingAuthCallback = nil
+        cb(mapAuthStatus(current))
+      }
+    }
+  }
+
+  func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    guard let latest = locations.last else {
+      resolvePendingWithFallbackOrUnavailable()
+      return
+    }
+    let ageSec = abs(latest.timestamp.timeIntervalSinceNow)
+    finishPendingLocations(with: serializeLocation(latest, isLastKnown: ageSec > 120.0))
+  }
+
+  func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    if let clError = error as? CLError, clError.code == .denied {
+      finishPendingLocations(with: ["status": "permissionDenied"])
+      return
+    }
+    resolvePendingWithFallbackOrUnavailable()
+  }
+}
+
+// MARK: - macOS UserNotifications & External URL Bridge
+
+final class MacOSLocalNotificationBridge: NSObject, UNUserNotificationCenterDelegate {
+  private let channel: FlutterMethodChannel
+
+  init(messenger: FlutterBinaryMessenger) {
+    channel = FlutterMethodChannel(
+      name: "dev.watsafe/local_notifications",
+      binaryMessenger: messenger
+    )
+    super.init()
+    if Bundle.main.bundlePath.hasSuffix(".app") {
+      UNUserNotificationCenter.current().delegate = self
+    }
+    channel.setMethodCallHandler { [weak self] call, result in
+      self?.handle(call: call, result: result)
+    }
+  }
+
+  private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let args = call.arguments as? [String: Any]
+    switch call.method {
+    case "checkPermission":
+      guard Bundle.main.bundlePath.hasSuffix(".app") else {
+        result("notApplicable")
+        return
+      }
+      UNUserNotificationCenter.current().getNotificationSettings { settings in
+        DispatchQueue.main.async {
+          switch settings.authorizationStatus {
+          case .authorized, .provisional:
+            result("granted")
+          case .denied:
+            result("denied")
+          case .notDetermined:
+            result("notDetermined")
+          @unknown default:
+            result("notDetermined")
+          }
+        }
+      }
+
+    case "requestPermission":
+      guard Bundle.main.bundlePath.hasSuffix(".app") else {
+        result("notApplicable")
+        return
+      }
+      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+        DispatchQueue.main.async {
+          result(granted ? "granted" : "denied")
+        }
+      }
+
+    case "showAlertNotification":
+      guard Bundle.main.bundlePath.hasSuffix(".app") else {
+        result(false)
+        return
+      }
+      let incidentId = (args?["incidentId"] as? String) ?? "inc_alert"
+      let deviceName = (args?["deviceName"] as? String) ?? "Protected Device"
+      let message = (args?["message"] as? String) ?? "Alarm triggered"
+      let isTest = (args?["isTest"] as? Bool) ?? false
+
+      let content = UNMutableNotificationContent()
+      content.title = isTest ? "WATSafe Test: \(deviceName)" : "WATSafe Alert: \(deviceName)"
+      content.body = message
+      content.sound = .default
+      content.userInfo = ["incidentId": incidentId]
+
+      let req = UNNotificationRequest(
+        identifier: "watsafe_\(incidentId)",
+        content: content,
+        trigger: nil
+      )
+      UNUserNotificationCenter.current().add(req) { error in
+        DispatchQueue.main.async {
+          result(error == nil)
+        }
+      }
+
+    case "getPushRegistrationToken":
+      result(nil)
+
+    case "openExternalUrl":
+      guard let rawUrl = args?["url"] as? String,
+            let url = URL(string: rawUrl) else {
+        result(false)
+        return
+      }
+      result(NSWorkspace.shared.open(url))
+
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    if #available(macOS 11.0, *) {
+      completionHandler([.banner, .list, .sound])
+    } else {
+      completionHandler([.alert, .sound])
+    }
+  }
+
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    if let incidentId = response.notification.request.content.userInfo["incidentId"] as? String {
+      DispatchQueue.main.async { [weak self] in
+        self?.channel.invokeMethod("onNotificationTapped", arguments: ["incidentId": incidentId])
+      }
+    }
+    completionHandler()
   }
 }

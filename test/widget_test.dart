@@ -16,7 +16,7 @@ import 'alarm_controller_test.dart';
 
 void main() {
   testWidgets(
-    'First-run onboarding creates PIN, opens dashboard, runs Test Alarm, and shows honest unconfigured states',
+    'First-run onboarding creates PIN, opens 3-task Home/Activity/Settings shell, runs siren test, and shows Pair your phone row',
     (WidgetTester tester) async {
       await tester.binding.setSurfaceSize(const Size(1100, 800));
 
@@ -53,7 +53,11 @@ void main() {
       // Verify first-run onboarding is displayed
       expect(find.text('Welcome to WATSafe'), findsOneWidget);
 
-      // Enter a 6-digit PIN and confirmation
+      // Enter device name and a 6-digit PIN + confirmation
+      await tester.enterText(
+        find.byKey(const Key('onboarding_device_name_input')),
+        'Jonathan’s MacBook',
+      );
       await tester.enterText(
         find.byKey(const Key('onboarding_pin_input')),
         '135790',
@@ -65,11 +69,22 @@ void main() {
       await tester.tap(find.byKey(const Key('onboarding_complete_button')));
       await tester.pumpAndSettle();
 
-      // Should now be on the Protection Dashboard in DISARMED state
+      // Should now be on Home in Off state with "Arm protection" and "Pair your phone"
       expect(find.byKey(const Key('dashboard_state_badge')), findsOneWidget);
+      expect(find.text('Off'), findsOneWidget);
+      expect(find.text('Arm protection'), findsOneWidget);
+      expect(find.text('Pair your phone'), findsOneWidget);
       expect(controller.state, ProtectionState.disarmed);
 
-      // Trigger the independent 5-second Test Alarm and stop it manually
+      // Verify 3-task navigation: Home, Activity, Settings
+      expect(find.text('Home'), findsOneWidget);
+      expect(find.text('Activity'), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
+
+      // Navigate to Settings and run the 5-second local siren test
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+
       final startTestFinder = find.byKey(const Key('start_test_alarm_button'));
       await tester.ensureVisible(startTestFinder);
       await tester.pumpAndSettle();
@@ -85,22 +100,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.isTestAlarmRunning, isFalse);
 
-      // Navigate to Incidents tab and verify the test event is clearly labeled
-      await tester.tap(find.text('Incidents'));
+      // Navigate to Activity and verify the test event is recorded cleanly
+      await tester.tap(find.text('Activity'));
       await tester.pumpAndSettle();
-      expect(find.text('TEST EVENT (SIMULATED)'), findsOneWidget);
-
-      // Navigate to Paired Devices tab and verify honest NOT CONFIGURED state
-      await tester.tap(find.text('Paired Devices'));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('paired_devices_status_badge')),
-        findsOneWidget,
-      );
-      expect(
-        find.text('No Paired Devices (Service Not Configured)'),
-        findsOneWidget,
-      );
+      expect(find.text('Test alert'), findsOneWidget);
+      expect(find.textContaining('Jonathan’s MacBook'), findsOneWidget);
 
       controller.dispose();
       await fakeDetector.dispose();

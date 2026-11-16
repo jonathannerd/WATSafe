@@ -9,4 +9,6 @@ typedef AppServices = ({
   IncidentStorageAdapter incidents,
   SettingsStorageAdapter settings,
   RemoteNotificationAdapter notifications,
+  LocationServiceAdapter location,
+  LocalNotificationAdapter localNotifications,
 });

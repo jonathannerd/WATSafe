@@ -15,10 +15,15 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
@@ -51,6 +56,30 @@ class MainActivity : FlutterActivity() {
   private var motionBridge: AndroidMotionSensorBridge? = null
   private var audioBridge: AndroidAudioAlarmBridge? = null
   private var secureStorageBridge: AndroidSecureStorageBridge? = null
+  private var locationBridge: AndroidLocationBridge? = null
+  private var notificationBridge: AndroidLocalNotificationBridge? = null
+  private var initialTappedIncidentId: String? = null
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    extractIncidentIdFromIntent(intent)?.let { initialTappedIncidentId = it }
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    extractIncidentIdFromIntent(intent)?.let { id ->
+      notificationBridge?.emitNotificationTap(id)
+    }
+  }
+
+  private fun extractIncidentIdFromIntent(intent: Intent?): String? {
+    val extra = intent?.getStringExtra(AndroidLocalNotificationBridge.EXTRA_INCIDENT_ID)
+    if (!extra.isNullOrBlank()) {
+      return extra
+    }
+    return null
+  }
 
   override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
     super.configureFlutterEngine(flutterEngine)
@@ -58,6 +87,14 @@ class MainActivity : FlutterActivity() {
     motionBridge = AndroidMotionSensorBridge(this, applicationContext, messenger)
     audioBridge = AndroidAudioAlarmBridge(messenger)
     secureStorageBridge = AndroidSecureStorageBridge(applicationContext, messenger)
+    locationBridge = AndroidLocationBridge(this, applicationContext, messenger)
+    notificationBridge = AndroidLocalNotificationBridge(this, applicationContext, messenger)
+    initialTappedIncidentId?.let { id ->
+      initialTappedIncidentId = null
+      Handler(Looper.getMainLooper()).postDelayed({
+        notificationBridge?.emitNotificationTap(id)
+      }, 300L)
+    }
   }
 
   override fun onPause() {
@@ -77,10 +114,14 @@ class MainActivity : FlutterActivity() {
   ) {
     super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     motionBridge?.onRequestPermissionsResult(requestCode, grantResults)
+    locationBridge?.onRequestPermissionsResult(requestCode, grantResults)
+    notificationBridge?.onRequestPermissionsResult(requestCode, grantResults)
   }
 
   override fun onDestroy() {
     motionBridge?.detachActivity()
+    locationBridge?.detachActivity()
+    notificationBridge?.detachActivity()
     audioBridge?.dispose()
     super.onDestroy()
   }
@@ -1069,6 +1110,356 @@ private class AndroidSecureStorageBridge(
       String(plainBytes, Charsets.UTF_8)
     } catch (_: Exception) {
       null
+    }
+  }
+}
+
+// ============================================================================
+// 5. Android Location Bridge (`dev.watsafe/location`)
+// ============================================================================
+
+class AndroidLocationBridge(
+  private var activity: Activity?,
+  private val appContext: Context,
+  messenger: io.flutter.plugin.common.BinaryMessenger
+) : MethodChannel.MethodCallHandler {
+  companion object {
+    private const val REQ_CODE_LOCATION = 4811
+  }
+
+  private val channel = MethodChannel(messenger, "dev.watsafe/location")
+  private var pendingPermissionResult: MethodChannel.Result? = null
+
+  init {
+    channel.setMethodCallHandler(this)
+  }
+
+  fun detachActivity() {
+    activity = null
+  }
+
+  private fun hasFineLocation(): Boolean {
+    return appContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) ==
+      PackageManager.PERMISSION_GRANTED
+  }
+
+  private fun hasCoarseLocation(): Boolean {
+    return appContext.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
+      PackageManager.PERMISSION_GRANTED
+  }
+
+  fun onRequestPermissionsResult(requestCode: Int, grantResults: IntArray) {
+    if (requestCode != REQ_CODE_LOCATION) return
+    val pending = pendingPermissionResult ?: return
+    pendingPermissionResult = null
+    val anyGranted = grantResults.any { it == PackageManager.PERMISSION_GRANTED }
+    pending.success(if (anyGranted) "granted" else "denied")
+  }
+
+  override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+    when (call.method) {
+      "checkPermission" -> {
+        result.success(if (hasFineLocation() || hasCoarseLocation()) "granted" else "notDetermined")
+      }
+
+      "requestPermission" -> {
+        if (hasFineLocation() || hasCoarseLocation()) {
+          result.success("granted")
+          return
+        }
+        val host = activity
+        if (host != null && pendingPermissionResult == null) {
+          pendingPermissionResult = result
+          host.requestPermissions(
+            arrayOf(
+              Manifest.permission.ACCESS_FINE_LOCATION,
+              Manifest.permission.ACCESS_COARSE_LOCATION
+            ),
+            REQ_CODE_LOCATION
+          )
+          return
+        }
+        result.success("denied")
+      }
+
+      "captureCurrentLocation" -> {
+        if (!hasFineLocation() && !hasCoarseLocation()) {
+          result.success(mapOf("status" to "permissionDenied"))
+          return
+        }
+        val locManager = appContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        if (locManager == null) {
+          result.success(mapOf("status" to "unavailable"))
+          return
+        }
+        val timeoutMs = ((call.argument<Number>("timeoutMs"))?.toLong() ?: 6000L).coerceAtLeast(1000L)
+        val fineGranted = hasFineLocation()
+        val provider = when {
+          fineGranted && locManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
+            LocationManager.GPS_PROVIDER
+          locManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) ->
+            LocationManager.NETWORK_PROVIDER
+          else -> null
+        }
+
+        val lastKnown = getBestLastKnownLocation(locManager, fineGranted)
+        if (provider == null) {
+          if (lastKnown != null) {
+            result.success(serializeLocation(lastKnown, isLastKnown = true, coarseOnly = !fineGranted))
+          } else {
+            result.success(mapOf("status" to "unavailable"))
+          }
+          return
+        }
+
+        var completed = false
+        val mainHandler = Handler(Looper.getMainLooper())
+        val listener = object : LocationListener {
+          override fun onLocationChanged(location: Location) {
+            if (completed) return
+            completed = true
+            try {
+              locManager.removeUpdates(this)
+            } catch (_: Exception) {}
+            result.success(serializeLocation(location, isLastKnown = false, coarseOnly = !fineGranted))
+          }
+
+          @Deprecated("Deprecated in Java")
+          override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+          override fun onProviderEnabled(provider: String) {}
+          override fun onProviderDisabled(provider: String) {}
+        }
+
+        val timeoutRunnable = Runnable {
+          if (completed) return@Runnable
+          completed = true
+          try {
+            locManager.removeUpdates(listener)
+          } catch (_: Exception) {}
+          if (lastKnown != null) {
+            result.success(serializeLocation(lastKnown, isLastKnown = true, coarseOnly = !fineGranted))
+          } else {
+            result.success(mapOf("status" to "unavailable"))
+          }
+        }
+        mainHandler.postDelayed(timeoutRunnable, timeoutMs)
+
+        try {
+          locManager.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+        } catch (_: SecurityException) {
+          mainHandler.removeCallbacks(timeoutRunnable)
+          if (!completed) {
+            completed = true
+            result.success(mapOf("status" to "permissionDenied"))
+          }
+        } catch (_: Exception) {
+          mainHandler.removeCallbacks(timeoutRunnable)
+          if (!completed) {
+            completed = true
+            if (lastKnown != null) {
+              result.success(serializeLocation(lastKnown, isLastKnown = true, coarseOnly = !fineGranted))
+            } else {
+              result.success(mapOf("status" to "unavailable"))
+            }
+          }
+        }
+      }
+
+      else -> result.notImplemented()
+    }
+  }
+
+  private fun getBestLastKnownLocation(locManager: LocationManager, fineGranted: Boolean): Location? {
+    val candidates = mutableListOf<Location>()
+    try {
+      if (fineGranted) {
+        locManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { candidates.add(it) }
+      }
+      locManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)?.let { candidates.add(it) }
+      locManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)?.let { candidates.add(it) }
+    } catch (_: SecurityException) {}
+    return candidates.maxByOrNull { it.time }
+  }
+
+  private fun serializeLocation(loc: Location, isLastKnown: Boolean, coarseOnly: Boolean): Map<String, Any> {
+    val acc = if (loc.hasAccuracy()) loc.accuracy.toDouble() else 150.0
+    return mapOf(
+      "status" to "attached",
+      "latitude" to loc.latitude,
+      "longitude" to loc.longitude,
+      "accuracyMeters" to acc,
+      "capturedAtMs" to loc.time,
+      "isApproximate" to (coarseOnly || acc > 100.0),
+      "isLastKnown" to isLastKnown
+    )
+  }
+}
+
+// ============================================================================
+// 6. Android Companion Notifications & External URL Bridge (`dev.watsafe/local_notifications`)
+// ============================================================================
+
+class AndroidLocalNotificationBridge(
+  private var activity: Activity?,
+  private val appContext: Context,
+  messenger: io.flutter.plugin.common.BinaryMessenger
+) : MethodChannel.MethodCallHandler {
+  companion object {
+    const val EXTRA_INCIDENT_ID = "watsafe_incident_id"
+    private const val CHANNEL_ID = "watsafe_companion_alerts"
+    private const val REQ_CODE_COMPANION_NOTIFICATIONS = 4812
+  }
+
+  private val channel = MethodChannel(messenger, "dev.watsafe/local_notifications")
+  private var pendingPermissionResult: MethodChannel.Result? = null
+
+  init {
+    ensureChannel()
+    channel.setMethodCallHandler(this)
+  }
+
+  fun detachActivity() {
+    activity = null
+  }
+
+  fun emitNotificationTap(incidentId: String) {
+    Handler(Looper.getMainLooper()).post {
+      channel.invokeMethod("onNotificationTapped", mapOf("incidentId" to incidentId))
+    }
+  }
+
+  private fun ensureChannel() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+      val alertChannel = NotificationChannel(
+        CHANNEL_ID,
+        "WATSafe Device Alerts",
+        NotificationManager.IMPORTANCE_HIGH
+      ).apply {
+        description = "Alerts when a paired laptop or protected device triggers an alarm."
+        enableVibration(true)
+        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+      }
+      manager?.createNotificationChannel(alertChannel)
+    }
+  }
+
+  private fun isNotificationAllowed(): Boolean {
+    val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+    if (manager != null && !manager.areNotificationsEnabled()) {
+      return false
+    }
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      appContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+        PackageManager.PERMISSION_GRANTED
+    } else {
+      true
+    }
+  }
+
+  fun onRequestPermissionsResult(requestCode: Int, grantResults: IntArray) {
+    if (requestCode != REQ_CODE_COMPANION_NOTIFICATIONS) return
+    val pending = pendingPermissionResult ?: return
+    pendingPermissionResult = null
+    val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+    pending.success(if (granted) "granted" else "denied")
+  }
+
+  override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+    when (call.method) {
+      "checkPermission" -> {
+        if (isNotificationAllowed()) {
+          result.success("granted")
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+          result.success("notDetermined")
+        } else {
+          result.success("denied")
+        }
+      }
+
+      "requestPermission" -> {
+        if (isNotificationAllowed()) {
+          result.success("granted")
+          return
+        }
+        val host = activity
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            host != null &&
+            pendingPermissionResult == null) {
+          pendingPermissionResult = result
+          host.requestPermissions(
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            REQ_CODE_COMPANION_NOTIFICATIONS
+          )
+          return
+        }
+        result.success(if (isNotificationAllowed()) "granted" else "denied")
+      }
+
+      "showAlertNotification" -> {
+        if (!isNotificationAllowed()) {
+          result.success(false)
+          return
+        }
+        ensureChannel()
+        val incidentId = call.argument<String>("incidentId") ?: "inc_alert"
+        val deviceName = call.argument<String>("deviceName") ?: "Protected Device"
+        val message = call.argument<String>("message") ?: "Alarm triggered"
+        val isTest = call.argument<Boolean>("isTest") ?: false
+
+        val tapIntent = Intent(appContext, MainActivity::class.java).apply {
+          flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+          putExtra(EXTRA_INCIDENT_ID, incidentId)
+        }
+        val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+          (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        val pendingIntent = PendingIntent.getActivity(
+          appContext,
+          incidentId.hashCode(),
+          tapIntent,
+          pendingFlags
+        )
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+          Notification.Builder(appContext, CHANNEL_ID)
+        } else {
+          @Suppress("DEPRECATION")
+          Notification.Builder(appContext)
+        }
+
+        val notification = builder
+          .setSmallIcon(android.R.drawable.ic_dialog_alert)
+          .setContentTitle(if (isTest) "WATSafe Test: $deviceName" else "WATSafe Alert: $deviceName")
+          .setContentText(message)
+          .setAutoCancel(true)
+          .setContentIntent(pendingIntent)
+          .build()
+
+        val manager = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        manager?.notify(incidentId.hashCode(), notification)
+        result.success(manager != null)
+      }
+
+      "getPushRegistrationToken" -> result.success(null)
+
+      "openExternalUrl" -> {
+        val rawUrl = call.argument<String>("url")
+        if (rawUrl.isNullOrBlank()) {
+          result.success(false)
+          return
+        }
+        try {
+          val viewIntent = Intent(Intent.ACTION_VIEW, Uri.parse(rawUrl)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+          }
+          appContext.startActivity(viewIntent)
+          result.success(true)
+        } catch (_: Exception) {
+          result.success(false)
+        }
+      }
+
+      else -> result.notImplemented()
     }
   }
 }
