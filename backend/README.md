@@ -1,92 +1,85 @@
-# WATSafe Backend Relay & Companion Alert Service (`backend/`)
+# WATSafe Backend Relay & Web Push Companion (`backend/`)
 
-The standalone WATSafe Relay Server (`backend/server.dart`) connects a protected laptop (`macOS`, `Windows`, or Browser prototype) with a paired companion phone (`Android`, `iOS`, or Browser) using short-lived, single-use pairing codes and session-scoped bearer tokens.
-
-By default, the relay runs 100% locally in memory with zero external accounts or API keys. When `AIVEN_DATABASE_URL` (or `DATABASE_URL`) is provided in the backend environment, it automatically persists pairing sessions, device bonds, and sanitized incident alerts to PostgreSQL (including Aiven Cloud PostgreSQL over TLS).
+The standalone WATSafe Relay Server (`backend/server.dart`, backed by `lib/relay/`) connects a protected device (`macOS`, `Windows`, or Browser) with a paired companion phone (`iPhone` Home Screen Web App, `Android` Chrome/PWA, or native mobile app) using short-lived, single-use HTTPS QR pairing links, RFC 8030 / RFC 8291 / RFC 8292 Web Push encryption, and session-scoped bearer tokens.
 
 ---
 
-## 1. Security & Privacy Boundary
+## 1. Security & Privacy Invariants
 
-- **Strict Payload Sanitization:** `POST /v1/incidents:report` recursively inspects every incoming JSON key and string value and rejects (`400 PRIVACY_INVARIANT_VIOLATION`) any payload containing camera frames/images (`frame*`, `image*`, `rgba`, `nv12`, `data:image/*`, etc.), PIN material (`pin`, `pinHash`, `pbkdf2`, `salt*`), or database/cloud credentials (`databaseUrl`, `aiven*`, `postgres://`, `privateKey`, `serviceAccount`).
-- **Session Isolation:**
-  - `POST /v1/pairing/initiate` issues a 5-minute, single-use 6-character pairing code (`K7M-4P9`) and `watsafe://pair?...` QR payload alongside a cryptographic `hostToken` bound to `pairingSessionId`.
-  - `POST /v1/pairing/complete` consumes the single-use pairing code and issues a `companionToken` bound strictly to that `pairingSessionId` (never exposing `hostToken` to the phone).
-  - `GET /v1/companion/alerts` requires `Authorization: Bearer <companionToken>` and returns **only** alerts recorded for that companion's `pairingSessionId`. Unpaired or revoked sessions receive `401 Unauthorized`.
-- **Reconnect & Retry Idempotency:** Incident reports are deduplicated on the server by `(pairingSessionId, incidentId)` and on the phone by `incidentId` + monotonic `alertSeq`, so network retries or phone reconnects never duplicate alerts.
-- **Server-Only Credentials:** Database URLs (`AIVEN_DATABASE_URL` / `DATABASE_URL`) and future APNs (`.p8`) / FCM (`service-account.json`) credentials live strictly in backend environment variables—never in Flutter client code or HTTP responses.
-- **Local Siren Independence:** `AlarmController` triggers the local siren first before dispatching any HTTP relay request.
+- **Strict Payload Sanitization:** Every write endpoint inspects incoming JSON keys and string values recursively and rejects (`400 PRIVACY_INVARIANT_VIOLATION`) any payload containing camera frames/images (`frame*`, `image*`, `rgba`, `nv12`, `data:image/*`), PIN material (`pin`, `pinHash`, `pbkdf2`, `salt*`), or database/provider credentials (`databaseUrl`, `aiven*`, `postgres://`, `privateKey`, `serviceAccount`).
+- **Authenticated Location Access Only:** Protected device coordinates attached via `POST /v1/incidents/location` are stored strictly on the session's authenticated event record (`GET /v1/companion/alerts` and `GET /v1/companion/events/<incidentId>`). Lock-screen Web Push / APNs / FCM notification payloads contain **only** the protected device name, plain alarm message, and `incidentId` — never coordinates.
+- **Zero Credentials in URLs:** Neither `companionToken` nor `hostToken` is ever placed in query strings. Moving from Mobile Safari into an isolated iOS Home Screen web app uses a short-lived, single-use 6-character setup code (`POST /v1/companion/handoff-code` -> `POST /v1/companion/claim-handoff`) that rotates the companion token on consumption.
+- **Built-In RFC 8291 + RFC 8292 Web Push:** Encrypts push payloads with `aes128gcm` (NIST P-256 ECDH + HKDF-SHA-256) and signs VAPID `ES256` JWT headers directly in pure Dart, auto-revoking expired (`404` / `410`) push subscriptions.
+- **Verified Webhook Adapter:** When `WATSAFE_PUSH_WEBHOOK_URL` is configured, `verifyConfiguredSenders()` probes reachability on startup and reports `webhookSenderVerified` on `/v1/health` rather than assuming an unverified webhook works.
 
 ---
 
-## 2. Running the Relay Locally (In-Memory Default)
+## 2. Single-Command Local HTTPS Launch
+
+From the repository root, start the relay, a valid-certificate public HTTPS tunnel (`cloudflared` -> `ngrok` -> built-in `ssh localhost.run`), health verification, and the WATSafe desktop app with one command:
 
 ```bash
-dart run backend/server.dart 8787
+./scripts/run_watsafe.sh
 ```
 
-Health check:
-```bash
-curl http://127.0.0.1:8787/v1/health
-```
-
-### Pairing a Laptop and Phone on the Same Wi-Fi / LAN (or Codespaces Port)
-1. Find your laptop's LAN IP (for example `192.168.1.42`) or forwarded HTTPS port URL.
-2. Start `dart run backend/server.dart 8787` (binds `0.0.0.0:8787` by default; override with `WATSAFE_BIND_HOST`).
-3. On the **Laptop** in WATSafe -> **Paired Devices**:
-   - Enter `http://<laptop-lan-ip>:8787` in **Backend Relay URL** and click **Save Relay URL**.
-   - Click **Generate Code & QR** to display the 5-minute single-use code and QR payload.
-4. On the **Phone** in WATSafe -> **Paired Devices**:
-   - Under **2. Companion Phone — Pair with Laptop & Receive Alerts**, paste the `watsafe://pair?...` link (or enter the Relay URL + 6-character code) and tap **Connect Phone to Laptop**.
-5. The laptop automatically updates to **READY — Connected (1 paired device)**, and triggering an alarm on the laptop immediately delivers a **REMOTE LAPTOP ALARM** banner and alert entry on the paired phone while WATSafe is open in the foreground.
-
-> **Foreground vs. Background Push Delivery:** Out of the box (without Apple/Google developer push keys), companion phones receive live alerts via authenticated foreground polling while WATSafe is open on screen. Delivering wake-up push notifications when the mobile OS terminates or backgrounds the app requires deploying this relay over HTTPS with server-side APNs (`.p8` key, Key ID, Team ID) and Firebase Cloud Messaging (`GOOGLE_APPLICATION_CREDENTIALS`) environment variables.
+Or when opening `WATSafe.app` directly without a terminal, `LocalRelaySupervisor` automatically connects to your configured HTTPS relay or starts an embedded local relay in-process.
 
 ---
 
-## 3. Running & Testing with Chuan's Aiven PostgreSQL Database
+## 3. Free Persistent Cloud HTTPS Deployment (Zero Paid Services)
 
-Keep all Aiven credentials in shell environment variables (never edit source files or commit `.env` files).
+Deployment files are ready at the repository root (`Dockerfile` and `render.yaml` on the **Free** plan):
 
-### Environment Variables
-| Variable | Required | Description |
+1. Generate a persistent VAPID keypair locally (keys stay out of Git):
+   ```bash
+   dart run tool/generate_vapid_keys.dart
+   ```
+2. On [Render](https://dashboard.render.com) (Free tier, automatic Let's Encrypt HTTPS certificate), click **New -> Blueprint**, select `jonathannerd/WATSafe`, and paste `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (plus optional `AIVEN_DATABASE_URL`) into the environment prompt.
+3. Build or run WATSafe once with your HTTPS relay URL baked in:
+   ```bash
+   flutter build macos --dart-define=WATSAFE_API_URL=https://watsafe-relay.onrender.com
+   ```
+   Opening `WATSafe.app` then connects directly over HTTPS every time with zero local terminals or tunnels required.
+
+---
+
+## 4. Environment Variables Reference
+
+| Variable | Purpose |
+| :--- | :--- |
+| `PORT` / `WATSAFE_BIND_HOST` | Listen port (default `8787`) and bind address (default `0.0.0.0`) |
+| `WATSAFE_PUBLIC_URL` | Public HTTPS base URL encoded into QR pairing links |
+| `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | NIST P-256 VAPID keypair (base64url) for direct Web Push (`ES256`); auto-generated in `.watsafe-runtime/vapid_keys.json` during local runs when unset |
+| `VAPID_SUBJECT` | Contact URI for VAPID JWT `sub` claim (default `mailto:alerts@watsafe.app`) |
+| `AIVEN_DATABASE_URL` / `DATABASE_URL` | Optional PostgreSQL URI (`postgres://...`); falls back to in-memory store when unset |
+| `AIVEN_CA_CERT_PATH` / `PGSSLROOTCERT` | Optional CA certificate path for `SslMode.verifyFull` |
+| `FCM_PROJECT_ID` + `FCM_BEARER_TOKEN` / `FCM_SERVER_KEY` | Optional Firebase Cloud Messaging credentials for native Android/iOS push tokens |
+| `APNS_BUNDLE_ID` + `APNS_AUTH_TOKEN` | Optional Apple Push Notification service HTTP/2 credentials for native iOS builds |
+| `WATSAFE_PUSH_WEBHOOK_URL` | Optional external push gateway URL (verified on startup) |
+
+---
+
+## 5. Key Endpoints
+
+| Endpoint | Auth | Description |
 | :--- | :--- | :--- |
-| `AIVEN_DATABASE_URL` | Yes (or `DATABASE_URL`) | Full Aiven PostgreSQL service URI, e.g. `postgres://avnadmin:<password>@<service>.aivencloud.com:<port>/defaultdb?sslmode=require` |
-| `AIVEN_CA_CERT_PATH` | Optional | Path to Aiven `ca.pem` certificate file to enforce `SslMode.verifyFull` (`PGSSLROOTCERT` is also recognized) |
-| `WATSAFE_DB_TABLE_PREFIX` | Optional | Table prefix (defaults to `watsafe_`; tests use `watsafe_it_`) |
-| `PORT` | Optional | HTTP port for `backend/server.dart` (defaults to `8787`) |
-
-### Start the Relay Backed by Aiven PostgreSQL
-```bash
-export AIVEN_DATABASE_URL="postgres://avnadmin:<password>@<host>.aivencloud.com:<port>/defaultdb?sslmode=require"
-# Optional if verifying against Aiven's project CA certificate:
-# export AIVEN_CA_CERT_PATH="$HOME/Downloads/ca.pem"
-
-dart run backend/server.dart 8787
-```
-On startup, the relay prints `(storage: aiven_postgres — postgres://avnadmin@<host>:<port>/defaultdb)` (password redacted) and automatically creates:
-- `watsafe_pairing_sessions`
-- `watsafe_companion_bonds`
-- `watsafe_session_alerts`
-
-### Run the Automated Aiven Integration Test
-When `AIVEN_DATABASE_URL` is exported, the live PostgreSQL integration test in `test/platform_and_pairing_test.dart` automatically unsuspends and verifies session creation, single-use code pairing, and alert persistence against Aiven:
-
-```bash
-AIVEN_DATABASE_URL="postgres://avnadmin:<password>@<host>.aivencloud.com:<port>/defaultdb?sslmode=require" \
-  flutter test test/platform_and_pairing_test.dart
-```
-
----
-
-## 4. REST API Endpoints
-
-| Method & Path | Auth | Purpose |
-| :--- | :--- | :--- |
-| `GET /v1/health` | Public | Returns `{status, storageBackend, deliveryMode}` (never credentials) |
-| `POST /v1/pairing/initiate` | Optional `Bearer <hostToken>` | Creates or rotates a 5-minute single-use `pairingCode` + `qrPayload` for a laptop session |
-| `POST /v1/pairing/complete` | Single-use `pairingCode` (or `Bearer <hostToken>`) | Consumes `pairingCode`, binds phone to `pairingSessionId`, and returns `companionToken` |
-| `GET /v1/pairing/devices` | `Bearer <hostToken>` | Lists active paired phones for that laptop session only |
-| `DELETE /v1/pairing/devices/<deviceId>` | `Bearer <hostToken>` | Unpairs `<deviceId>` and immediately revokes its `companionToken` |
-| `POST /v1/incidents:report` | `Bearer <hostToken>` | Rejects frame/PIN/credential fields (`400`), deduplicates by `incidentId`, and records a session-scoped alert |
-| `GET /v1/companion/alerts?afterSeq=<n>` | `Bearer <companionToken>` | Returns new alerts (`alertSeq > afterSeq`) strictly for that companion's `pairingSessionId` |
+| `GET /`, `GET /pair`, `GET /companion` | Public HTML | Guided 5-state iPhone & Android Web Companion PWA |
+| `GET /manifest.webmanifest`, `GET /sw.js`, `GET /icons/*` | Public PWA | Web App Manifest (`standalone`), icons (`192`, `512`, `180` Apple touch), and Service Worker |
+| `GET /v1/health` | Public JSON | Readiness check, VAPID public key, and active `publicHttpsOrigin` |
+| `POST /v1/pairing/initiate` | Optional `Bearer <hostToken>` | Generates a 5-minute single-use code and HTTPS `/pair?code=...` QR URL |
+| `GET /v1/pairing/lookup?code=...` | Rate-limited | Non-consuming code preview returning `hostDisplayName` and `vapidPublicKey` |
+| `POST /v1/pairing/complete` | Rate-limited `pairingCode` | Consumes single-use code, binds phone, and returns `companionToken` |
+| `POST /v1/companion/handoff-code` | `Bearer <companionToken>` | Mints 10-minute single-use 6-char code to move pairing from iOS Safari into Home Screen web app |
+| `POST /v1/companion/claim-handoff` | Rate-limited `handoffCode` | Transfers existing paired bond into Home Screen app and rotates `companionToken` |
+| `POST /v1/companion/push-subscription` | `Bearer <companionToken>` | Validates & stores RFC 8291 Web Push subscription (`endpoint`, `p256dh`, `auth`) |
+| `DELETE /v1/companion/push-subscription` | `Bearer <companionToken>` | Removes Web Push subscription and marks notifications disabled |
+| `POST /v1/companion/status` | `Bearer <companionToken>` | Updates 5-state readiness and enforces honest `notificationsEnabled` status |
+| `POST /v1/companion/test-alert` | `Bearer <companionToken>` | Dispatches immediate or delayed (`delaySeconds` `0..10`) real Web Push test alert |
+| `POST /v1/companion/disconnect` | `Bearer <companionToken>` | Revokes companion bond from the phone |
+| `POST /v1/pairing/session/revoke` | `Bearer <hostToken>` | Revokes only this host installation's session, bonds, push registrations, and alerts |
+| `GET /v1/pairing/devices` | `Bearer <hostToken>` | Lists paired phones and accurate notification readiness for the host |
+| `DELETE /v1/pairing/devices/<id>` | `Bearer <hostToken>` | Disconnects a phone and revokes its `companionToken` |
+| `POST /v1/incidents:report` | `Bearer <hostToken>` | Records real or test alarm (`incidentId` deduplicated) and dispatches real Web Push |
+| `POST /v1/incidents/location` | `Bearer <hostToken>` | Attaches asynchronous device location to an existing `incidentId` |
+| `GET /v1/companion/alerts?afterSeq=<n>` | `Bearer <companionToken>` | Streams new and location-updated session alerts |
+| `GET /v1/companion/events/<incidentId>` | `Bearer <companionToken \| hostToken>` | Authenticated single-event + location lookup |

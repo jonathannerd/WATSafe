@@ -215,6 +215,13 @@ class PinSecurityService {
     return const PinValidationResult(isValid: true);
   }
 
+  /// Deletes this installation's stored PIN record and resets lockout counters
+  /// for explicit developer demo resets.
+  Future<void> clearPinForInstallationReset() async {
+    await _storage.deletePinRecord();
+    _resetBackoff();
+  }
+
   PinVerificationResult _recordFailedAttempt() {
     _failedAttempts += 1;
     final delay = _delayForFailedAttempt(_failedAttempts);

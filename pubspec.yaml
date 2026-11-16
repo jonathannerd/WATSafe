@@ -38,6 +38,7 @@ dependencies:
   crypto: ^3.0.8
   web: ^1.1.1
   postgres: ^3.6.0
+  qr: ^4.0.1
 
 dev_dependencies:
   flutter_test:

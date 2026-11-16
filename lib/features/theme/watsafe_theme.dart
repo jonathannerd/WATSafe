@@ -152,19 +152,18 @@ class WatSafeTheme {
   static String labelForCapabilityStatus(CapabilityStatus status) {
     switch (status) {
       case CapabilityStatus.ready:
-        return 'READY';
+        return 'Ready';
       case CapabilityStatus.supported:
-        return 'SUPPORTED';
+        return 'Available';
       case CapabilityStatus.permissionRequired:
-        return 'PERMISSION REQUIRED';
+        return 'Permission needed';
       case CapabilityStatus.degraded:
-        return 'DEGRADED INPUT';
+        return 'Needs attention';
       case CapabilityStatus.unsupported:
-        return 'UNSUPPORTED';
+        return 'Unavailable';
       case CapabilityStatus.notImplemented:
-        return 'NOT IMPLEMENTED';
       case CapabilityStatus.notConfigured:
-        return 'NOT CONFIGURED';
+        return 'Off';
     }
   }
 }

@@ -79,6 +79,14 @@ enum DetectorType {
       this == DetectorType.windowsCameraSceneMotion ||
       this == DetectorType.browserCameraSceneMotion;
 
+  /// Plain-language method name without OS labels or class/framework jargon.
+  String get userFacingMethodName => usesCamera ? 'Camera' : 'Motion sensor';
+
+  /// Plain-language explanation of how this detection method works.
+  String get userFacingDescription => usesCamera
+      ? 'Detects movement using your built-in camera. Video stays on this device and is never saved or shared.'
+      : 'Detects physical movement using built-in motion sensors.';
+
   static DetectorType fromId(String id) {
     for (final value in DetectorType.values) {
       if (value.id == id) {

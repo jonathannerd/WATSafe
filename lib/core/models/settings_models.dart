@@ -11,6 +11,8 @@ class ProtectionSettings {
     this.armingCountdownSeconds = 10,
     this.alarmVolume = 0.85,
     this.onboardingCompleted = false,
+    this.deviceDisplayName = '',
+    this.shareLocationOnAlarm = true,
   });
 
   final DetectorType selectedDetector;
@@ -27,12 +29,20 @@ class ProtectionSettings {
   /// Whether first-run onboarding and PIN creation have been completed.
   final bool onboardingCompleted;
 
+  /// User-facing name for this device (e.g., "Jonathan’s MacBook").
+  final String deviceDisplayName;
+
+  /// Whether to share this device's location with the paired phone when an alarm triggers.
+  final bool shareLocationOnAlarm;
+
   ProtectionSettings copyWith({
     DetectorType? selectedDetector,
     double? motionSensitivity,
     int? armingCountdownSeconds,
     double? alarmVolume,
     bool? onboardingCompleted,
+    String? deviceDisplayName,
+    bool? shareLocationOnAlarm,
   }) {
     return ProtectionSettings(
       selectedDetector: selectedDetector ?? this.selectedDetector,
@@ -44,6 +54,8 @@ class ProtectionSettings {
           (armingCountdownSeconds ?? this.armingCountdownSeconds).clamp(3, 30),
       alarmVolume: (alarmVolume ?? this.alarmVolume).clamp(0.10, 1.00),
       onboardingCompleted: onboardingCompleted ?? this.onboardingCompleted,
+      deviceDisplayName: deviceDisplayName ?? this.deviceDisplayName,
+      shareLocationOnAlarm: shareLocationOnAlarm ?? this.shareLocationOnAlarm,
     );
   }
 
@@ -54,6 +66,8 @@ class ProtectionSettings {
       'armingCountdownSeconds': armingCountdownSeconds,
       'alarmVolume': alarmVolume,
       'onboardingCompleted': onboardingCompleted,
+      'deviceDisplayName': deviceDisplayName,
+      'shareLocationOnAlarm': shareLocationOnAlarm,
     };
   }
 
@@ -78,6 +92,8 @@ class ProtectionSettings {
         1.00,
       ),
       onboardingCompleted: json['onboardingCompleted'] as bool? ?? false,
+      deviceDisplayName: json['deviceDisplayName'] as String? ?? '',
+      shareLocationOnAlarm: json['shareLocationOnAlarm'] as bool? ?? true,
     );
   }
 }

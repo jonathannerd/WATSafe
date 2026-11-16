@@ -3,20 +3,27 @@ import 'package:flutter/services.dart';
 
 import '../../core/alarm/alarm_controller.dart';
 import '../../core/models/detector_models.dart';
+import '../pairing/phone_pairing_sheet.dart';
 import '../theme/watsafe_theme.dart';
 
-/// First-run onboarding screen for setting up the local 6+ digit PIN and
-/// inspecting hardware detector capabilities before entering the dashboard.
+/// Friendly plain-language first-run setup for naming this device, choosing a
+/// 6+ digit security PIN, and understanding location sharing on alarm.
 class OnboardingScreen extends StatefulWidget {
-  const OnboardingScreen({super.key, required this.controller});
+  const OnboardingScreen({
+    super.key,
+    required this.controller,
+    this.isPreviewMode = false,
+  });
 
   final AlarmController controller;
+  final bool isPreviewMode;
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
 }
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
+  late final TextEditingController _deviceNameController;
   final TextEditingController _pinController = TextEditingController();
   final TextEditingController _confirmPinController = TextEditingController();
   bool _obscurePin = true;
@@ -24,13 +31,26 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   String? _errorMessage;
 
   @override
+  void initState() {
+    super.initState();
+    _deviceNameController = TextEditingController(
+      text: widget.controller.effectiveDeviceName,
+    );
+  }
+
+  @override
   void dispose() {
+    _deviceNameController.dispose();
     _pinController.dispose();
     _confirmPinController.dispose();
     super.dispose();
   }
 
   Future<void> _submitPinSetup() async {
+    if (widget.isPreviewMode) {
+      widget.controller.exitOnboardingPreview();
+      return;
+    }
     if (_isSubmitting) {
       return;
     }
@@ -42,6 +62,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final result = await widget.controller.setupInitialPin(
       pin: _pinController.text.trim(),
       confirmPin: _confirmPinController.text.trim(),
+      deviceDisplayName: _deviceNameController.text.trim(),
     );
 
     if (!mounted) {
@@ -57,9 +78,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final capability = widget.controller.selectedCapability;
-    final capStatus = capability?.status ?? CapabilityStatus.unsupported;
-    final capColor = WatSafeTheme.colorForCapabilityStatus(capStatus);
+    final locPerm = widget.controller.locationPermissionStatus;
+    final locGranted = locPerm == PermissionStatus.granted;
 
     return Scaffold(
       body: SafeArea(
@@ -67,167 +87,88 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 620),
+              constraints: const BoxConstraints(maxWidth: 500),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  Row(
-                    children: <Widget>[
-                      const WatSafeShieldGraphic(
-                        accentColor: WatSafeTheme.amberAccent,
-                        size: 56,
-                        isActiveWave: true,
+                  if (widget.isPreviewMode) ...<Widget>[
+                    Container(
+                      key: const Key('onboarding_preview_banner'),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: WatSafeTheme.amberAccent.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: WatSafeTheme.amberAccent),
                       ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text(
-                              'Welcome to WATSafe',
-                              style: Theme.of(context).textTheme.headlineSmall
-                                  ?.copyWith(
-                                    fontWeight: FontWeight.w800,
-                                    color: WatSafeTheme.warmOffWhite,
-                                  ),
+                      child: Row(
+                        children: <Widget>[
+                          const Icon(
+                            Icons.visibility_rounded,
+                            color: WatSafeTheme.amberAccent,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text(
+                              'Previewing onboarding — your saved PIN, phone pairing, settings, and Activity history remain untouched.',
+                              style: TextStyle(
+                                color: WatSafeTheme.warmOffWhite,
+                                fontSize: 13,
+                                height: 1.35,
+                              ),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'First-run security setup & hardware capability inspection',
-                              style: Theme.of(context).textTheme.bodyMedium
-                                  ?.copyWith(color: WatSafeTheme.warmMuted),
-                            ),
-                          ],
-                        ),
+                          ),
+                          const SizedBox(width: 8),
+                          OutlinedButton(
+                            key: const Key('exit_onboarding_preview_button'),
+                            onPressed: widget.controller.exitOnboardingPreview,
+                            child: const Text('Exit preview'),
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                  const Center(
+                    child: WatSafeShieldGraphic(
+                      accentColor: WatSafeTheme.amberAccent,
+                      size: 64,
+                      isActiveWave: true,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Welcome to WATSafe',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: WatSafeTheme.warmOffWhite,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Name this device and create a PIN so only you can turn protection off.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: WatSafeTheme.warmMuted,
+                      fontSize: 14.5,
+                      height: 1.4,
+                    ),
                   ),
                   const SizedBox(height: 24),
                   Card(
                     child: Padding(
                       padding: const EdgeInsets.all(20),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Row(
-                            children: <Widget>[
-                              const Icon(
-                                Icons.sensors,
-                                color: WatSafeTheme.amberAccent,
-                                size: 20,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  '1. Host Capability Check (${widget.controller.selectedDetectorType.displayName})',
-                                  style: Theme.of(context).textTheme.titleMedium
-                                      ?.copyWith(fontWeight: FontWeight.w700),
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: capColor.withValues(alpha: 0.16),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(color: capColor),
-                                ),
-                                child: Text(
-                                  WatSafeTheme.labelForCapabilityStatus(
-                                    capStatus,
-                                  ),
-                                  style: TextStyle(
-                                    color: capColor,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Text(
-                            capability?.summary ??
-                                'Inspecting local detector hardware...',
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                          if (capability?.guidance != null) ...<Widget>[
-                            const SizedBox(height: 8),
-                            Text(
-                              capability!.guidance!,
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(color: WatSafeTheme.warmMuted),
-                            ),
-                          ],
-                          const SizedBox(height: 12),
-                          Wrap(
-                            spacing: 12,
-                            runSpacing: 8,
-                            children: <Widget>[
-                              if (capability != null &&
-                                  capability.needsPermissionRequest)
-                                OutlinedButton.icon(
-                                  onPressed: () {
-                                    widget.controller
-                                        .requestSelectedDetectorPermission();
-                                  },
-                                  icon: Icon(
-                                    capability.type.usesCamera
-                                        ? Icons.videocam_outlined
-                                        : Icons.sensors,
-                                    size: 18,
-                                  ),
-                                  label: Text(
-                                    capability.type.usesCamera
-                                        ? 'Grant Camera Permission'
-                                        : 'Grant Motion Sensor Permission',
-                                  ),
-                                ),
-                              OutlinedButton.icon(
-                                onPressed:
-                                    widget.controller.refreshCapabilities,
-                                icon: const Icon(Icons.refresh, size: 18),
-                                label: const Text('Refresh Capability Status'),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: <Widget>[
-                          Row(
-                            children: <Widget>[
-                              const Icon(
-                                Icons.lock_outline,
-                                color: WatSafeTheme.amberAccent,
-                                size: 20,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  '2. Create Disarm PIN (Minimum 6 Digits)',
-                                  style: Theme.of(context).textTheme.titleMedium
-                                      ?.copyWith(fontWeight: FontWeight.w700),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Your PIN is required to disarm WATSafe or silence an active alarm. '
-                            'It is stored locally as a salted PBKDF2-HMAC-SHA256 hash via '
-                            '${widget.controller.pinStorageDescription} and is never logged.',
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(color: WatSafeTheme.warmMuted),
+                          TextField(
+                            key: const Key('onboarding_device_name_input'),
+                            controller: _deviceNameController,
+                            decoration: const InputDecoration(
+                              labelText: 'Device name',
+                              hintText: 'Jonathan’s MacBook',
+                            ),
                           ),
                           const SizedBox(height: 16),
                           TextField(
@@ -240,8 +181,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                               LengthLimitingTextInputFormatter(12),
                             ],
                             decoration: InputDecoration(
-                              labelText: 'New Security PIN (6–12 digits)',
-                              hintText: 'Enter at least 6 digits',
+                              labelText: 'Create PIN (6 or more digits)',
+                              hintText: 'At least 6 digits',
                               suffixIcon: IconButton(
                                 onPressed: () {
                                   setState(() {
@@ -268,13 +209,62 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                               LengthLimitingTextInputFormatter(12),
                             ],
                             decoration: const InputDecoration(
-                              labelText: 'Confirm Security PIN',
+                              labelText: 'Confirm PIN',
                               hintText: 'Re-enter the same PIN',
                             ),
                             onSubmitted: (_) => _submitPinSetup(),
                           ),
+                          if (widget.controller.isLocationSupported) ...<Widget>[
+                            const SizedBox(height: 18),
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: WatSafeTheme.charcoalElevated,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: WatSafeTheme.charcoalBorder,
+                                ),
+                              ),
+                              child: Row(
+                                children: <Widget>[
+                                  Icon(
+                                    locGranted
+                                        ? Icons.check_circle_rounded
+                                        : Icons.location_on_outlined,
+                                    color: locGranted
+                                        ? WatSafeTheme.readyEmerald
+                                        : WatSafeTheme.amberAccent,
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 10),
+                                  const Expanded(
+                                    child: Text(
+                                      'Allow location access so WATSafe can share where this device is with your paired phone if an alarm triggers.',
+                                      style: TextStyle(
+                                        color: WatSafeTheme.warmMuted,
+                                        fontSize: 12.5,
+                                        height: 1.35,
+                                      ),
+                                    ),
+                                  ),
+                                  if (!locGranted) ...<Widget>[
+                                    const SizedBox(width: 8),
+                                    TextButton(
+                                      key: const Key(
+                                        'onboarding_allow_location_button',
+                                      ),
+                                      onPressed: widget
+                                          .controller
+                                          .requestLocationPermission,
+                                      child: const Text('Allow'),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ],
                           if (_errorMessage != null) ...<Widget>[
-                            const SizedBox(height: 12),
+                            const SizedBox(height: 14),
                             Container(
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
@@ -296,37 +286,34 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             ),
                           ],
                           const SizedBox(height: 20),
-                          FilledButton.icon(
+                          FilledButton(
                             key: const Key('onboarding_complete_button'),
                             onPressed: _isSubmitting ? null : _submitPinSetup,
-                            icon: const Icon(Icons.verified_user_outlined),
-                            label: Text(
-                              _isSubmitting
-                                  ? 'Securing PIN...'
-                                  : 'Save PIN & Open Dashboard',
+                            child: Text(
+                              widget.isPreviewMode
+                                  ? 'Exit preview'
+                                  : (_isSubmitting ? 'Saving…' : 'Finish setup'),
                             ),
                           ),
                         ],
                       ),
                     ),
                   ),
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: WatSafeTheme.charcoalElevated,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: WatSafeTheme.charcoalBorder),
-                    ),
-                    child: Text(
-                      'Transparency note: WATSafe is an application-level deterrent and alert tool. '
-                      'Its PIN disarm interface is separate from your OS lock screen and cannot '
-                      'prevent hardware power-off, OS force-quit, or physical speaker muting.',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: WatSafeTheme.warmMuted,
+                  if (widget.controller.canManagePairing) ...<Widget>[
+                    const SizedBox(height: 12),
+                    TextButton.icon(
+                      key: const Key('onboarding_pair_phone_instead_button'),
+                      onPressed: () => showPhonePairingSheet(
+                        context,
+                        widget.controller,
+                        initialPhonePairingPayload: null,
+                      ),
+                      icon: const Icon(Icons.smartphone_rounded, size: 18),
+                      label: const Text(
+                        'Setting up your phone? Pair with your laptop',
                       ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ),

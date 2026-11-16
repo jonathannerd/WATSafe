@@ -61,4 +61,6 @@ macos/Runner/GoogleService-Info.plist
 # Scratch and temporary artifacts
 /tmp/
 *.tmp
+*.obj
+.watsafe-runtime/
 

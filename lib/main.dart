@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'core/alarm/alarm_controller.dart';
@@ -11,7 +12,11 @@ import 'features/theme/watsafe_theme.dart';
 import 'platform/app_services_native.dart'
     if (dart.library.js_interop) 'platform/web/app_services_web.dart'
     as platform;
+import 'services/local_relay_supervisor.dart';
 import 'services/pin_security_service.dart';
+import 'services/relay_config.dart';
+
+final LocalRelaySupervisor _appRelaySupervisor = LocalRelaySupervisor();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,10 +33,42 @@ Future<void> main() async {
       services.defaultDetector,
     ),
     notificationAdapter: services.notifications,
+    locationAdapter: services.location,
+    localNotificationAdapter: services.localNotifications,
   );
 
-  unawaited(controller.initialize());
-  runApp(WatSafeApp(controller: controller));
+  String? initialPairingPayload;
+  if (kIsWeb) {
+    final code = Uri.base.queryParameters['code']?.trim();
+    if (code != null && code.isNotEmpty) {
+      initialPairingPayload = Uri.base.toString();
+    }
+  }
+
+  unawaited(_initializeControllerAndRelay(controller));
+  runApp(
+    WatSafeApp(
+      controller: controller,
+      initialPairingPayload: initialPairingPayload,
+    ),
+  );
+}
+
+Future<void> _initializeControllerAndRelay(AlarmController controller) async {
+  await controller.initialize();
+  if (kIsWeb) {
+    return;
+  }
+  final currentUrl =
+      controller.relayEndpointUrl ?? RelayConfig.resolveDefaultRelayUrl();
+  final resolvedUrl = await _appRelaySupervisor.ensureRelayAvailable(
+    currentEndpointUrl: currentUrl,
+  );
+  if (resolvedUrl != null &&
+      resolvedUrl.isNotEmpty &&
+      resolvedUrl != controller.relayEndpointUrl) {
+    await controller.configureRelayEndpoint(resolvedUrl);
+  }
 }
 
 /// Ensures the initial default detector matches the current host platform when
@@ -59,9 +96,14 @@ class _PlatformDefaultSettingsDecorator implements SettingsStorageAdapter {
 
 /// Root WATSafe Material 3 application widget.
 class WatSafeApp extends StatelessWidget {
-  const WatSafeApp({super.key, required this.controller});
+  const WatSafeApp({
+    super.key,
+    required this.controller,
+    this.initialPairingPayload,
+  });
 
   final AlarmController controller;
+  final String? initialPairingPayload;
 
   @override
   Widget build(BuildContext context) {
@@ -69,7 +111,10 @@ class WatSafeApp extends StatelessWidget {
       title: 'WATSafe',
       debugShowCheckedModeBanner: false,
       theme: WatSafeTheme.darkTheme(),
-      home: WatSafeShell(controller: controller),
+      home: WatSafeShell(
+        controller: controller,
+        initialPairingPayload: initialPairingPayload,
+      ),
     );
   }
 }

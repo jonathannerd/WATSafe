@@ -1,19 +1,24 @@
 import AVFoundation
+import CoreLocation
 import CoreMotion
 import Flutter
 import Security
 import UIKit
+import UserNotifications
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var motionBridge: IOSCoreMotionBridge?
   private var audioBridge: IOSAudioAlarmBridge?
   private var secureStorageBridge: IOSSecureStorageBridge?
+  private var locationBridge: IOSLocationBridge?
+  private var notificationBridge: IOSLocalNotificationBridge?
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    UNUserNotificationCenter.current().delegate = self
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -23,6 +28,40 @@ import UIKit
     motionBridge = IOSCoreMotionBridge(messenger: messenger)
     audioBridge = IOSAudioAlarmBridge(messenger: messenger)
     secureStorageBridge = IOSSecureStorageBridge(messenger: messenger)
+    locationBridge = IOSLocationBridge(messenger: messenger)
+    notificationBridge = IOSLocalNotificationBridge(messenger: messenger)
+  }
+
+  override func application(
+    _ application: UIApplication,
+    didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+  ) {
+    let hexToken = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
+    notificationBridge?.updateApnsDeviceToken(hexToken)
+    super.application(application, didRegisterForRemoteNotificationsWithDeviceToken: deviceToken)
+  }
+
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    if #available(iOS 14.0, *) {
+      completionHandler([.banner, .list, .sound])
+    } else {
+      completionHandler([.alert, .sound])
+    }
+  }
+
+  override func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    if let incidentId = response.notification.request.content.userInfo["incidentId"] as? String {
+      notificationBridge?.emitNotificationTap(incidentId)
+    }
+    completionHandler()
   }
 }
 
@@ -511,6 +550,258 @@ final class IOSSecureStorageBridge: NSObject {
       ]
       SecItemDelete(deleteQuery as CFDictionary)
       result(nil)
+
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+// MARK: - 4. iOS CoreLocation Bridge (`dev.watsafe/location`)
+
+final class IOSLocationBridge: NSObject, CLLocationManagerDelegate {
+  private let channel: FlutterMethodChannel
+  private let locationManager = CLLocationManager()
+  private var pendingAuthCallback: FlutterResult?
+  private var pendingLocationCallbacks: [FlutterResult] = []
+  private var locationTimeoutWorkItem: DispatchWorkItem?
+
+  init(messenger: FlutterBinaryMessenger) {
+    channel = FlutterMethodChannel(
+      name: "dev.watsafe/location",
+      binaryMessenger: messenger
+    )
+    super.init()
+    locationManager.delegate = self
+    locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+    channel.setMethodCallHandler { [weak self] call, result in
+      self?.handle(call: call, result: result)
+    }
+  }
+
+  private func mapAuthStatus(_ status: CLAuthorizationStatus) -> String {
+    switch status {
+    case .authorizedAlways, .authorizedWhenInUse:
+      return "granted"
+    case .denied, .restricted:
+      return "denied"
+    case .notDetermined:
+      return "notDetermined"
+    @unknown default:
+      return "notDetermined"
+    }
+  }
+
+  private func currentAuthStatus() -> CLAuthorizationStatus {
+    if #available(iOS 14.0, *) {
+      return locationManager.authorizationStatus
+    }
+    return CLLocationManager.authorizationStatus()
+  }
+
+  private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "checkPermission":
+      if !CLLocationManager.locationServicesEnabled() {
+        result("denied")
+        return
+      }
+      result(mapAuthStatus(currentAuthStatus()))
+
+    case "requestPermission":
+      let status = currentAuthStatus()
+      if status != .notDetermined {
+        result(mapAuthStatus(status))
+        return
+      }
+      pendingAuthCallback = result
+      locationManager.requestWhenInUseAuthorization()
+
+    case "captureCurrentLocation":
+      guard CLLocationManager.locationServicesEnabled() else {
+        result(["status": "unavailable"])
+        return
+      }
+      let status = currentAuthStatus()
+      if status == .denied || status == .restricted {
+        result(["status": "permissionDenied"])
+        return
+      }
+      let args = call.arguments as? [String: Any]
+      let timeoutMs = (args?["timeoutMs"] as? NSNumber)?.intValue ?? 6000
+      pendingLocationCallbacks.append(result)
+      if pendingLocationCallbacks.count == 1 {
+        let timeoutItem = DispatchWorkItem { [weak self] in
+          self?.resolvePendingWithFallbackOrUnavailable()
+        }
+        locationTimeoutWorkItem = timeoutItem
+        DispatchQueue.main.asyncAfter(
+          deadline: .now() + .milliseconds(max(1000, timeoutMs)),
+          execute: timeoutItem
+        )
+        locationManager.requestLocation()
+      }
+
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func serializeLocation(_ loc: CLLocation, isLastKnown: Bool) -> [String: Any] {
+    var reducedAccuracy = loc.horizontalAccuracy > 100.0
+    if #available(iOS 14.0, *) {
+      if locationManager.accuracyAuthorization == .reducedAccuracy {
+        reducedAccuracy = true
+      }
+    }
+    return [
+      "status": "attached",
+      "latitude": loc.coordinate.latitude,
+      "longitude": loc.coordinate.longitude,
+      "accuracyMeters": max(0.0, loc.horizontalAccuracy),
+      "capturedAtMs": Int64(loc.timestamp.timeIntervalSince1970 * 1000.0),
+      "isApproximate": reducedAccuracy,
+      "isLastKnown": isLastKnown,
+    ]
+  }
+
+  private func finishPendingLocations(with payload: [String: Any]) {
+    locationTimeoutWorkItem?.cancel()
+    locationTimeoutWorkItem = nil
+    let callbacks = pendingLocationCallbacks
+    pendingLocationCallbacks.removeAll()
+    for cb in callbacks {
+      cb(payload)
+    }
+  }
+
+  private func resolvePendingWithFallbackOrUnavailable() {
+    if let cached = locationManager.location {
+      finishPendingLocations(with: serializeLocation(cached, isLastKnown: true))
+    } else {
+      finishPendingLocations(with: ["status": "unavailable"])
+    }
+  }
+
+  func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+    if let cb = pendingAuthCallback {
+      let current = currentAuthStatus()
+      if current != .notDetermined {
+        pendingAuthCallback = nil
+        cb(mapAuthStatus(current))
+      }
+    }
+  }
+
+  func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    guard let latest = locations.last else {
+      resolvePendingWithFallbackOrUnavailable()
+      return
+    }
+    let ageSec = abs(latest.timestamp.timeIntervalSinceNow)
+    finishPendingLocations(with: serializeLocation(latest, isLastKnown: ageSec > 120.0))
+  }
+
+  func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+    if let clError = error as? CLError, clError.code == .denied {
+      finishPendingLocations(with: ["status": "permissionDenied"])
+      return
+    }
+    resolvePendingWithFallbackOrUnavailable()
+  }
+}
+
+// MARK: - 5. iOS UserNotifications, APNs Token & URL Bridge (`dev.watsafe/local_notifications`)
+
+final class IOSLocalNotificationBridge: NSObject {
+  private let channel: FlutterMethodChannel
+  private var apnsDeviceTokenHex: String?
+
+  init(messenger: FlutterBinaryMessenger) {
+    channel = FlutterMethodChannel(
+      name: "dev.watsafe/local_notifications",
+      binaryMessenger: messenger
+    )
+    super.init()
+    channel.setMethodCallHandler { [weak self] call, result in
+      self?.handle(call: call, result: result)
+    }
+  }
+
+  func updateApnsDeviceToken(_ token: String) {
+    apnsDeviceTokenHex = token
+  }
+
+  func emitNotificationTap(_ incidentId: String) {
+    DispatchQueue.main.async { [weak self] in
+      self?.channel.invokeMethod("onNotificationTapped", arguments: ["incidentId": incidentId])
+    }
+  }
+
+  private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let args = call.arguments as? [String: Any]
+    switch call.method {
+    case "checkPermission":
+      UNUserNotificationCenter.current().getNotificationSettings { settings in
+        DispatchQueue.main.async {
+          switch settings.authorizationStatus {
+          case .authorized, .provisional, .ephemeral:
+            result("granted")
+          case .denied:
+            result("denied")
+          case .notDetermined:
+            result("notDetermined")
+          @unknown default:
+            result("notDetermined")
+          }
+        }
+      }
+
+    case "requestPermission":
+      UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+        DispatchQueue.main.async {
+          if granted {
+            UIApplication.shared.registerForRemoteNotifications()
+          }
+          result(granted ? "granted" : "denied")
+        }
+      }
+
+    case "showAlertNotification":
+      let incidentId = (args?["incidentId"] as? String) ?? "inc_alert"
+      let deviceName = (args?["deviceName"] as? String) ?? "Protected Device"
+      let message = (args?["message"] as? String) ?? "Alarm triggered"
+      let isTest = (args?["isTest"] as? Bool) ?? false
+
+      let content = UNMutableNotificationContent()
+      content.title = isTest ? "WATSafe Test: \(deviceName)" : "WATSafe Alert: \(deviceName)"
+      content.body = message
+      content.sound = .default
+      content.userInfo = ["incidentId": incidentId]
+
+      let req = UNNotificationRequest(
+        identifier: "watsafe_\(incidentId)",
+        content: content,
+        trigger: nil
+      )
+      UNUserNotificationCenter.current().add(req) { error in
+        DispatchQueue.main.async {
+          result(error == nil)
+        }
+      }
+
+    case "getPushRegistrationToken":
+      result(apnsDeviceTokenHex)
+
+    case "openExternalUrl":
+      guard let rawUrl = args?["url"] as? String,
+            let url = URL(string: rawUrl) else {
+        result(false)
+        return
+      }
+      UIApplication.shared.open(url, options: [:]) { opened in
+        result(opened)
+      }
 
     default:
       result(FlutterMethodNotImplemented)

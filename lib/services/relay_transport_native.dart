@@ -45,13 +45,21 @@ Future<RelayHttpResponse> sendRelayJsonRequest({
   }
 }
 
+Future<Directory> _resolveStorageDir(Object? storageDirectory) async {
+  if (storageDirectory is Directory) {
+    return storageDirectory;
+  }
+  if (storageDirectory is String && storageDirectory.trim().isNotEmpty) {
+    return Directory(storageDirectory.trim());
+  }
+  return LocalAppDataPaths.resolveDirectory();
+}
+
 Future<String?> readPersistedJson(
   String filename, {
   Object? storageDirectory,
 }) async {
-  final dir = storageDirectory is Directory
-      ? storageDirectory
-      : await LocalAppDataPaths.resolveDirectory();
+  final dir = await _resolveStorageDir(storageDirectory);
   final file = File('${dir.path}${Platform.pathSeparator}$filename');
   if (!await file.exists()) {
     return null;
@@ -64,9 +72,7 @@ Future<void> writePersistedJson(
   String content, {
   Object? storageDirectory,
 }) async {
-  final dir = storageDirectory is Directory
-      ? storageDirectory
-      : await LocalAppDataPaths.resolveDirectory();
+  final dir = await _resolveStorageDir(storageDirectory);
   final file = File('${dir.path}${Platform.pathSeparator}$filename');
   await file.parent.create(recursive: true);
   await file.writeAsString(content, flush: true);
