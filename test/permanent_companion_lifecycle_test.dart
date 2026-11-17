@@ -984,5 +984,66 @@ void main() {
         }
       }
     });
+
+    test('5. Desktop launch migrates persisted stale quick-tunnel relayEndpointUrl to permanent HTTPS endpoint on initialize()', () async {
+      final tempDir = await Directory.systemTemp.createTemp(
+        'watsafe_stale_tunnel_migration_',
+      );
+      final detector = FakeMotionDetector();
+      AlarmController? controller;
+      try {
+        final pairedFile = File('${tempDir.path}/watsafe_paired_devices.json');
+        await pairedFile.writeAsString(
+          jsonEncode(<String, Object?>{
+            'relayEndpointUrl': 'https://stale-session.trycloudflare.com',
+            'hostInstallationId': 'host_inst_preserved_123',
+          }),
+        );
+
+        const permanentOrigin = 'https://watsafe-test-relay.onrender.com';
+        // Mirrors app_services_native.dart where initialRelayEndpointUrl already
+        // equals the permanent origin before _ensureLoaded() reads disk state.
+        final remote = ConfigurableRemoteNotificationService(
+          persistToDisk: true,
+          storageDirectory: tempDir.path,
+          initialRelayEndpointUrl: permanentOrigin,
+          enableBackgroundPolling: false,
+        );
+        controller = AlarmController(
+          detectors: <DetectorType, MotionDetectorAdapter>{
+            DetectorType.macosCameraSceneMotion: detector,
+          },
+          audioAdapter: FakeAudioAlarmAdapter(),
+          pinService: PinSecurityService(
+            storage: InMemorySecurePinStorage(),
+            pbkdf2Iterations: 500,
+          ),
+          incidentStorage: InMemoryIncidentStorage(),
+          settingsStorage: InMemorySettingsStorage(
+            const ProtectionSettings(
+              selectedDetector: DetectorType.macosCameraSceneMotion,
+              onboardingCompleted: true,
+              permanentRelayEndpointUrl: permanentOrigin,
+            ),
+          ),
+          notificationAdapter: remote,
+        );
+        await controller.initialize();
+
+        expect(controller.relayEndpointUrl, equals(permanentOrigin));
+        expect(controller.isPermanentRelayConfigured, isTrue);
+        expect(remote.hostInstallationId, equals('host_inst_preserved_123'));
+
+        final updatedPairedJson =
+            jsonDecode(await pairedFile.readAsString()) as Map<String, Object?>;
+        expect(updatedPairedJson['relayEndpointUrl'], equals(permanentOrigin));
+      } finally {
+        controller?.dispose();
+        await detector.dispose();
+        if (tempDir.existsSync()) {
+          await tempDir.delete(recursive: true);
+        }
+      }
+    });
   });
 }

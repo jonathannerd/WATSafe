@@ -355,16 +355,20 @@ class AlarmController extends ChangeNotifier {
     final mutableNotifications = _notificationAdapter;
     if (mutableNotifications is MutableRemoteNotificationAdapter &&
         !RelayConfig.hasExplicitCompileOrEnvOverride) {
+      final allowHostDiskConfig =
+          mutableNotifications is ConfigurableRemoteNotificationService &&
+          mutableNotifications.usesSystemStorageDirectory;
       final savedSettingsPermanent = _settings.permanentRelayEndpointUrl.trim();
-      final savedFilePermanent = RelayConfig.persistedPermanentRelayUrl?.trim();
+      final savedFilePermanent = allowHostDiskConfig
+          ? RelayConfig.persistedPermanentRelayUrl?.trim()
+          : null;
       final effectivePermanent =
           RelayConfig.isPermanentHttpsUrl(savedSettingsPermanent)
           ? savedSettingsPermanent
           : (RelayConfig.isPermanentHttpsUrl(savedFilePermanent)
                 ? savedFilePermanent
                 : null);
-      if (effectivePermanent != null &&
-          effectivePermanent != mutableNotifications.relayEndpointUrl) {
+      if (effectivePermanent != null) {
         try {
           await mutableNotifications.configureRelayEndpoint(effectivePermanent);
         } catch (_) {

@@ -96,6 +96,8 @@ class ConfigurableRemoteNotificationService
   final Object? _storageDirectory;
   final bool persistToDisk;
   final bool enableBackgroundPolling;
+  bool get usesSystemStorageDirectory =>
+      persistToDisk && _storageDirectory == null;
   final Duration pollInterval;
   final Duration _httpTimeout;
   final DateTime Function() _clock;
