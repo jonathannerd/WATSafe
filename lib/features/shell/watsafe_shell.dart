@@ -6,14 +6,15 @@ import '../../core/alarm/alarm_controller.dart';
 import '../../core/alarm/alarm_state.dart';
 import '../activity/activity_screen.dart';
 import '../alarm/active_alarm_overlay.dart';
+import '../devices/devices_screen.dart';
 import '../home/home_screen.dart';
 import '../onboarding/onboarding_screen.dart';
 import '../pairing/phone_pairing_sheet.dart';
 import '../settings/settings_screen.dart';
 import '../theme/watsafe_theme.dart';
 
-/// Adaptive Material 3 shell around WATSafe's three user tasks:
-/// **Home**, **Activity**, and **Settings**.
+/// Adaptive Material 3 shell around WATSafe's four primary destinations:
+/// **Home**, **Devices**, **Activity**, and **Settings**.
 class WatSafeShell extends StatefulWidget {
   const WatSafeShell({
     super.key,
@@ -53,15 +54,17 @@ class _WatSafeShellState extends State<WatSafeShell>
     }
   }
 
+  static const int _activityTabIndex = 2;
+
   void _bindController() {
     _lastHandledOpenActivityNonce = widget.controller.openActivityNonce;
     if (widget.controller.selectedActivityIncidentId != null) {
-      _selectedIndex = 1;
+      _selectedIndex = _activityTabIndex;
     }
     _openIncidentSub = widget.controller.onOpenActivityIncident.listen((_) {
-      if (mounted && _selectedIndex != 1) {
+      if (mounted && _selectedIndex != _activityTabIndex) {
         setState(() {
-          _selectedIndex = 1;
+          _selectedIndex = _activityTabIndex;
         });
       }
     });
@@ -121,7 +124,7 @@ class _WatSafeShellState extends State<WatSafeShell>
         if (widget.controller.openActivityNonce !=
             _lastHandledOpenActivityNonce) {
           _lastHandledOpenActivityNonce = widget.controller.openActivityNonce;
-          _selectedIndex = 1;
+          _selectedIndex = _activityTabIndex;
         }
 
         final hasIncomingPairingLink =
@@ -152,6 +155,7 @@ class _WatSafeShellState extends State<WatSafeShell>
 
         final pages = <Widget>[
           HomeScreen(controller: widget.controller),
+          DevicesScreen(controller: widget.controller),
           ActivityScreen(controller: widget.controller),
           SettingsScreen(controller: widget.controller),
         ];
@@ -234,6 +238,11 @@ class _WatSafeShellState extends State<WatSafeShell>
                           label: Text('Home'),
                         ),
                         NavigationRailDestination(
+                          icon: Icon(Icons.map_outlined),
+                          selectedIcon: Icon(Icons.map_rounded),
+                          label: Text('Devices'),
+                        ),
+                        NavigationRailDestination(
                           icon: Icon(Icons.notifications_none_rounded),
                           selectedIcon: Icon(Icons.notifications_rounded),
                           label: Text('Activity'),
@@ -259,7 +268,7 @@ class _WatSafeShellState extends State<WatSafeShell>
                             controller: widget.controller,
                             onViewEvent: (incidentId) {
                               setState(() {
-                                _selectedIndex = 1;
+                                _selectedIndex = _activityTabIndex;
                               });
                               widget.controller.openIncidentInActivity(
                                 incidentId,
@@ -290,6 +299,11 @@ class _WatSafeShellState extends State<WatSafeShell>
                           icon: Icon(Icons.shield_outlined),
                           selectedIcon: Icon(Icons.shield_rounded),
                           label: 'Home',
+                        ),
+                        NavigationDestination(
+                          icon: Icon(Icons.map_outlined),
+                          selectedIcon: Icon(Icons.map_rounded),
+                          label: 'Devices',
                         ),
                         NavigationDestination(
                           icon: Icon(Icons.notifications_none_rounded),

@@ -137,7 +137,8 @@ abstract class SettingsStorageAdapter {
   Future<void> saveSettings(ProtectionSettings settings);
 }
 
-/// Contract for non-blocking device location lookup when an alarm triggers.
+/// Contract for non-blocking device location lookup when protection is active
+/// or an alarm triggers.
 abstract class LocationServiceAdapter {
   bool get isSupported;
 
@@ -146,7 +147,10 @@ abstract class LocationServiceAdapter {
   Future<PermissionStatus> requestPermission();
 
   Future<({DeviceLocationSnapshot? location, IncidentLocationStatus status})>
-  captureCurrentLocation({Duration timeout = const Duration(seconds: 6)});
+  captureCurrentLocation({
+    Duration timeout = const Duration(seconds: 6),
+    bool highAccuracy = false,
+  });
 }
 
 /// Contract for OS / Browser notification permissions, local notification
@@ -467,7 +471,10 @@ class CompanionAlertEvent {
     this.hostDisplayName,
     this.isTest = false,
     this.location,
+    this.alarmTimeLocation,
+    this.locationTrail = const <DeviceLocationSnapshot>[],
     this.locationStatus = IncidentLocationStatus.notRequested,
+    this.locationTrackingState = 'last_known',
   });
 
   final int alertSeq;
@@ -483,10 +490,24 @@ class CompanionAlertEvent {
   final String? hostDisplayName;
   final bool isTest;
   final DeviceLocationSnapshot? location;
+  final DeviceLocationSnapshot? alarmTimeLocation;
+  final List<DeviceLocationSnapshot> locationTrail;
   final IncidentLocationStatus locationStatus;
+  final String locationTrackingState;
 
   int get effectiveCursorSeq =>
       updatedSeq != null && updatedSeq! > alertSeq ? updatedSeq! : alertSeq;
+
+  DeviceLocationSnapshot? get effectiveAlarmLocation =>
+      alarmTimeLocation ??
+      (locationTrail.isNotEmpty ? locationTrail.first : location);
+
+  bool get hasDistinctLatestLocation =>
+      location != null &&
+      effectiveAlarmLocation != null &&
+      location!.differsMeaningfullyFrom(effectiveAlarmLocation!);
+
+  bool get hasReliableTrail => locationTrail.length >= 2;
 
   CompanionAlertEvent copyWith({
     int? alertSeq,
@@ -502,7 +523,10 @@ class CompanionAlertEvent {
     String? hostDisplayName,
     bool? isTest,
     DeviceLocationSnapshot? location,
+    DeviceLocationSnapshot? alarmTimeLocation,
+    List<DeviceLocationSnapshot>? locationTrail,
     IncidentLocationStatus? locationStatus,
+    String? locationTrackingState,
   }) {
     return CompanionAlertEvent(
       alertSeq: alertSeq ?? this.alertSeq,
@@ -518,7 +542,11 @@ class CompanionAlertEvent {
       hostDisplayName: hostDisplayName ?? this.hostDisplayName,
       isTest: isTest ?? this.isTest,
       location: location ?? this.location,
+      alarmTimeLocation: alarmTimeLocation ?? this.alarmTimeLocation,
+      locationTrail: locationTrail ?? this.locationTrail,
       locationStatus: locationStatus ?? this.locationStatus,
+      locationTrackingState:
+          locationTrackingState ?? this.locationTrackingState,
     );
   }
 
@@ -536,8 +564,16 @@ class CompanionAlertEvent {
       'peakMotionScore': ?peakMotionScore,
       'hostDisplayName': ?hostDisplayName,
       'isTest': isTest,
-      if (location != null) 'location': location!.toJson(),
+      if (location != null && location!.isValid) 'location': location!.toJson(),
+      if (alarmTimeLocation != null && alarmTimeLocation!.isValid)
+        'alarmLocation': alarmTimeLocation!.toJson(),
+      if (locationTrail.isNotEmpty)
+        'locationTrail': locationTrail
+            .where((point) => point.isValid)
+            .map((point) => point.toJson())
+            .toList(growable: false),
       'locationStatus': locationStatus.name,
+      'locationTrackingState': locationTrackingState,
     };
   }
 
@@ -545,10 +581,30 @@ class CompanionAlertEvent {
     final triggeredRaw = json['triggeredAtUtc'] as String? ?? '';
     final rawLocation = json['location'];
     final parsedLocation = rawLocation is Map
-        ? DeviceLocationSnapshot.fromJson(
+        ? DeviceLocationSnapshot.tryFromJson(
             Map<String, Object?>.from(rawLocation),
           )
         : null;
+    final rawAlarmLocation = json['alarmLocation'];
+    final parsedAlarmLocation = rawAlarmLocation is Map
+        ? DeviceLocationSnapshot.tryFromJson(
+            Map<String, Object?>.from(rawAlarmLocation),
+          )
+        : null;
+    final rawTrail = json['locationTrail'];
+    final parsedTrail = <DeviceLocationSnapshot>[];
+    if (rawTrail is List) {
+      for (final item in rawTrail) {
+        if (item is Map) {
+          final point = DeviceLocationSnapshot.tryFromJson(
+            Map<String, Object?>.from(item),
+          );
+          if (point != null) {
+            parsedTrail.add(point);
+          }
+        }
+      }
+    }
     final parsedLocStatus = IncidentLocationStatus.fromName(
       json['locationStatus'] as String?,
     );
@@ -566,11 +622,124 @@ class CompanionAlertEvent {
       hostDisplayName: json['hostDisplayName'] as String?,
       isTest: json['isTest'] as bool? ?? false,
       location: parsedLocation,
+      alarmTimeLocation: parsedAlarmLocation ?? parsedLocation,
+      locationTrail: parsedTrail.isNotEmpty
+          ? List<DeviceLocationSnapshot>.unmodifiable(parsedTrail)
+          : (parsedLocation != null
+                ? List<DeviceLocationSnapshot>.unmodifiable(
+                    <DeviceLocationSnapshot>[
+                      parsedAlarmLocation ?? parsedLocation,
+                    ],
+                  )
+                : const <DeviceLocationSnapshot>[]),
       locationStatus:
           parsedLocation != null &&
               parsedLocStatus == IncidentLocationStatus.notRequested
           ? IncidentLocationStatus.attached
           : parsedLocStatus,
+      locationTrackingState:
+          json['locationTrackingState'] as String? ?? 'last_known',
+    );
+  }
+}
+
+/// Authorized device entry returned for the Devices map view.
+///
+/// Only devices belonging to the caller's authenticated pairing session are
+/// ever included. Companion phones are never mislabeled as the protected laptop.
+@immutable
+class AuthorizedDeviceLocationSummary {
+  const AuthorizedDeviceLocationSummary({
+    required this.deviceId,
+    required this.displayName,
+    required this.role,
+    required this.platform,
+    required this.online,
+    required this.protectionStatusLabel,
+    this.isAlarming = false,
+    this.trackingState = 'unavailable',
+    this.latestLocation,
+    this.alarmTimeLocation,
+    this.locationTrail = const <DeviceLocationSnapshot>[],
+    this.locationStatus = IncidentLocationStatus.notRequested,
+    this.statusExplanation,
+    this.activeIncidentId,
+    this.lastSeenAt,
+  });
+
+  final String deviceId;
+  final String displayName;
+
+  /// `'protected_device'` or `'companion_phone'`.
+  final String role;
+  final String platform;
+  final bool online;
+  final String protectionStatusLabel;
+  final bool isAlarming;
+
+  /// `'live'`, `'reconnecting'`, `'last_known'`, or `'unavailable'`.
+  final String trackingState;
+  final DeviceLocationSnapshot? latestLocation;
+  final DeviceLocationSnapshot? alarmTimeLocation;
+  final List<DeviceLocationSnapshot> locationTrail;
+  final IncidentLocationStatus locationStatus;
+  final String? statusExplanation;
+  final String? activeIncidentId;
+  final DateTime? lastSeenAt;
+
+  bool get isProtectedDevice => role == 'protected_device';
+
+  bool get hasUsableLocation =>
+      latestLocation != null && latestLocation!.isValid;
+
+  factory AuthorizedDeviceLocationSummary.fromJson(Map<String, Object?> json) {
+    final rawLatest = json['latestLocation'];
+    final parsedLatest = rawLatest is Map
+        ? DeviceLocationSnapshot.tryFromJson(
+            Map<String, Object?>.from(rawLatest),
+          )
+        : null;
+    final rawAlarm = json['alarmLocation'];
+    final parsedAlarm = rawAlarm is Map
+        ? DeviceLocationSnapshot.tryFromJson(
+            Map<String, Object?>.from(rawAlarm),
+          )
+        : null;
+    final rawTrail = json['locationTrail'];
+    final parsedTrail = <DeviceLocationSnapshot>[];
+    if (rawTrail is List) {
+      for (final item in rawTrail) {
+        if (item is Map) {
+          final point = DeviceLocationSnapshot.tryFromJson(
+            Map<String, Object?>.from(item),
+          );
+          if (point != null) {
+            parsedTrail.add(point);
+          }
+        }
+      }
+    }
+    final lastSeenRaw = json['lastSeenAtUtc'] as String?;
+    return AuthorizedDeviceLocationSummary(
+      deviceId: json['deviceId'] as String? ?? 'device_unknown',
+      displayName: json['displayName'] as String? ?? 'Device',
+      role: json['role'] as String? ?? 'protected_device',
+      platform: json['platform'] as String? ?? 'Device',
+      online: json['online'] as bool? ?? false,
+      protectionStatusLabel: json['protectionStatusLabel'] as String? ?? 'Off',
+      isAlarming: json['isAlarming'] as bool? ?? false,
+      trackingState: json['trackingState'] as String? ?? 'unavailable',
+      latestLocation: parsedLatest,
+      alarmTimeLocation: parsedAlarm,
+      locationTrail: List<DeviceLocationSnapshot>.unmodifiable(parsedTrail),
+      locationStatus: IncidentLocationStatus.fromName(
+        json['locationStatus'] as String?,
+      ),
+      statusExplanation: json['statusExplanation'] as String?,
+      activeIncidentId: json['activeIncidentId'] as String?,
+      lastSeenAt: lastSeenRaw != null
+          ? DateTime.tryParse(lastSeenRaw)?.toLocal()
+          : null,
     );
   }
 }
@@ -774,7 +943,21 @@ abstract class MutableRemoteNotificationAdapter
     required String incidentId,
     DeviceLocationSnapshot? location,
     required IncidentLocationStatus locationStatus,
+    String? locationTrackingState,
   });
+
+  Future<bool> reportHostLocation({
+    DeviceLocationSnapshot? location,
+    required IncidentLocationStatus locationStatus,
+    required String protectionState,
+    String? activeIncidentId,
+    bool isBoundedAlarmTracking = false,
+  });
+
+  Future<List<AuthorizedDeviceLocationSummary>>
+  fetchAuthorizedDevicesLocations();
+
+  Future<bool> deleteRelayLocationHistory();
 
   Future<List<CompanionAlertEvent>> pollCompanionAlertsOnce();
 

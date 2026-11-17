@@ -1407,6 +1407,7 @@ class ConfigurableRemoteNotificationService
     required String incidentId,
     DeviceLocationSnapshot? location,
     required IncidentLocationStatus locationStatus,
+    String? locationTrackingState,
   }) async {
     await _ensureLoaded();
     final url = _relayEndpointUrl;
@@ -1418,7 +1419,8 @@ class ConfigurableRemoteNotificationService
     final body = <String, Object?>{
       'incidentId': incidentId,
       'locationStatus': locationStatus.name,
-      if (location != null) 'location': location.toJson(),
+      if (location != null && location.isValid) 'location': location.toJson(),
+      'locationTrackingState': ?locationTrackingState,
     };
 
     final response = await sendRelayJsonRequest(
@@ -1429,6 +1431,141 @@ class ConfigurableRemoteNotificationService
       timeout: _httpTimeout,
     );
     return response.isSuccess;
+  }
+
+  @override
+  Future<bool> reportHostLocation({
+    DeviceLocationSnapshot? location,
+    required IncidentLocationStatus locationStatus,
+    required String protectionState,
+    String? activeIncidentId,
+    bool isBoundedAlarmTracking = false,
+  }) async {
+    await _ensureLoaded();
+    _hostProtectionState = protectionState;
+    final url = _relayEndpointUrl;
+    final token = _hostToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      return false;
+    }
+    final response = await sendRelayJsonRequest(
+      method: 'POST',
+      url: '$url/v1/host/location',
+      headers: _bearerHeaders(token),
+      body: <String, Object?>{
+        'hostDisplayName': _hostDisplayName,
+        'hostDeviceId': _ensureHostInstallationId(),
+        'protectionState': protectionState,
+        'locationStatus': locationStatus.name,
+        if (location != null && location.isValid) 'location': location.toJson(),
+        'activeIncidentId': ?activeIncidentId,
+        'isBoundedAlarmTracking': isBoundedAlarmTracking,
+      },
+      timeout: _httpTimeout,
+    );
+    return response.isSuccess;
+  }
+
+  @override
+  Future<List<AuthorizedDeviceLocationSummary>>
+  fetchAuthorizedDevicesLocations() async {
+    await _ensureLoaded();
+    final token = (_companionSession.isConnected && _companionToken != null)
+        ? _companionToken
+        : _hostToken;
+    final url = _companionSession.isConnected
+        ? (_companionSession.relayEndpointUrl ?? _relayEndpointUrl)
+        : _relayEndpointUrl;
+    if (token == null || token.isEmpty || url == null || url.isEmpty) {
+      return const <AuthorizedDeviceLocationSummary>[];
+    }
+    final response = await sendRelayJsonRequest(
+      method: 'GET',
+      url: '$url/v1/devices/locations',
+      headers: _bearerHeaders(token),
+      timeout: _httpTimeout,
+    );
+    if (!response.isSuccess || !response.isAuthenticWatSafe) {
+      return const <AuthorizedDeviceLocationSummary>[];
+    }
+    try {
+      final decoded = jsonDecode(response.body) as Map<String, Object?>;
+      final rawDevices =
+          decoded['devices'] as List<Object?>? ?? const <Object?>[];
+      return rawDevices
+          .whereType<Map<Object?, Object?>>()
+          .map(
+            (item) => AuthorizedDeviceLocationSummary.fromJson(
+              Map<String, Object?>.from(item),
+            ),
+          )
+          .toList(growable: false);
+    } catch (_) {
+      return const <AuthorizedDeviceLocationSummary>[];
+    }
+  }
+
+  @override
+  Future<bool> deleteRelayLocationHistory() async {
+    await _ensureLoaded();
+    var ok = true;
+    final hostUrl = _relayEndpointUrl;
+    final hToken = _hostToken;
+    if (hostUrl != null &&
+        hostUrl.isNotEmpty &&
+        hToken != null &&
+        hToken.isNotEmpty) {
+      final res = await sendRelayJsonRequest(
+        method: 'DELETE',
+        url: '$hostUrl/v1/location-history',
+        headers: _bearerHeaders(hToken),
+        timeout: _httpTimeout,
+      );
+      ok = ok && res.isSuccess;
+    }
+    final compUrl = _companionSession.relayEndpointUrl ?? _relayEndpointUrl;
+    final cToken = _companionToken;
+    if (compUrl != null &&
+        compUrl.isNotEmpty &&
+        cToken != null &&
+        cToken.isNotEmpty &&
+        cToken != hToken) {
+      final res = await sendRelayJsonRequest(
+        method: 'DELETE',
+        url: '$compUrl/v1/location-history',
+        headers: _bearerHeaders(cToken),
+        timeout: _httpTimeout,
+      );
+      ok = ok && res.isSuccess;
+    }
+    if (_receivedCompanionAlerts.isNotEmpty) {
+      _receivedCompanionAlerts = _receivedCompanionAlerts
+          .map(
+            (item) => CompanionAlertEvent(
+              alertSeq: item.alertSeq,
+              updatedSeq: item.updatedSeq,
+              pairingSessionId: item.pairingSessionId,
+              incidentId: item.incidentId,
+              sessionId: item.sessionId,
+              kind: item.kind,
+              detectorType: item.detectorType,
+              triggeredAt: item.triggeredAt,
+              triggerSummary: item.triggerSummary,
+              peakMotionScore: item.peakMotionScore,
+              hostDisplayName: item.hostDisplayName,
+              isTest: item.isTest,
+              location: null,
+              alarmTimeLocation: null,
+              locationTrail: const <DeviceLocationSnapshot>[],
+              locationStatus: IncidentLocationStatus.notRequested,
+              locationTrackingState: 'stopped',
+            ),
+          )
+          .toList(growable: false);
+      await _persistState();
+      _onStateChanged?.call();
+    }
+    return ok;
   }
 
   /// Polls the authenticated companion alert feed once (`GET /v1/companion/alerts`).
@@ -1554,16 +1691,49 @@ class ConfigurableRemoteNotificationService
             );
             if (idx >= 0) {
               final prior = _receivedCompanionAlerts[idx];
-              if (alert.location != null ||
-                  alert.locationStatus != prior.locationStatus) {
+              final clearedLoc =
+                  alert.location == null &&
+                  alert.locationStatus == IncidentLocationStatus.notRequested &&
+                  prior.location != null;
+              if (clearedLoc ||
+                  alert.location != null ||
+                  alert.locationStatus != prior.locationStatus ||
+                  alert.locationTrackingState != prior.locationTrackingState ||
+                  alert.locationTrail.length != prior.locationTrail.length) {
                 final nextList = List<CompanionAlertEvent>.from(
                   _receivedCompanionAlerts,
                 );
-                nextList[idx] = prior.copyWith(
-                  updatedSeq: alert.updatedSeq ?? prior.updatedSeq,
-                  location: alert.location ?? prior.location,
-                  locationStatus: alert.locationStatus,
-                );
+                nextList[idx] = clearedLoc
+                    ? CompanionAlertEvent(
+                        alertSeq: prior.alertSeq,
+                        updatedSeq: alert.updatedSeq ?? prior.updatedSeq,
+                        pairingSessionId: prior.pairingSessionId,
+                        incidentId: prior.incidentId,
+                        sessionId: prior.sessionId,
+                        kind: prior.kind,
+                        detectorType: prior.detectorType,
+                        triggeredAt: prior.triggeredAt,
+                        triggerSummary: prior.triggerSummary,
+                        peakMotionScore: prior.peakMotionScore,
+                        hostDisplayName: prior.hostDisplayName,
+                        isTest: prior.isTest,
+                        location: null,
+                        alarmTimeLocation: null,
+                        locationTrail: const <DeviceLocationSnapshot>[],
+                        locationStatus: IncidentLocationStatus.notRequested,
+                        locationTrackingState: alert.locationTrackingState,
+                      )
+                    : prior.copyWith(
+                        updatedSeq: alert.updatedSeq ?? prior.updatedSeq,
+                        location: alert.location ?? prior.location,
+                        alarmTimeLocation:
+                            alert.alarmTimeLocation ?? prior.alarmTimeLocation,
+                        locationTrail: alert.locationTrail.isNotEmpty
+                            ? alert.locationTrail
+                            : prior.locationTrail,
+                        locationStatus: alert.locationStatus,
+                        locationTrackingState: alert.locationTrackingState,
+                      );
                 _receivedCompanionAlerts = nextList;
                 updatedExistingInPlace = true;
               }

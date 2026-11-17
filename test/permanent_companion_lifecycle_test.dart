@@ -56,6 +56,7 @@ class _FixedTestLocationService implements LocationServiceAdapter {
   Future<({DeviceLocationSnapshot? location, IncidentLocationStatus status})>
   captureCurrentLocation({
     Duration timeout = const Duration(seconds: 8),
+    bool highAccuracy = false,
   }) async {
     return (location: snapshot, status: IncidentLocationStatus.attached);
   }

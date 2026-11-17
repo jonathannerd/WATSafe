@@ -4,6 +4,8 @@ import 'package:flutter/services.dart';
 import '../../core/alarm/alarm_controller.dart';
 import '../../core/alarm/alarm_state.dart';
 import '../../core/models/detector_models.dart';
+import '../../core/models/settings_models.dart';
+import '../testing/guided_protection_test_sheet.dart';
 import '../theme/watsafe_theme.dart';
 
 /// Clean user-facing Settings screen for:
@@ -36,6 +38,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _permanentUrlNote;
   bool _permanentUrlIsError = false;
   String? _advancedNote;
+  String? _locationHistoryNote;
 
   @override
   void initState() {
@@ -342,35 +345,95 @@ class _SettingsScreenState extends State<SettingsScreen> {
               }),
               const SizedBox(height: 12),
             ],
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: <Widget>[
-                const Expanded(
-                  child: Text(
-                    'Motion sensitivity',
-                    style: TextStyle(fontWeight: FontWeight.w600),
+            const Text(
+              'Sensitivity',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            ...MotionSensitivityPreset.values.map((preset) {
+              final activePreset = controller.settings.sensitivityPreset;
+              final isSelected = preset == activePreset;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: InkWell(
+                  key: Key('preset_${preset.name}'),
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: isLockedByProtection
+                      ? null
+                      : () => controller.selectSensitivityPreset(preset),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? WatSafeTheme.amberAccent.withValues(alpha: 0.14)
+                          : WatSafeTheme.charcoalElevated,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: isSelected
+                            ? WatSafeTheme.amberAccent
+                            : WatSafeTheme.charcoalBorder,
+                      ),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Padding(
+                          padding: const EdgeInsets.only(top: 2),
+                          child: Icon(
+                            isSelected
+                                ? Icons.radio_button_checked_rounded
+                                : Icons.radio_button_off_rounded,
+                            size: 20,
+                            color: isSelected
+                                ? WatSafeTheme.amberAccent
+                                : WatSafeTheme.warmMuted,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                preset.title,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14.5,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                preset.description,
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  color: WatSafeTheme.warmMuted,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  _sensitivityLabel(sensitivity),
-                  style: const TextStyle(
-                    color: WatSafeTheme.amberAccent,
-                    fontWeight: FontWeight.w700,
-                  ),
+              );
+            }),
+            if (controller.selectedDetectorType.usesCamera) ...<Widget>[
+              const SizedBox(height: 4),
+              const Text(
+                'Camera protection infers device movement from shifts across the background scene rather than built-in motion sensors. Keep the camera uncovered in a lit room so passersby can be separated from someone lifting your device.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: WatSafeTheme.warmSubtle,
+                  height: 1.35,
                 ),
-              ],
-            ),
-            Slider(
-              value: sensitivity,
-              min: 0.1,
-              max: 1.0,
-              divisions: 18,
-              activeColor: WatSafeTheme.amberAccent,
-              onChanged: (value) =>
-                  controller.updateSettings(motionSensitivity: value),
-            ),
-            const SizedBox(height: 10),
+              ),
+            ],
+            const SizedBox(height: 14),
             const Text(
               'Arming delay',
               style: TextStyle(fontWeight: FontWeight.w600),
@@ -429,23 +492,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   controller.updateSettings(alarmVolume: value),
             ),
             const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: controller.isTestAlarmRunning
-                  ? OutlinedButton.icon(
-                      key: const Key('stop_test_alarm_button'),
-                      onPressed: controller.stopTestAlarm,
-                      icon: const Icon(Icons.stop_rounded),
-                      label: const Text('Stop siren test'),
-                    )
-                  : OutlinedButton.icon(
-                      key: const Key('start_test_alarm_button'),
-                      onPressed: isLockedByProtection
-                          ? null
-                          : controller.startTestAlarm,
-                      icon: const Icon(Icons.volume_up_rounded),
-                      label: const Text('Test siren (5s)'),
-                    ),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: <Widget>[
+                controller.isTestAlarmRunning
+                    ? OutlinedButton.icon(
+                        key: const Key('stop_test_alarm_button'),
+                        onPressed: controller.stopTestAlarm,
+                        icon: const Icon(Icons.stop_rounded),
+                        label: const Text('Stop siren test'),
+                      )
+                    : OutlinedButton.icon(
+                        key: const Key('start_test_alarm_button'),
+                        onPressed: isLockedByProtection
+                            ? null
+                            : controller.startTestAlarm,
+                        icon: const Icon(Icons.volume_up_rounded),
+                        label: const Text('Test siren (5s)'),
+                      ),
+                OutlinedButton.icon(
+                  key: const Key('settings_guided_test_button'),
+                  onPressed: isLockedByProtection
+                      ? null
+                      : () =>
+                            showGuidedProtectionTestSheet(context, controller),
+                  icon: const Icon(Icons.verified_user_outlined, size: 18),
+                  label: const Text('Guided protection test'),
+                ),
+              ],
             ),
           ],
         ),
@@ -561,6 +636,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ],
             ),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Divider(height: 1),
+            ),
+            const Text(
+              'Location privacy & 7-day retention',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Only your protected device’s location is shared with your paired devices while armed and for up to 15 minutes after an alarm. Reporting stops immediately when you disarm with your PIN. Laptop Wi-Fi positioning may be approximate, and sleeping or offline devices cannot report new updates. Stored location history is automatically deleted after 7 days.',
+              style: TextStyle(
+                color: WatSafeTheme.warmMuted,
+                fontSize: 12.5,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                key: const Key('delete_location_history_button'),
+                onPressed: () async {
+                  final ok = await controller.deleteStoredLocationHistory();
+                  if (!mounted) {
+                    return;
+                  }
+                  setState(() {
+                    _locationHistoryNote = ok
+                        ? 'Stored location history deleted from this device and your relay session.'
+                        : 'Local location history deleted. Relay cleanup will sync when back online.';
+                  });
+                },
+                icon: const Icon(Icons.location_disabled_outlined, size: 18),
+                label: const Text('Delete stored location history'),
+              ),
+            ),
+            if (_locationHistoryNote != null) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                _locationHistoryNote!,
+                key: const Key('location_history_deleted_note'),
+                style: const TextStyle(
+                  color: WatSafeTheme.readyEmerald,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -833,6 +957,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
           childrenPadding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
           expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: <Widget>[
+                const Expanded(
+                  child: Text(
+                    'Fine-tune sensitivity threshold',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Text(
+                  '${_sensitivityLabel(controller.settings.motionSensitivity)} (${(controller.settings.motionSensitivity * 100).round()}%)',
+                  style: const TextStyle(
+                    color: WatSafeTheme.amberAccent,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                  ),
+                ),
+              ],
+            ),
+            Slider(
+              key: const Key('advanced_sensitivity_slider'),
+              value: controller.settings.motionSensitivity.clamp(0.1, 0.9),
+              min: 0.1,
+              max: 0.9,
+              divisions: 16,
+              activeColor: WatSafeTheme.amberAccent,
+              onChanged: isLockedByProtection
+                  ? null
+                  : (value) =>
+                        controller.updateSettings(motionSensitivity: value),
+            ),
+            const SizedBox(height: 10),
+            _CameraDiagnosticsPanel(controller: controller),
+            const SizedBox(height: 16),
             if (controller.canManagePairing) ...<Widget>[
               TextField(
                 key: const Key('relay_url_input'),
@@ -1079,5 +1237,83 @@ class _SettingsScreenState extends State<SettingsScreen> {
       case PermissionStatus.notApplicable:
         return 'Off — allow notifications to receive system alerts when a paired device triggers an alarm.';
     }
+  }
+}
+
+class _CameraDiagnosticsPanel extends StatelessWidget {
+  const _CameraDiagnosticsPanel({required this.controller});
+
+  final AlarmController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final ev = controller.lastTelemetryEvent;
+    return Container(
+      key: const Key('developer_camera_diagnostics_card'),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: WatSafeTheme.charcoalElevated,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: WatSafeTheme.charcoalBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Text(
+            'Live motion diagnostics (numerical only — camera frames are never saved)',
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
+          ),
+          const SizedBox(height: 6),
+          if (ev == null)
+            const Text(
+              'Idle — start a Guided protection test or arm protection to inspect live ego-motion scores.',
+              style: TextStyle(fontSize: 12, color: WatSafeTheme.warmMuted),
+            )
+          else
+            Wrap(
+              spacing: 14,
+              runSpacing: 6,
+              children: <Widget>[
+                _diagMetric(
+                  'Score / Threshold',
+                  '${(ev.motionScore ?? 0).toStringAsFixed(3)} / ${(ev.threshold ?? 0).toStringAsFixed(3)}',
+                ),
+                if (ev.coherentBlocks != null)
+                  _diagMetric('Rigid blocks', '${ev.coherentBlocks}'),
+                if (ev.anchoredBlocks != null)
+                  _diagMetric('Static anchors', '${ev.anchoredBlocks}'),
+                if (ev.slowDriftScore != null)
+                  _diagMetric(
+                    'Slow drift',
+                    ev.slowDriftScore!.toStringAsFixed(3),
+                  ),
+                if (ev.loomingRejected != null)
+                  _diagMetric(
+                    'Looming filter',
+                    ev.loomingRejected! ? 'Suppressed' : 'Clear',
+                  ),
+                if (ev.acPowerUnplugged == true)
+                  _diagMetric('AC power', 'Unplugged'),
+                if (ev.averageLuminance != null)
+                  _diagMetric(
+                    'Luminance',
+                    '${(ev.averageLuminance! * 100).round()}%',
+                  ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _diagMetric(String label, String value) {
+    return Text(
+      '$label: $value',
+      style: const TextStyle(
+        fontSize: 12,
+        color: WatSafeTheme.warmMuted,
+        fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+      ),
+    );
   }
 }

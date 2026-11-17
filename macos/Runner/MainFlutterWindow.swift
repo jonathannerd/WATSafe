@@ -2,6 +2,7 @@ import AVFoundation
 import Cocoa
 import CoreLocation
 import FlutterMacOS
+import IOKit.ps
 import Security
 import UserNotifications
 
@@ -351,7 +352,14 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
   private var isCalibrationDone: Bool = false
   private var referenceGrid: [Float] = []
   private var previousGrid: [Float] = []
+  private var recentGrids: [[Float]] = []
+  private var settledBlockStreak: [Int] = [Int](repeating: 0, count: 16)
   private var previousMean255: Float = 0
+  private var prevMeanFlowDx: Double = 0
+  private var prevMeanFlowDy: Double = 0
+  private var hasPrevMeanFlow: Bool = false
+  private var wasOnAcPower: Bool?
+  private var lastAcUnplugTimeMs: Int64 = 0
   private var consecutiveAboveThreshold: Int = 0
   private var consecutivePoorInputFrames: Int = 0
   private var isInputDegraded: Bool = false
@@ -668,7 +676,14 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       self.isCalibrationDone = false
       self.referenceGrid = []
       self.previousGrid = []
+      self.recentGrids = []
+      self.settledBlockStreak = [Int](repeating: 0, count: 16)
       self.previousMean255 = 0
+      self.prevMeanFlowDx = 0
+      self.prevMeanFlowDy = 0
+      self.hasPrevMeanFlow = false
+      self.wasOnAcPower = self.queryIsRunningOnAcPower()
+      self.lastAcUnplugTimeMs = 0
       self.consecutiveAboveThreshold = 0
       self.consecutivePoorInputFrames = 0
       self.isInputDegraded = false
@@ -782,8 +797,22 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     hasDeliveredFirstFrame = false
     referenceGrid = []
     previousGrid = []
+    recentGrids = []
+    settledBlockStreak = [Int](repeating: 0, count: 16)
     previousMean255 = 0
+    hasPrevMeanFlow = false
+    wasOnAcPower = nil
+    lastAcUnplugTimeMs = 0
     consecutiveAboveThreshold = 0
+  }
+
+  private func queryIsRunningOnAcPower() -> Bool? {
+    guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+      let sourceType = IOPSGetProvidingPowerSourceType(snapshot)?.takeUnretainedValue() as String?
+    else {
+      return nil
+    }
+    return sourceType == (kIOPMACPowerKey as String)
   }
 
   func captureOutput(
@@ -944,6 +973,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       previousMean255 = currMean
       if elapsedMs >= Int64(calibrationDurationMs) && processedFrameCount >= 4 {
         isCalibrationDone = true
+        recentGrids = [referenceGrid]
         emitEvent([
           "sessionId": sessionId,
           "eventType": "calibrationCompleted",
@@ -958,6 +988,19 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       return
     }
 
+    // Track weak supporting signal: recent AC charger unplug (never alarms on its own).
+    if let nowAc = queryIsRunningOnAcPower() {
+      if wasOnAcPower == true && !nowAc {
+        lastAcUnplugTimeMs = nowMs
+      }
+      wasOnAcPower = nowAc
+    }
+    let acPowerUnpluggedRecently =
+      lastAcUnplugTimeMs > 0 && (nowMs - lastAcUnplugTimeMs) <= 8000
+
+    let windowGrid = recentGrids.first ?? previousGrid
+    let hasWindowSpan = recentGrids.count >= 3
+
     // Per-block zero-mean & affine illumination normalization + 4x4 Lucas-Kanade ego-motion
     let blocksX = 4
     let blocksY = 4
@@ -965,6 +1008,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     var blockCurrSum = [Double](repeating: 0, count: totalBlocks)
     var blockRefSum = [Double](repeating: 0, count: totalBlocks)
     var blockPrevSum = [Double](repeating: 0, count: totalBlocks)
+    var blockWinSum = [Double](repeating: 0, count: totalBlocks)
     var blockPixelCount = [Int](repeating: 0, count: totalBlocks)
 
     for gy in 0..<gridH {
@@ -976,6 +1020,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         blockCurrSum[bIdx] += Double(currentGrid[i])
         blockRefSum[bIdx] += Double(referenceGrid[i])
         blockPrevSum[bIdx] += Double(previousGrid[i])
+        blockWinSum[bIdx] += Double(windowGrid[i])
         blockPixelCount[bIdx] += 1
       }
     }
@@ -983,15 +1028,18 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     var blockCurrMean = [Double](repeating: 0, count: totalBlocks)
     var blockRefMean = [Double](repeating: 0, count: totalBlocks)
     var blockPrevMean = [Double](repeating: 0, count: totalBlocks)
+    var blockWinMean = [Double](repeating: 0, count: totalBlocks)
     for b in 0..<totalBlocks where blockPixelCount[b] > 0 {
       let n = Double(blockPixelCount[b])
       blockCurrMean[b] = blockCurrSum[b] / n
       blockRefMean[b] = blockRefSum[b] / n
       blockPrevMean[b] = blockPrevSum[b] / n
+      blockWinMean[b] = blockWinSum[b] / n
     }
 
     var blockCurrDevSum = [Double](repeating: 0, count: totalBlocks)
     var blockRefDevSum = [Double](repeating: 0, count: totalBlocks)
+    var blockPrevDevSum = [Double](repeating: 0, count: totalBlocks)
     for gy in 0..<gridH {
       let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
       for gx in 0..<gridW {
@@ -1000,25 +1048,34 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         let i = gy * gridW + gx
         blockCurrDevSum[bIdx] += abs(Double(currentGrid[i]) - blockCurrMean[bIdx])
         blockRefDevSum[bIdx] += abs(Double(referenceGrid[i]) - blockRefMean[bIdx])
+        blockPrevDevSum[bIdx] += abs(Double(previousGrid[i]) - blockPrevMean[bIdx])
       }
     }
 
     var blockGainToRef = [Double](repeating: 1.0, count: totalBlocks)
+    var blockGainToPrev = [Double](repeating: 1.0, count: totalBlocks)
     for b in 0..<totalBlocks where blockPixelCount[b] > 0 {
       let n = Double(blockPixelCount[b])
       let cMad = blockCurrDevSum[b] / n
       let rMad = blockRefDevSum[b] / n
-      if cMad > 3.0 && rMad > 3.0 {
-        blockGainToRef[b] = max(0.72, min(1.38, rMad / cMad))
+      let pMad = blockPrevDevSum[b] / n
+      if cMad > 2.5 && rMad > 2.5 {
+        blockGainToRef[b] = max(0.66, min(1.50, rMad / cMad))
+      }
+      if cMad > 2.5 && pMad > 2.5 {
+        blockGainToPrev[b] = max(0.74, min(1.35, pMad / cMad))
       }
     }
 
     var blockRefDiffSum = [Double](repeating: 0, count: totalBlocks)
     var blockStepDiffSum = [Double](repeating: 0, count: totalBlocks)
+    var blockWinDiffSum = [Double](repeating: 0, count: totalBlocks)
     var blockRefGradSum = [Double](repeating: 0, count: totalBlocks)
+    var blockCurrGradSum = [Double](repeating: 0, count: totalBlocks)
     var blockGradCount = [Int](repeating: 0, count: totalBlocks)
 
     var normRefDiffSum: Double = 0
+    var normStepDiffSum: Double = 0
     for gy in 0..<gridH {
       let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
       for gx in 0..<gridW {
@@ -1029,21 +1086,33 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         let currVal = Double(currentGrid[i])
         let refVal = Double(referenceGrid[i])
         let prevVal = Double(previousGrid[i])
+        let winVal = Double(windowGrid[i])
 
-        let normCurrCentered = (currVal - blockCurrMean[bIdx]) * blockGainToRef[bIdx]
+        let normCurrToRef = (currVal - blockCurrMean[bIdx]) * blockGainToRef[bIdx]
         let refCentered = refVal - blockRefMean[bIdx]
-        let refDelta = abs(normCurrCentered - refCentered)
-        let blockStepShift = blockCurrMean[bIdx] - blockPrevMean[bIdx]
-        let stepDelta = abs((currVal - prevVal) - blockStepShift)
+        let refDelta = abs(normCurrToRef - refCentered)
+
+        let normCurrToPrev = (currVal - blockCurrMean[bIdx]) * blockGainToPrev[bIdx]
+        let prevCentered = prevVal - blockPrevMean[bIdx]
+        let stepDelta = abs(normCurrToPrev - prevCentered)
+
+        let winShift = blockCurrMean[bIdx] - blockWinMean[bIdx]
+        let winDelta = abs((currVal - winVal) - winShift)
 
         normRefDiffSum += refDelta
+        normStepDiffSum += stepDelta
         blockRefDiffSum[bIdx] += refDelta
         blockStepDiffSum[bIdx] += stepDelta
+        blockWinDiffSum[bIdx] += winDelta
 
         if gx + 1 < gridW && gy + 1 < gridH {
           let gxDiff = abs(refVal - Double(referenceGrid[i + 1]))
           let gyDiff = abs(refVal - Double(referenceGrid[i + gridW]))
           blockRefGradSum[bIdx] += 0.5 * (gxDiff + gyDiff)
+
+          let cgxDiff = abs(currVal - Double(currentGrid[i + 1]))
+          let cgyDiff = abs(currVal - Double(currentGrid[i + gridW]))
+          blockCurrGradSum[bIdx] += 0.5 * (cgxDiff + cgyDiff)
           blockGradCount[bIdx] += 1
         }
       }
@@ -1056,13 +1125,21 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
 
     var texturedRefBlocks = 0
     var anchoredTexturedBlocks = 0
-    var changedBlocks = 0
+    var texturedPerimeterBlocks = 0
+    var anchoredPerimeterBlocks = 0
+    var activeMovingBlocks = 0
     var texturedRefScoreSum = 0.0
     var dxList: [Double] = []
     var dyList: [Double] = []
     var bxList: [Int] = []
     var byList: [Int] = []
     var quadrantActivity = [Int](repeating: 0, count: 4)
+
+    var winDxList: [Double] = []
+    var winDyList: [Double] = []
+    var winBxList: [Int] = []
+    var winByList: [Int] = []
+    var winQuadrantActivity = [Int](repeating: 0, count: 4)
 
     for by in 0..<blocksY {
       for bx in 0..<blocksX {
@@ -1072,22 +1149,35 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
 
         let refScore = blockRefDiffSum[b] / Double(pxCount * 255)
         let stepScore = blockStepDiffSum[b] / Double(pxCount * 255)
+        let winScore = blockWinDiffSum[b] / Double(pxCount * 255)
         let meanGrad = blockGradCount[b] > 0
           ? (blockRefGradSum[b] / Double(blockGradCount[b]))
           : 0.0
+        let currGrad = blockGradCount[b] > 0
+          ? (blockCurrGradSum[b] / Double(blockGradCount[b]))
+          : 0.0
         let isTextured = meanGrad >= 3.2
+        let isPerimeter = bx == 0 || bx == (blocksX - 1) || by == 0 || by == (blocksY - 1)
+
+        if stepScore < 0.010 {
+          settledBlockStreak[b] += 1
+        } else {
+          settledBlockStreak[b] = 0
+        }
 
         if isTextured {
           texturedRefBlocks += 1
           texturedRefScoreSum += refScore
-          if refScore < staticBlockThreshold && stepScore < 0.018 {
+          if isPerimeter { texturedPerimeterBlocks += 1 }
+          if refScore < staticBlockThreshold && stepScore < 0.016 {
             anchoredTexturedBlocks += 1
+            if isPerimeter { anchoredPerimeterBlocks += 1 }
           }
         }
 
         let blockStepShift = blockCurrMean[b] - blockPrevMean[b]
         var blockTranslated = false
-        if isTextured && stepScore >= 0.008 && blockW >= 6 && blockH >= 6 {
+        if isTextured && currGrad >= 2.4 && stepScore >= 0.008 && blockW >= 6 && blockH >= 6 {
           let flow = estimateLucasKanadeFlow(
             previous: previousGrid,
             current: currentGrid,
@@ -1097,7 +1187,8 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
             x0: bx * blockW,
             y0: by * blockH,
             w: blockW,
-            h: blockH
+            h: blockH,
+            minMagnitude: 0.32
           ) ?? estimateBlockTranslation(
             previous: previousGrid,
             current: currentGrid,
@@ -1118,8 +1209,43 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
           }
         }
 
-        if (refScore >= activeBlockThreshold && stepScore >= 0.010) || blockTranslated {
-          changedBlocks += 1
+        if hasWindowSpan && isTextured && currGrad >= 2.6 && winScore >= 0.010 && blockW >= 6 && blockH >= 6 {
+          let winShift = blockCurrMean[b] - blockWinMean[b]
+          let winFlow = estimateLucasKanadeFlow(
+            previous: windowGrid,
+            current: currentGrid,
+            gridW: gridW,
+            gridH: gridH,
+            stepMeanShift: winShift,
+            x0: bx * blockW,
+            y0: by * blockH,
+            w: blockW,
+            h: blockH,
+            minMagnitude: 0.36
+          ) ?? estimateBlockTranslation(
+            previous: windowGrid,
+            current: currentGrid,
+            gridW: gridW,
+            gridH: gridH,
+            stepMeanShift: winShift,
+            x0: bx * blockW,
+            y0: by * blockH,
+            w: blockW,
+            h: blockH
+          )
+          if let winFlow = winFlow {
+            winDxList.append(winFlow.0)
+            winDyList.append(winFlow.1)
+            winBxList.append(bx)
+            winByList.append(by)
+            let qx = bx >= 2 ? 1 : 0
+            let qy = by >= 2 ? 1 : 0
+            winQuadrantActivity[qy * 2 + qx] += 1
+          }
+        }
+
+        if (refScore >= activeBlockThreshold && stepScore >= 0.012) || blockTranslated {
+          activeMovingBlocks += 1
           let qx = bx >= 2 ? 1 : 0
           let qy = by >= 2 ? 1 : 0
           quadrantActivity[qy * 2 + qx] += 1
@@ -1128,34 +1254,34 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     }
 
     let activeQuadrants = quadrantActivity.filter { $0 >= 1 }.count
-    var coherentTranslatedBlocks = 0
-    if !dxList.isEmpty {
-      var sumDx = 0.0
-      var sumDy = 0.0
-      var rollPos = 0
-      var rollNeg = 0
-      for k in 0..<dxList.count {
-        sumDx += dxList[k]
-        sumDy += dyList[k]
-        let rx = Double(bxList[k]) - 1.5
-        let ry = Double(byList[k]) - 1.5
-        let cross = (rx * dyList[k]) - (ry * dxList[k])
-        if cross > 0.25 {
-          rollPos += 1
-        } else if cross < -0.25 {
-          rollNeg += 1
+    let winActiveQuadrants = winQuadrantActivity.filter { $0 >= 1 }.count
+
+    let stepFlow = evaluateFlowCoherence(dxList: dxList, dyList: dyList, bxList: bxList, byList: byList)
+    let winFlow = evaluateFlowCoherence(dxList: winDxList, dyList: winDyList, bxList: winBxList, byList: winByList)
+    let coherentTranslatedBlocks = stepFlow.coherentCount
+    let loomingRejected = stepFlow.isLooming || (coherentTranslatedBlocks < 5 && winFlow.isLooming)
+
+    var oscillationRejected = false
+    let currFlowMag = sqrt((stepFlow.meanDx * stepFlow.meanDx) + (stepFlow.meanDy * stepFlow.meanDy))
+    if dxList.count >= 3 && currFlowMag >= 0.30 {
+      if hasPrevMeanFlow {
+        let prevMag = sqrt((prevMeanFlowDx * prevMeanFlowDx) + (prevMeanFlowDy * prevMeanFlowDy))
+        if prevMag >= 0.30 {
+          let cosTurn = ((prevMeanFlowDx * stepFlow.meanDx) + (prevMeanFlowDy * stepFlow.meanDy)) / (prevMag * currFlowMag)
+          if cosTurn < -0.25 {
+            oscillationRejected = true
+          }
         }
       }
-      var panAligned = 0
-      for k in 0..<dxList.count {
-        if (dxList[k] * sumDx) + (dyList[k] * sumDy) > 0.0 {
-          panAligned += 1
-        }
-      }
-      coherentTranslatedBlocks = max(panAligned, max(rollPos, rollNeg))
+      prevMeanFlowDx = stepFlow.meanDx
+      prevMeanFlowDy = stepFlow.meanDy
+      hasPrevMeanFlow = true
+    } else if activeMovingBlocks == 0 {
+      hasPrevMeanFlow = false
     }
 
     let fullSceneStructScore = normRefDiffSum / Double(count * 255)
+    let meanStepScore = normStepDiffSum / Double(count * 255)
     let texturedStructScore = texturedRefBlocks > 0
       ? (texturedRefScoreSum / Double(texturedRefBlocks))
       : fullSceneStructScore
@@ -1165,51 +1291,100 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       : fullSceneStructScore
 
     let meanJump = Double(abs(currMean - previousMean255))
-    let isLightingTransient = meanJump >= 20.0 && coherentTranslatedBlocks <= 2
-    let minAnchors = max(3, Int(ceil(Double(texturedRefBlocks) * 0.28)))
-    let hasStrongStaticAnchors = texturedRefBlocks >= 4 && anchoredTexturedBlocks >= minAnchors
+    let isLightingTransient = meanJump >= 18.0 && coherentTranslatedBlocks <= 2
+    let minAnchors = max(3, Int(ceil(Double(texturedRefBlocks) * 0.22)))
+    let minPerimAnchors = max(3, Int(ceil(Double(texturedPerimeterBlocks) * 0.34)))
+    let hasStrongStaticAnchors =
+      (texturedRefBlocks >= 4 && anchoredTexturedBlocks >= minAnchors)
+      || (texturedPerimeterBlocks >= 4 && anchoredPerimeterBlocks >= minPerimAnchors)
+
     let sparseSceneCoherentEgoMotion =
       texturedRefBlocks >= 2
       && texturedRefBlocks <= 6
       && anchoredTexturedBlocks == 0
       && coherentTranslatedBlocks >= min(3, texturedRefBlocks)
+      && stepFlow.rigidCoherence >= 0.58
+      && !loomingRejected
+
+    let sparseSceneSlowDrift =
+      hasWindowSpan
+      && texturedRefBlocks >= 2
+      && texturedRefBlocks <= 6
+      && anchoredTexturedBlocks == 0
+      && winFlow.coherentCount >= min(3, texturedRefBlocks)
+      && winFlow.rigidCoherence >= 0.68
+      && !winFlow.isLooming
+
+    let fullSceneSlowDrift =
+      hasWindowSpan
+      && !hasStrongStaticAnchors
+      && !isLightingTransient
+      && !loomingRejected
+      && winFlow.coherentCount >= 5
+      && winActiveQuadrants >= 3
+      && winFlow.rigidCoherence >= 0.70
+
+    let isScenePresentlyStill =
+      coherentTranslatedBlocks == 0
+      && !fullSceneSlowDrift
+      && !sparseSceneSlowDrift
+      && (activeMovingBlocks <= 2 || meanStepScore < 0.009)
 
     let egoWeight: Double
-    if isLightingTransient {
-      egoWeight = 0.12
+    if isLightingTransient || isInputDegraded {
+      egoWeight = 0.10
     } else if hasStrongStaticAnchors {
-      egoWeight = 0.16
+      egoWeight = 0.14
+    } else if loomingRejected {
+      egoWeight = 0.18
+    } else if isScenePresentlyStill {
+      egoWeight = 0.08
     } else if sparseSceneCoherentEgoMotion {
       egoWeight = 1.20
-    } else if activeQuadrants <= 2 && coherentTranslatedBlocks < 5 {
-      egoWeight = 0.28
-    } else if coherentTranslatedBlocks >= 5 && activeQuadrants >= 3 {
+    } else if coherentTranslatedBlocks >= 5 && activeQuadrants >= 3 && stepFlow.rigidCoherence >= 0.56 {
       egoWeight = 1.25
+    } else if activeQuadrants <= 2 && coherentTranslatedBlocks < 5 {
+      egoWeight = 0.24
     } else if texturedRefBlocks > 0
-      && anchoredTexturedBlocks <= Int(floor(Double(texturedRefBlocks) * 0.20))
-      && changedBlocks >= 10
-      && activeQuadrants >= 3
+      && anchoredPerimeterBlocks == 0
+      && anchoredTexturedBlocks == 0
+      && activeMovingBlocks >= 12
+      && activeQuadrants == 4
+      && normalizedDeviation >= 0.028
+      && dxList.count >= 3
+      && stepFlow.rigidCoherence >= 0.55
     {
-      egoWeight = 1.10
-    } else if texturedRefBlocks == 0 && changedBlocks >= 12 && activeQuadrants == 4 {
-      egoWeight = 1.0
+      egoWeight = 1.08
+    } else if texturedRefBlocks == 0 && activeMovingBlocks >= 13 && activeQuadrants == 4 && meanStepScore >= 0.025 && normalizedDeviation >= 0.015 {
+      egoWeight = 0.95
     } else {
-      egoWeight = 0.45
+      egoWeight = 0.32
     }
 
-    let flowContribution = (!hasStrongStaticAnchors && coherentTranslatedBlocks >= 5 && activeQuadrants >= 3)
-      ? (Double(coherentTranslatedBlocks) / Double(totalBlocks)) * 0.11
+    let flowContribution = (!hasStrongStaticAnchors && !loomingRejected && coherentTranslatedBlocks >= 5 && activeQuadrants >= 3 && stepFlow.rigidCoherence >= 0.56)
+      ? (Double(coherentTranslatedBlocks) / Double(totalBlocks)) * 0.11 * stepFlow.rigidCoherence
       : (sparseSceneCoherentEgoMotion ? 0.045 : 0.0)
-    var motionScore = min(1.0, max(0.0, (structMotionScore * egoWeight) + flowContribution))
-    if hasStrongStaticAnchors {
-      motionScore = min(motionScore, motionThreshold * 0.65)
+    let fastMotionScore = min(1.0, max(0.0, (structMotionScore * egoWeight) + flowContribution))
+
+    var slowDriftScore = 0.0
+    if fullSceneSlowDrift || sparseSceneSlowDrift {
+      let driftBonus = (Double(winFlow.coherentCount) / Double(totalBlocks)) * 0.11 * winFlow.rigidCoherence
+      slowDriftScore = min(1.0, max(0.0, (structMotionScore * 1.15 * winFlow.rigidCoherence) + driftBonus))
     }
 
-    let baseAdaptRate: Float = isLightingTransient ? 0.30 : 0.08
+    var motionScore = max(fastMotionScore, slowDriftScore)
+    if hasStrongStaticAnchors || loomingRejected {
+      motionScore = min(motionScore, motionThreshold * 0.62)
+    }
+    if oscillationRejected {
+      motionScore = min(motionScore, motionThreshold * 0.72)
+    }
+
+    let baseAdaptRate: Float = isLightingTransient ? 0.30 : 0.06
     if motionScore >= motionThreshold {
       consecutiveAboveThreshold += 1
       for i in 0..<count {
-        referenceGrid[i] = (0.97 * referenceGrid[i]) + (0.03 * currentGrid[i])
+        referenceGrid[i] = (0.98 * referenceGrid[i]) + (0.02 * currentGrid[i])
         previousGrid[i] = currentGrid[i]
       }
     } else {
@@ -1223,9 +1398,14 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
           let blockRefScore = pxCount > 0
             ? (blockRefDiffSum[bIdx] / Double(pxCount * 255))
             : 0.0
-          let alpha: Float = (hasStrongStaticAnchors && blockRefScore >= staticBlockThreshold)
-            ? 0.01
-            : baseAdaptRate
+          let alpha: Float
+          if settledBlockStreak[bIdx] >= 4 && isScenePresentlyStill {
+            alpha = 0.16
+          } else if hasStrongStaticAnchors && blockRefScore >= staticBlockThreshold {
+            alpha = 0.01
+          } else {
+            alpha = baseAdaptRate
+          }
           let i = gy * gridW + gx
           referenceGrid[i] = ((1.0 - alpha) * referenceGrid[i]) + (alpha * currentGrid[i])
           previousGrid[i] = currentGrid[i]
@@ -1233,6 +1413,15 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       }
     }
     previousMean255 = currMean
+    recentGrids.append(currentGrid)
+    if recentGrids.count > 4 {
+      recentGrids.removeFirst()
+    }
+
+    let reportedCoherent = max(
+      coherentTranslatedBlocks,
+      (fullSceneSlowDrift || sparseSceneSlowDrift) ? winFlow.coherentCount : 0
+    )
 
     if consecutiveAboveThreshold >= persistenceFramesRequired {
       emitEvent([
@@ -1240,7 +1429,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         "eventType": "motionTriggered",
         "summary": String(
           format:
-            "Sustained camera ego-motion detected (score %.3f ≥ threshold %.3f across %d frames)",
+            "Sustained camera movement detected (score %.3f ≥ threshold %.3f across %d frames)",
           motionScore,
           motionThreshold,
           consecutiveAboveThreshold
@@ -1249,6 +1438,11 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         "threshold": motionThreshold,
         "averageLuminance": normalizedLuminance,
         "consecutiveFrames": consecutiveAboveThreshold,
+        "coherentBlocks": reportedCoherent,
+        "anchoredBlocks": anchoredTexturedBlocks,
+        "slowDriftScore": slowDriftScore,
+        "loomingRejected": loomingRejected,
+        "acPowerUnplugged": acPowerUnpluggedRecently,
         "timestampMs": nowMs,
       ])
     } else if processedFrameCount % 3 == 0 {
@@ -1264,9 +1458,98 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         "threshold": motionThreshold,
         "averageLuminance": normalizedLuminance,
         "consecutiveFrames": consecutiveAboveThreshold,
+        "coherentBlocks": reportedCoherent,
+        "anchoredBlocks": anchoredTexturedBlocks,
+        "slowDriftScore": slowDriftScore,
+        "loomingRejected": loomingRejected,
+        "acPowerUnplugged": acPowerUnpluggedRecently,
         "timestampMs": nowMs,
       ])
     }
+  }
+
+  private func evaluateFlowCoherence(
+    dxList: [Double],
+    dyList: [Double],
+    bxList: [Int],
+    byList: [Int]
+  ) -> (
+    coherentCount: Int,
+    rigidCoherence: Double,
+    meanDx: Double,
+    meanDy: Double,
+    isLooming: Bool
+  ) {
+    let n = dxList.count
+    if n == 0 {
+      return (0, 0.0, 0.0, 0.0, false)
+    }
+    var sumDx = 0.0
+    var sumDy = 0.0
+    var sumMag = 0.0
+    var cx = 0.0
+    var cy = 0.0
+    for k in 0..<n {
+      sumDx += dxList[k]
+      sumDy += dyList[k]
+      sumMag += sqrt((dxList[k] * dxList[k]) + (dyList[k] * dyList[k]))
+      cx += Double(bxList[k])
+      cy += Double(byList[k])
+    }
+    let meanDx = sumDx / Double(n)
+    let meanDy = sumDy / Double(n)
+    let meanMag = sumMag / Double(n)
+    cx /= Double(n)
+    cy /= Double(n)
+
+    let netMag = sqrt((meanDx * meanDx) + (meanDy * meanDy))
+    let panCoherence = meanMag > 1e-6 ? min(1.0, max(0.0, netMag / meanMag)) : 0.0
+
+    var panAligned = 0
+    var rollPos = 0
+    var rollNeg = 0
+    var tangentialCosSum = 0.0
+    var radialCosSum = 0.0
+    var radialSamples = 0
+
+    for k in 0..<n {
+      let ux = dxList[k]
+      let uy = dyList[k]
+      let mag = sqrt((ux * ux) + (uy * uy))
+      if mag <= 1e-6 { continue }
+      if netMag > 1e-6 {
+        let cosPan = ((ux * meanDx) + (uy * meanDy)) / (mag * netMag)
+        if cosPan >= 0.45 { panAligned += 1 }
+      }
+      let ox = Double(bxList[k]) - 1.5
+      let oy = Double(byList[k]) - 1.5
+      let oRad = sqrt((ox * ox) + (oy * oy))
+      let cross = (ox * uy) - (oy * ux)
+      if cross > 0.25 {
+        rollPos += 1
+      } else if cross < -0.25 {
+        rollNeg += 1
+      }
+      if oRad >= 0.45 {
+        tangentialCosSum += ((ux * (-oy / oRad)) + (uy * (ox / oRad))) / mag
+      }
+      let rx = Double(bxList[k]) - cx
+      let ry = Double(byList[k]) - cy
+      let rRad = sqrt((rx * rx) + (ry * ry))
+      if rRad >= 0.45 {
+        radialCosSum += ((ux * (rx / rRad)) + (uy * (ry / rRad))) / mag
+        radialSamples += 1
+      }
+    }
+
+    let rollCoherence = min(1.0, max(0.0, abs(tangentialCosSum) / Double(n)))
+    let rigidCoherence = max(panCoherence, rollCoherence)
+    let radialDivergence = radialSamples >= 3
+      ? min(1.0, max(-1.0, radialCosSum / Double(radialSamples)))
+      : 0.0
+    let coherentCount = max(panAligned, max(rollPos, rollNeg))
+    let isLooming = n >= 3 && abs(radialDivergence) >= 0.44 && rigidCoherence < 0.64
+    return (coherentCount, rigidCoherence, meanDx, meanDy, isLooming)
   }
 
   private func estimateLucasKanadeFlow(
@@ -1278,7 +1561,8 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     x0: Int,
     y0: Int,
     w: Int,
-    h: Int
+    h: Int,
+    minMagnitude: Double = 0.32
   ) -> (Double, Double)? {
     let startX = max(1, x0)
     let endX = min(gridW - 1, x0 + w)
@@ -1331,7 +1615,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     let u = ((syy * bx) - (sxy * by)) / det
     let v = ((-sxy * bx) + (sxx * by)) / det
     let mag = sqrt((u * u) + (v * v))
-    if mag < 0.32 || mag > 3.8 {
+    if mag < minMagnitude || mag > 3.8 {
       return nil
     }
     return (u, v)
@@ -1468,7 +1752,7 @@ final class MacOSLocationBridge: NSObject, CLLocationManagerDelegate {
         result(mapAuthStatus(currentAuthStatus()))
       }
 
-    case "captureCurrentLocation":
+    case "captureCurrentLocation", "captureLocation":
       guard CLLocationManager.locationServicesEnabled() else {
         result(["status": "unavailable"])
         return
@@ -1480,6 +1764,10 @@ final class MacOSLocationBridge: NSObject, CLLocationManagerDelegate {
       }
       let args = call.arguments as? [String: Any]
       let timeoutMs = (args?["timeoutMs"] as? NSNumber)?.intValue ?? 6000
+      let highAccuracy = (args?["highAccuracy"] as? Bool) ?? false
+      locationManager.desiredAccuracy = highAccuracy
+        ? kCLLocationAccuracyNearestTenMeters
+        : kCLLocationAccuracyHundredMeters
       pendingLocationCallbacks.append(result)
       if pendingLocationCallbacks.count == 1 {
         let timeoutItem = DispatchWorkItem { [weak self] in
@@ -1490,12 +1778,38 @@ final class MacOSLocationBridge: NSObject, CLLocationManagerDelegate {
           deadline: .now() + .milliseconds(max(1000, timeoutMs)),
           execute: timeoutItem
         )
-        locationManager.requestLocation()
+        if status == .notDetermined {
+          if #available(macOS 10.15, *) {
+            locationManager.requestWhenInUseAuthorization()
+          } else {
+            locationManager.requestLocation()
+          }
+        } else {
+          locationManager.requestLocation()
+        }
       }
 
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  private func isValidLocation(_ loc: CLLocation) -> Bool {
+    guard CLLocationCoordinate2DIsValid(loc.coordinate) else {
+      return false
+    }
+    guard loc.horizontalAccuracy >= 0.0, loc.horizontalAccuracy.isFinite else {
+      return false
+    }
+    let lat = loc.coordinate.latitude
+    let lon = loc.coordinate.longitude
+    guard lat.isFinite, lon.isFinite else {
+      return false
+    }
+    if abs(lat) < 1e-6 && abs(lon) < 1e-6 {
+      return false
+    }
+    return true
   }
 
   private func serializeLocation(_ loc: CLLocation, isLastKnown: Bool) -> [String: Any] {
@@ -1509,7 +1823,7 @@ final class MacOSLocationBridge: NSObject, CLLocationManagerDelegate {
       "status": "attached",
       "latitude": loc.coordinate.latitude,
       "longitude": loc.coordinate.longitude,
-      "accuracyMeters": max(0.0, loc.horizontalAccuracy),
+      "accuracyMeters": loc.horizontalAccuracy,
       "capturedAtMs": Int64(loc.timestamp.timeIntervalSince1970 * 1000.0),
       "isApproximate": reducedAccuracy,
       "isLastKnown": isLastKnown,
@@ -1527,7 +1841,7 @@ final class MacOSLocationBridge: NSObject, CLLocationManagerDelegate {
   }
 
   private func resolvePendingWithFallbackOrUnavailable() {
-    if let cached = locationManager.location {
+    if let cached = locationManager.location, isValidLocation(cached) {
       finishPendingLocations(with: serializeLocation(cached, isLastKnown: true))
     } else {
       finishPendingLocations(with: ["status": "unavailable"])
@@ -1535,17 +1849,22 @@ final class MacOSLocationBridge: NSObject, CLLocationManagerDelegate {
   }
 
   func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-    if let cb = pendingAuthCallback {
-      let current = currentAuthStatus()
-      if current != .notDetermined {
-        pendingAuthCallback = nil
-        cb(mapAuthStatus(current))
+    let current = currentAuthStatus()
+    if let cb = pendingAuthCallback, current != .notDetermined {
+      pendingAuthCallback = nil
+      cb(mapAuthStatus(current))
+    }
+    if !pendingLocationCallbacks.isEmpty {
+      if current == .denied || current == .restricted {
+        finishPendingLocations(with: ["status": "permissionDenied"])
+      } else if current != .notDetermined {
+        locationManager.requestLocation()
       }
     }
   }
 
   func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-    guard let latest = locations.last else {
+    guard let latest = locations.last(where: { isValidLocation($0) }) else {
       resolvePendingWithFallbackOrUnavailable()
       return
     }

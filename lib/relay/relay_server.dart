@@ -23,6 +23,11 @@ class RelaySessionRecord {
     this.hostLastSeenAtUtc,
     this.hostDisconnectedAtUtc,
     this.hostProtectionState = 'off',
+    this.hostLatestLocation,
+    this.hostLocationStatus = 'notRequested',
+    this.hostLocationUpdatedAtUtc,
+    this.hostTrackingExpiresAtUtc,
+    this.hostActiveIncidentId,
   });
 
   final String pairingSessionId;
@@ -36,6 +41,11 @@ class RelaySessionRecord {
   DateTime? hostLastSeenAtUtc;
   DateTime? hostDisconnectedAtUtc;
   String hostProtectionState;
+  AlertLocationData? hostLatestLocation;
+  String hostLocationStatus;
+  DateTime? hostLocationUpdatedAtUtc;
+  DateTime? hostTrackingExpiresAtUtc;
+  String? hostActiveIncidentId;
 
   bool isHostOnlineAt(
     DateTime nowUtc, {
@@ -49,6 +59,20 @@ class RelaySessionRecord {
       return false;
     }
     return nowUtc.difference(seen) <= ttl;
+  }
+
+  bool isHostTrackingLiveAt(
+    DateTime nowUtc, {
+    Duration ttl = const Duration(seconds: 45),
+  }) {
+    if (!isHostOnlineAt(nowUtc, ttl: ttl)) {
+      return false;
+    }
+    final exp = hostTrackingExpiresAtUtc;
+    if (exp == null) {
+      return false;
+    }
+    return nowUtc.isBefore(exp);
   }
 
   void markHostSeen(
@@ -67,6 +91,10 @@ class RelaySessionRecord {
     }
     if (protectionState != null && protectionState.trim().isNotEmpty) {
       hostProtectionState = protectionState.trim();
+      if (hostProtectionState == 'off' || hostProtectionState == 'disarmed') {
+        hostTrackingExpiresAtUtc = null;
+        hostActiveIncidentId = null;
+      }
     }
   }
 
@@ -83,6 +111,12 @@ class RelaySessionRecord {
       'hostLastSeenAtUtc': ?hostLastSeenAtUtc?.toIso8601String(),
       'hostDisconnectedAtUtc': ?hostDisconnectedAtUtc?.toIso8601String(),
       'hostProtectionState': hostProtectionState,
+      if (hostLatestLocation != null)
+        'hostLatestLocation': hostLatestLocation!.toJson(),
+      'hostLocationStatus': hostLocationStatus,
+      'hostLocationUpdatedAtUtc': ?hostLocationUpdatedAtUtc?.toIso8601String(),
+      'hostTrackingExpiresAtUtc': ?hostTrackingExpiresAtUtc?.toIso8601String(),
+      'hostActiveIncidentId': ?hostActiveIncidentId,
     };
   }
 
@@ -91,6 +125,12 @@ class RelaySessionRecord {
     final expiresRaw = json['codeExpiresAtUtc'] as String?;
     final lastSeenRaw = json['hostLastSeenAtUtc'] as String?;
     final disconnectedRaw = json['hostDisconnectedAtUtc'] as String?;
+    final locUpdatedRaw = json['hostLocationUpdatedAtUtc'] as String?;
+    final trackingExpiresRaw = json['hostTrackingExpiresAtUtc'] as String?;
+    final rawHostLoc = json['hostLatestLocation'];
+    final parsedHostLoc = rawHostLoc is Map
+        ? AlertLocationData.tryFromJson(Map<String, Object?>.from(rawHostLoc))
+        : null;
     return RelaySessionRecord(
       pairingSessionId: json['pairingSessionId'] as String? ?? '',
       hostDisplayName: json['hostDisplayName'] as String? ?? 'My Laptop',
@@ -110,6 +150,17 @@ class RelaySessionRecord {
           ? DateTime.tryParse(disconnectedRaw)?.toUtc()
           : null,
       hostProtectionState: json['hostProtectionState'] as String? ?? 'off',
+      hostLatestLocation: parsedHostLoc,
+      hostLocationStatus:
+          json['hostLocationStatus'] as String? ??
+          (parsedHostLoc != null ? 'attached' : 'notRequested'),
+      hostLocationUpdatedAtUtc: locUpdatedRaw != null
+          ? DateTime.tryParse(locUpdatedRaw)?.toUtc()
+          : null,
+      hostTrackingExpiresAtUtc: trackingExpiresRaw != null
+          ? DateTime.tryParse(trackingExpiresRaw)?.toUtc()
+          : null,
+      hostActiveIncidentId: json['hostActiveIncidentId'] as String?,
     );
   }
 }
@@ -366,7 +417,10 @@ class CompanionBondRecord {
   }
 }
 
-/// Authenticated device location fix attached asynchronously to a [SessionAlertRecord].
+/// Authenticated device location fix attached asynchronously to a [SessionAlertRecord]
+/// or protected laptop session.
+///
+/// Missing or invalid fixes are NEVER defaulted to `(0.0, 0.0)`.
 class AlertLocationData {
   const AlertLocationData({
     required this.latitude,
@@ -377,12 +431,114 @@ class AlertLocationData {
     this.isLastKnown = false,
   });
 
+  static const Duration retentionPeriod = Duration(days: 7);
+
   final double latitude;
   final double longitude;
   final String capturedAtUtc;
   final double? accuracyMeters;
   final bool isApproximate;
   final bool isLastKnown;
+
+  static bool isValidCoordinates(
+    double? latitude,
+    double? longitude, {
+    double? accuracyMeters,
+  }) {
+    if (latitude == null || longitude == null) {
+      return false;
+    }
+    if (!latitude.isFinite || !longitude.isFinite) {
+      return false;
+    }
+    if (latitude < -90.0 ||
+        latitude > 90.0 ||
+        longitude < -180.0 ||
+        longitude > 180.0) {
+      return false;
+    }
+    if (accuracyMeters != null &&
+        (!accuracyMeters.isFinite || accuracyMeters < 0.0)) {
+      return false;
+    }
+    if (latitude.abs() < 1e-6 && longitude.abs() < 1e-6) {
+      return false;
+    }
+    return true;
+  }
+
+  bool get isValid =>
+      isValidCoordinates(latitude, longitude, accuracyMeters: accuracyMeters);
+
+  bool isExpiredAt(DateTime nowUtc) {
+    final parsed = DateTime.tryParse(capturedAtUtc)?.toUtc();
+    if (parsed == null) {
+      return false;
+    }
+    return nowUtc.difference(parsed) > retentionPeriod;
+  }
+
+  double distanceMetersTo(AlertLocationData other) {
+    const earthRadiusMeters = 6371000.0;
+    final dLat = (other.latitude - latitude) * (pi / 180.0);
+    final dLon = (other.longitude - longitude) * (pi / 180.0);
+    final lat1 = latitude * (pi / 180.0);
+    final lat2 = other.latitude * (pi / 180.0);
+    final sinLat = sin(dLat / 2.0);
+    final sinLon = sin(dLon / 2.0);
+    final a = (sinLat * sinLat) + (cos(lat1) * cos(lat2) * sinLon * sinLon);
+    final c = 2.0 * atan2(sqrt(a), sqrt(max(0.0, 1.0 - a)));
+    return earthRadiusMeters * c;
+  }
+
+  static List<AlertLocationData> appendFilteredTrail(
+    List<AlertLocationData> existingTrail,
+    AlertLocationData candidate, {
+    int maxPoints = 40,
+  }) {
+    if (!candidate.isValid) {
+      return existingTrail;
+    }
+    if (existingTrail.isEmpty) {
+      return <AlertLocationData>[candidate];
+    }
+    final last = existingTrail.last;
+    final lastDt = DateTime.tryParse(last.capturedAtUtc)?.toUtc();
+    final candDt = DateTime.tryParse(candidate.capturedAtUtc)?.toUtc();
+    var dtSec = 15.0;
+    if (lastDt != null && candDt != null) {
+      dtSec = candDt.difference(lastDt).inMilliseconds / 1000.0;
+      if (dtSec < -2.0) {
+        return existingTrail;
+      }
+    }
+    final dist = last.distanceMetersTo(candidate);
+    final combinedAcc =
+        (last.accuracyMeters ?? 40.0) + (candidate.accuracyMeters ?? 40.0);
+
+    // Filter implausible jumps (> ~235 km/h over short intervals).
+    if (dtSec >= 0.0 && dtSec <= 300.0) {
+      final maxPlausible = (65.0 * max(dtSec, 1.0)) + combinedAcc + 120.0;
+      if (dist > maxPlausible) {
+        return existingTrail;
+      }
+    }
+
+    // Filter jitter smaller than the measurement accuracy envelope.
+    final minMove = max(22.0, combinedAcc * 0.75);
+    if (dist < minMove) {
+      return existingTrail;
+    }
+
+    final updated = <AlertLocationData>[...existingTrail, candidate];
+    if (updated.length <= maxPoints) {
+      return updated;
+    }
+    return <AlertLocationData>[
+      updated.first,
+      ...updated.sublist(updated.length - (maxPoints - 1)),
+    ];
+  }
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
@@ -395,15 +551,38 @@ class AlertLocationData {
     };
   }
 
-  factory AlertLocationData.fromJson(Map<String, Object?> json) {
+  static AlertLocationData? tryFromJson(Map<String, Object?>? json) {
+    if (json == null) {
+      return null;
+    }
+    final lat = (json['latitude'] as num?)?.toDouble();
+    final lon = (json['longitude'] as num?)?.toDouble();
+    final acc = (json['accuracyMeters'] as num?)?.toDouble();
+    if (!isValidCoordinates(lat, lon, accuracyMeters: acc)) {
+      return null;
+    }
+    final rawTime =
+        ((json['capturedAtUtc'] ?? json['capturedAt']) as String? ?? '').trim();
+    final normalizedTime =
+        DateTime.tryParse(rawTime)?.toUtc().toIso8601String() ??
+        DateTime.now().toUtc().toIso8601String();
     return AlertLocationData(
-      latitude: (json['latitude'] as num?)?.toDouble() ?? 0.0,
-      longitude: (json['longitude'] as num?)?.toDouble() ?? 0.0,
-      capturedAtUtc: json['capturedAtUtc'] as String? ?? '',
-      accuracyMeters: (json['accuracyMeters'] as num?)?.toDouble(),
-      isApproximate: json['isApproximate'] as bool? ?? false,
+      latitude: lat!,
+      longitude: lon!,
+      capturedAtUtc: normalizedTime,
+      accuracyMeters: acc,
+      isApproximate:
+          json['isApproximate'] as bool? ?? (acc != null && acc > 100),
       isLastKnown: json['isLastKnown'] as bool? ?? false,
     );
+  }
+
+  factory AlertLocationData.fromJson(Map<String, Object?> json) {
+    final parsed = tryFromJson(json);
+    if (parsed == null) {
+      throw const FormatException('Invalid AlertLocationData coordinates.');
+    }
+    return parsed;
   }
 }
 
@@ -424,7 +603,10 @@ class SessionAlertRecord {
     this.hostDisplayName,
     this.isTest = false,
     this.location,
+    this.alarmLocation,
+    this.locationTrail = const <AlertLocationData>[],
     this.locationStatus = 'notRequested',
+    this.locationTrackingState = 'last_known',
     this.receiptConfirmedAtUtc,
     this.receiptSource,
   });
@@ -443,7 +625,10 @@ class SessionAlertRecord {
   final String? hostDisplayName;
   final bool isTest;
   final AlertLocationData? location;
+  final AlertLocationData? alarmLocation;
+  final List<AlertLocationData> locationTrail;
   final String locationStatus;
+  final String locationTrackingState;
   final String? receiptConfirmedAtUtc;
   final String? receiptSource;
 
@@ -456,9 +641,13 @@ class SessionAlertRecord {
   SessionAlertRecord copyWith({
     int? updatedSeq,
     AlertLocationData? location,
+    AlertLocationData? alarmLocation,
+    List<AlertLocationData>? locationTrail,
     String? locationStatus,
+    String? locationTrackingState,
     String? receiptConfirmedAtUtc,
     String? receiptSource,
+    bool clearLocations = false,
   }) {
     return SessionAlertRecord(
       alertSeq: alertSeq,
@@ -474,8 +663,16 @@ class SessionAlertRecord {
       peakMotionScore: peakMotionScore,
       hostDisplayName: hostDisplayName,
       isTest: isTest,
-      location: location ?? this.location,
+      location: clearLocations ? null : (location ?? this.location),
+      alarmLocation: clearLocations
+          ? null
+          : (alarmLocation ?? this.alarmLocation),
+      locationTrail: clearLocations
+          ? const <AlertLocationData>[]
+          : (locationTrail ?? this.locationTrail),
       locationStatus: locationStatus ?? this.locationStatus,
+      locationTrackingState:
+          locationTrackingState ?? this.locationTrackingState,
       receiptConfirmedAtUtc:
           receiptConfirmedAtUtc ?? this.receiptConfirmedAtUtc,
       receiptSource: receiptSource ?? this.receiptSource,
@@ -483,6 +680,9 @@ class SessionAlertRecord {
   }
 
   Map<String, Object?> toJson() {
+    final effectiveAlarm =
+        alarmLocation ??
+        (locationTrail.isNotEmpty ? locationTrail.first : location);
     return <String, Object?>{
       'alertSeq': alertSeq,
       'updatedSeq': ?updatedSeq,
@@ -497,8 +697,16 @@ class SessionAlertRecord {
       'peakMotionScore': ?peakMotionScore,
       'hostDisplayName': ?hostDisplayName,
       'isTest': isTest,
-      if (location != null) 'location': location!.toJson(),
+      if (location != null && location!.isValid) 'location': location!.toJson(),
+      if (effectiveAlarm != null && effectiveAlarm.isValid)
+        'alarmLocation': effectiveAlarm.toJson(),
+      if (locationTrail.isNotEmpty)
+        'locationTrail': locationTrail
+            .where((p) => p.isValid)
+            .map((p) => p.toJson())
+            .toList(growable: false),
       'locationStatus': locationStatus,
+      'locationTrackingState': locationTrackingState,
       'receiptConfirmed': isReceiptConfirmed,
       'receiptConfirmedAtUtc': ?receiptConfirmedAtUtc,
       'receiptSource': ?receiptSource,
@@ -509,7 +717,28 @@ class SessionAlertRecord {
     AlertLocationData? loc;
     final rawLoc = json['location'];
     if (rawLoc is Map) {
-      loc = AlertLocationData.fromJson(Map<String, Object?>.from(rawLoc));
+      loc = AlertLocationData.tryFromJson(Map<String, Object?>.from(rawLoc));
+    }
+    AlertLocationData? alarmLoc;
+    final rawAlarmLoc = json['alarmLocation'];
+    if (rawAlarmLoc is Map) {
+      alarmLoc = AlertLocationData.tryFromJson(
+        Map<String, Object?>.from(rawAlarmLoc),
+      );
+    }
+    final trail = <AlertLocationData>[];
+    final rawTrail = json['locationTrail'];
+    if (rawTrail is List) {
+      for (final item in rawTrail) {
+        if (item is Map) {
+          final parsed = AlertLocationData.tryFromJson(
+            Map<String, Object?>.from(item),
+          );
+          if (parsed != null) {
+            trail.add(parsed);
+          }
+        }
+      }
     }
     return SessionAlertRecord(
       alertSeq: (json['alertSeq'] as num?)?.toInt() ?? 0,
@@ -526,7 +755,17 @@ class SessionAlertRecord {
       hostDisplayName: json['hostDisplayName'] as String?,
       isTest: json['isTest'] as bool? ?? false,
       location: loc,
+      alarmLocation: alarmLoc ?? loc,
+      locationTrail: trail.isNotEmpty
+          ? List<AlertLocationData>.unmodifiable(trail)
+          : (loc != null
+                ? List<AlertLocationData>.unmodifiable(<AlertLocationData>[
+                    alarmLoc ?? loc,
+                  ])
+                : const <AlertLocationData>[]),
       locationStatus: json['locationStatus'] as String? ?? 'notRequested',
+      locationTrackingState:
+          json['locationTrackingState'] as String? ?? 'last_known',
       receiptConfirmedAtUtc: json['receiptConfirmedAtUtc'] as String?,
       receiptSource: json['receiptSource'] as String?,
     );
@@ -1269,7 +1508,12 @@ abstract class RelayStore {
     required String incidentId,
     AlertLocationData? location,
     required String locationStatus,
+    String? locationTrackingState,
   });
+
+  Future<int> pruneExpiredLocationHistory(DateTime nowUtc);
+
+  Future<int> clearSessionLocationHistory(String pairingSessionId);
 
   Future<SessionAlertRecord?> confirmSessionAlertReceipt({
     required String pairingSessionId,
@@ -1497,7 +1741,12 @@ class InMemoryRelayStore implements RelayStore {
       hostDisplayName: hostDisplayName,
       isTest: isTest,
       location: location,
+      alarmLocation: location,
+      locationTrail: location != null
+          ? <AlertLocationData>[location]
+          : const <AlertLocationData>[],
       locationStatus: locationStatus,
+      locationTrackingState: location != null ? 'live' : 'last_known',
     );
     list.add(created);
     return (alert: created, deduplicated: false);
@@ -1509,6 +1758,7 @@ class InMemoryRelayStore implements RelayStore {
     required String incidentId,
     AlertLocationData? location,
     required String locationStatus,
+    String? locationTrackingState,
   }) async {
     final list = _alertsBySession[pairingSessionId];
     if (list == null) {
@@ -1518,15 +1768,110 @@ class InMemoryRelayStore implements RelayStore {
     if (idx < 0) {
       return null;
     }
+    final current = list[idx];
     final nextSeq = (_seqBySession[pairingSessionId] ?? 0) + 1;
     _seqBySession[pairingSessionId] = nextSeq;
-    final updated = list[idx].copyWith(
+    final nextAlarmLoc = current.alarmLocation ?? location;
+    final nextTrail = location != null
+        ? AlertLocationData.appendFilteredTrail(current.locationTrail, location)
+        : current.locationTrail;
+    final updated = current.copyWith(
       updatedSeq: nextSeq,
-      location: location,
+      location: location ?? current.location,
+      alarmLocation: nextAlarmLoc,
+      locationTrail: nextTrail,
       locationStatus: locationStatus,
+      locationTrackingState:
+          locationTrackingState ??
+          (location != null ? 'live' : current.locationTrackingState),
     );
     list[idx] = updated;
     return updated;
+  }
+
+  @override
+  Future<int> pruneExpiredLocationHistory(DateTime nowUtc) async {
+    var prunedCount = 0;
+    final cutoff = nowUtc.subtract(AlertLocationData.retentionPeriod);
+    for (final session in _sessionsById.values) {
+      final hostLoc = session.hostLatestLocation;
+      final updatedAt = session.hostLocationUpdatedAtUtc;
+      final hostExpired =
+          (hostLoc != null && hostLoc.isExpiredAt(nowUtc)) ||
+          (updatedAt != null && updatedAt.isBefore(cutoff));
+      if (hostExpired && hostLoc != null) {
+        session.hostLatestLocation = null;
+        session.hostLocationStatus = 'notRequested';
+        session.hostLocationUpdatedAtUtc = null;
+        session.hostTrackingExpiresAtUtc = null;
+        prunedCount += 1;
+      }
+    }
+    for (final entry in _alertsBySession.entries) {
+      final list = entry.value;
+      for (var i = 0; i < list.length; i++) {
+        final item = list[i];
+        final hasAnyLoc =
+            item.location != null ||
+            item.alarmLocation != null ||
+            item.locationTrail.isNotEmpty;
+        if (!hasAnyLoc) {
+          continue;
+        }
+        final createdDt = DateTime.tryParse(item.createdAtUtc)?.toUtc();
+        final locExpired =
+            (createdDt != null && createdDt.isBefore(cutoff)) ||
+            (item.location != null && item.location!.isExpiredAt(nowUtc));
+        if (locExpired) {
+          list[i] = item.copyWith(
+            clearLocations: true,
+            locationStatus: 'notRequested',
+            locationTrackingState: 'stopped',
+          );
+          prunedCount += 1;
+        }
+      }
+    }
+    return prunedCount;
+  }
+
+  @override
+  Future<int> clearSessionLocationHistory(String pairingSessionId) async {
+    var cleared = 0;
+    final session = _sessionsById[pairingSessionId];
+    if (session != null) {
+      if (session.hostLatestLocation != null) {
+        cleared += 1;
+      }
+      session.hostLatestLocation = null;
+      session.hostLocationStatus = 'notRequested';
+      session.hostLocationUpdatedAtUtc = null;
+      session.hostTrackingExpiresAtUtc = null;
+    }
+    final list = _alertsBySession[pairingSessionId];
+    if (list != null) {
+      for (var i = 0; i < list.length; i++) {
+        final item = list[i];
+        final hasAnyLoc =
+            item.location != null ||
+            item.alarmLocation != null ||
+            item.locationTrail.isNotEmpty ||
+            item.locationStatus == 'attached' ||
+            item.locationStatus == 'pending';
+        if (hasAnyLoc) {
+          final nextSeq = (_seqBySession[pairingSessionId] ?? 0) + 1;
+          _seqBySession[pairingSessionId] = nextSeq;
+          list[i] = item.copyWith(
+            updatedSeq: nextSeq,
+            clearLocations: true,
+            locationStatus: 'notRequested',
+            locationTrackingState: 'stopped',
+          );
+          cleared += 1;
+        }
+      }
+    }
+    return cleared;
   }
 
   @override
@@ -1954,6 +2299,7 @@ class FileRelayStore implements RelayStore {
     required String incidentId,
     AlertLocationData? location,
     required String locationStatus,
+    String? locationTrackingState,
   }) async {
     await initialize();
     final updated = await _inner.updateSessionAlertLocation(
@@ -1961,11 +2307,32 @@ class FileRelayStore implements RelayStore {
       incidentId: incidentId,
       location: location,
       locationStatus: locationStatus,
+      locationTrackingState: locationTrackingState,
     );
     if (updated != null) {
       await _flushSnapshot();
     }
     return updated;
+  }
+
+  @override
+  Future<int> pruneExpiredLocationHistory(DateTime nowUtc) async {
+    await initialize();
+    final pruned = await _inner.pruneExpiredLocationHistory(nowUtc);
+    if (pruned > 0) {
+      await _flushSnapshot();
+    }
+    return pruned;
+  }
+
+  @override
+  Future<int> clearSessionLocationHistory(String pairingSessionId) async {
+    await initialize();
+    final cleared = await _inner.clearSessionLocationHistory(pairingSessionId);
+    if (cleared > 0) {
+      await _flushSnapshot();
+    }
+    return cleared;
   }
 
   @override
@@ -2162,6 +2529,11 @@ class PostgresRelayStore implements RelayStore {
       s.failedCodeAttempts,
       s.hostDisconnectedAtUtc?.toIso8601String(),
       s.hostProtectionState,
+      s.hostLatestLocation?.toJson(),
+      s.hostLocationStatus,
+      s.hostLocationUpdatedAtUtc?.toIso8601String(),
+      s.hostTrackingExpiresAtUtc?.toIso8601String(),
+      s.hostActiveIncidentId,
     ]);
   }
 
@@ -2343,6 +2715,21 @@ class PostgresRelayStore implements RelayStore {
     await _exec(
       "ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_protection_state TEXT NOT NULL DEFAULT 'off'",
     );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_location_json TEXT',
+    );
+    await _exec(
+      "ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_location_status TEXT NOT NULL DEFAULT 'notRequested'",
+    );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_location_updated_at_utc TIMESTAMPTZ',
+    );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_tracking_expires_at_utc TIMESTAMPTZ',
+    );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_active_incident_id TEXT',
+    );
 
     await _exec('''
       CREATE TABLE IF NOT EXISTS $_bondsTable (
@@ -2486,6 +2873,17 @@ class PostgresRelayStore implements RelayStore {
     await _exec(
       'ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS receipt_source TEXT',
     );
+    await _exec(
+      'ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS alarm_location_json TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS location_trail_json TEXT',
+    );
+    await _exec(
+      "ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS location_tracking_state TEXT NOT NULL DEFAULT 'last_known'",
+    );
+
+    await pruneExpiredLocationHistory(DateTime.now().toUtc());
   }
 
   @override
@@ -2550,8 +2948,48 @@ class PostgresRelayStore implements RelayStore {
     return DateTime.tryParse('$raw')?.toUtc();
   }
 
+  AlertLocationData? _decodeLocationJson(String? raw) {
+    if (raw == null || raw.trim().isEmpty) {
+      return null;
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return AlertLocationData.tryFromJson(
+          Map<String, Object?>.from(decoded),
+        );
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  List<AlertLocationData> _decodeTrailJson(String? raw) {
+    if (raw == null || raw.trim().isEmpty) {
+      return const <AlertLocationData>[];
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        final out = <AlertLocationData>[];
+        for (final item in decoded) {
+          if (item is Map) {
+            final parsed = AlertLocationData.tryFromJson(
+              Map<String, Object?>.from(item),
+            );
+            if (parsed != null) {
+              out.add(parsed);
+            }
+          }
+        }
+        return List<AlertLocationData>.unmodifiable(out);
+      }
+    } catch (_) {}
+    return const <AlertLocationData>[];
+  }
+
   RelaySessionRecord _rowToSession(Map<String, dynamic> map) {
     final createdRaw = map['created_at_utc'];
+    final hostLoc = _decodeLocationJson(map['host_location_json'] as String?);
     return RelaySessionRecord(
       pairingSessionId: map['pairing_session_id'] as String,
       hostDisplayName: map['host_display_name'] as String,
@@ -2566,6 +3004,17 @@ class PostgresRelayStore implements RelayStore {
       hostLastSeenAtUtc: _parseDbUtc(map['host_last_seen_at_utc']),
       hostDisconnectedAtUtc: _parseDbUtc(map['host_disconnected_at_utc']),
       hostProtectionState: map['host_protection_state'] as String? ?? 'off',
+      hostLatestLocation: hostLoc,
+      hostLocationStatus:
+          map['host_location_status'] as String? ??
+          (hostLoc != null ? 'attached' : 'notRequested'),
+      hostLocationUpdatedAtUtc: _parseDbUtc(
+        map['host_location_updated_at_utc'],
+      ),
+      hostTrackingExpiresAtUtc: _parseDbUtc(
+        map['host_tracking_expires_at_utc'],
+      ),
+      hostActiveIncidentId: map['host_active_incident_id'] as String?,
     );
   }
 
@@ -2614,16 +3063,11 @@ class PostgresRelayStore implements RelayStore {
   }
 
   SessionAlertRecord _rowToAlert(Map<String, dynamic> map) {
-    AlertLocationData? loc;
-    final locRaw = map['location_json'] as String?;
-    if (locRaw != null && locRaw.trim().isNotEmpty) {
-      try {
-        final decoded = jsonDecode(locRaw);
-        if (decoded is Map) {
-          loc = AlertLocationData.fromJson(Map<String, Object?>.from(decoded));
-        }
-      } catch (_) {}
-    }
+    final loc = _decodeLocationJson(map['location_json'] as String?);
+    final alarmLoc = _decodeLocationJson(map['alarm_location_json'] as String?);
+    final decodedTrail = _decodeTrailJson(
+      map['location_trail_json'] as String?,
+    );
     final alertSeq = (map['alert_seq'] as num).toInt();
     final updatedRaw = (map['updated_seq'] as num?)?.toInt() ?? 0;
     return SessionAlertRecord(
@@ -2641,7 +3085,17 @@ class PostgresRelayStore implements RelayStore {
       hostDisplayName: map['host_display_name'] as String?,
       isTest: map['is_test'] as bool? ?? false,
       location: loc,
+      alarmLocation: alarmLoc ?? loc,
+      locationTrail: decodedTrail.isNotEmpty
+          ? decodedTrail
+          : (loc != null
+                ? List<AlertLocationData>.unmodifiable(<AlertLocationData>[
+                    alarmLoc ?? loc,
+                  ])
+                : const <AlertLocationData>[]),
       locationStatus: map['location_status'] as String? ?? 'notRequested',
+      locationTrackingState:
+          map['location_tracking_state'] as String? ?? 'last_known',
       receiptConfirmedAtUtc: map['receipt_confirmed_at_utc'] as String?,
       receiptSource: map['receipt_source'] as String?,
     );
@@ -2655,6 +3109,9 @@ class PostgresRelayStore implements RelayStore {
     if (_sessionStructuralFingerprint[session.pairingSessionId] == nextFp) {
       return;
     }
+    final hostLocJson = session.hostLatestLocation != null
+        ? jsonEncode(session.hostLatestLocation!.toJson())
+        : null;
     await _exec(
       Sql.named('''
         INSERT INTO $_sessionsTable (
@@ -2668,6 +3125,11 @@ class PostgresRelayStore implements RelayStore {
           host_last_seen_at_utc,
           host_disconnected_at_utc,
           host_protection_state,
+          host_location_json,
+          host_location_status,
+          host_location_updated_at_utc,
+          host_tracking_expires_at_utc,
+          host_active_incident_id,
           created_at_utc
         ) VALUES (
           @id,
@@ -2680,6 +3142,11 @@ class PostgresRelayStore implements RelayStore {
           @hostLastSeen,
           @hostDisconnected,
           @hostProtectionState,
+          @hostLocationJson,
+          @hostLocationStatus,
+          @hostLocationUpdatedAtUtc,
+          @hostTrackingExpiresAtUtc,
+          @hostActiveIncidentId,
           @created
         )
         ON CONFLICT (pairing_session_id) DO UPDATE SET
@@ -2690,7 +3157,12 @@ class PostgresRelayStore implements RelayStore {
           failed_code_attempts = EXCLUDED.failed_code_attempts,
           host_last_seen_at_utc = EXCLUDED.host_last_seen_at_utc,
           host_disconnected_at_utc = EXCLUDED.host_disconnected_at_utc,
-          host_protection_state = EXCLUDED.host_protection_state
+          host_protection_state = EXCLUDED.host_protection_state,
+          host_location_json = EXCLUDED.host_location_json,
+          host_location_status = EXCLUDED.host_location_status,
+          host_location_updated_at_utc = EXCLUDED.host_location_updated_at_utc,
+          host_tracking_expires_at_utc = EXCLUDED.host_tracking_expires_at_utc,
+          host_active_incident_id = EXCLUDED.host_active_incident_id
       '''),
       parameters: <String, Object?>{
         'id': session.pairingSessionId,
@@ -2703,6 +3175,11 @@ class PostgresRelayStore implements RelayStore {
         'hostLastSeen': session.hostLastSeenAtUtc,
         'hostDisconnected': session.hostDisconnectedAtUtc,
         'hostProtectionState': session.hostProtectionState,
+        'hostLocationJson': hostLocJson,
+        'hostLocationStatus': session.hostLocationStatus,
+        'hostLocationUpdatedAtUtc': session.hostLocationUpdatedAtUtc,
+        'hostTrackingExpiresAtUtc': session.hostTrackingExpiresAtUtc,
+        'hostActiveIncidentId': session.hostActiveIncidentId,
         'created': session.createdAtUtc,
       },
     );
@@ -3152,6 +3629,10 @@ class PostgresRelayStore implements RelayStore {
         final nextSeq =
             (seqRows.first.toColumnMap()['next_seq'] as num?)?.toInt() ?? 1;
         final locJson = location != null ? jsonEncode(location.toJson()) : null;
+        final trailJson = location != null
+            ? jsonEncode(<Map<String, Object?>>[location.toJson()])
+            : null;
+        final initialTrackingState = location != null ? 'live' : 'last_known';
 
         await tx.execute(
           Sql.named('''
@@ -3170,7 +3651,10 @@ class PostgresRelayStore implements RelayStore {
             host_display_name,
             is_test,
             location_json,
-            location_status
+            alarm_location_json,
+            location_trail_json,
+            location_status,
+            location_tracking_state
           ) VALUES (
             @pairingSessionId,
             @alertSeq,
@@ -3186,7 +3670,10 @@ class PostgresRelayStore implements RelayStore {
             @hostDisplayName,
             @isTest,
             @locationJson,
-            @locationStatus
+            @alarmLocationJson,
+            @locationTrailJson,
+            @locationStatus,
+            @locationTrackingState
           )
         '''),
           parameters: <String, Object?>{
@@ -3204,7 +3691,10 @@ class PostgresRelayStore implements RelayStore {
             'hostDisplayName': hostDisplayName,
             'isTest': isTest,
             'locationJson': locJson,
+            'alarmLocationJson': locJson,
+            'locationTrailJson': trailJson,
             'locationStatus': locationStatus,
+            'locationTrackingState': initialTrackingState,
           },
         );
 
@@ -3224,7 +3714,12 @@ class PostgresRelayStore implements RelayStore {
             hostDisplayName: hostDisplayName,
             isTest: isTest,
             location: location,
+            alarmLocation: location,
+            locationTrail: location != null
+                ? <AlertLocationData>[location]
+                : const <AlertLocationData>[],
             locationStatus: locationStatus,
+            locationTrackingState: initialTrackingState,
           ),
           deduplicated: false,
         );
@@ -3243,9 +3738,26 @@ class PostgresRelayStore implements RelayStore {
     required String incidentId,
     AlertLocationData? location,
     required String locationStatus,
+    String? locationTrackingState,
   }) async {
     final updated = await _withConn(
       (conn) => conn.runTx((tx) async {
+        final existingRows = await tx.execute(
+          Sql.named('''
+            SELECT * FROM $_alertsTable
+            WHERE pairing_session_id = @sessionId AND incident_id = @incidentId
+            LIMIT 1
+          '''),
+          parameters: <String, Object?>{
+            'sessionId': pairingSessionId,
+            'incidentId': incidentId,
+          },
+        );
+        if (existingRows.isEmpty) {
+          return null;
+        }
+        final current = _rowToAlert(existingRows.first.toColumnMap());
+
         final seqRows = await tx.execute(
           Sql.named('''
           SELECT COALESCE(MAX(GREATEST(alert_seq, updated_seq)), 0) + 1 AS next_seq
@@ -3256,21 +3768,50 @@ class PostgresRelayStore implements RelayStore {
         );
         final nextSeq =
             (seqRows.first.toColumnMap()['next_seq'] as num?)?.toInt() ?? 1;
-        final locJson = location != null ? jsonEncode(location.toJson()) : null;
+
+        final nextLatestLoc = location ?? current.location;
+        final nextAlarmLoc = current.alarmLocation ?? location;
+        final nextTrail = location != null
+            ? AlertLocationData.appendFilteredTrail(
+                current.locationTrail,
+                location,
+              )
+            : current.locationTrail;
+        final nextTrackingState =
+            locationTrackingState ??
+            (location != null ? 'live' : current.locationTrackingState);
+
+        final locJson = nextLatestLoc != null
+            ? jsonEncode(nextLatestLoc.toJson())
+            : null;
+        final alarmLocJson = nextAlarmLoc != null
+            ? jsonEncode(nextAlarmLoc.toJson())
+            : null;
+        final trailJson = nextTrail.isNotEmpty
+            ? jsonEncode(
+                nextTrail.map((p) => p.toJson()).toList(growable: false),
+              )
+            : null;
 
         final updatedRows = await tx.execute(
           Sql.named('''
           UPDATE $_alertsTable
           SET updated_seq = @updatedSeq,
-              location_json = COALESCE(@locationJson, location_json),
-              location_status = @locationStatus
+              location_json = @locationJson,
+              alarm_location_json = @alarmLocationJson,
+              location_trail_json = @locationTrailJson,
+              location_status = @locationStatus,
+              location_tracking_state = @locationTrackingState
           WHERE pairing_session_id = @sessionId AND incident_id = @incidentId
           RETURNING *
         '''),
           parameters: <String, Object?>{
             'updatedSeq': nextSeq,
             'locationJson': locJson,
+            'alarmLocationJson': alarmLocJson,
+            'locationTrailJson': trailJson,
             'locationStatus': locationStatus,
+            'locationTrackingState': nextTrackingState,
             'sessionId': pairingSessionId,
             'incidentId': incidentId,
           },
@@ -3288,6 +3829,118 @@ class PostgresRelayStore implements RelayStore {
       }
     }
     return updated;
+  }
+
+  @override
+  Future<int> pruneExpiredLocationHistory(DateTime nowUtc) async {
+    final cutoffUtc = nowUtc.subtract(AlertLocationData.retentionPeriod);
+    final cutoffIso = cutoffUtc.toIso8601String();
+    final sessionRes = await _exec(
+      Sql.named('''
+        UPDATE $_sessionsTable
+        SET host_location_json = NULL,
+            host_location_status = 'notRequested',
+            host_location_updated_at_utc = NULL,
+            host_tracking_expires_at_utc = NULL
+        WHERE host_location_json IS NOT NULL
+          AND host_location_updated_at_utc IS NOT NULL
+          AND host_location_updated_at_utc < @cutoffUtc
+      '''),
+      parameters: <String, Object?>{'cutoffUtc': cutoffUtc},
+    );
+    final alertRes = await _exec(
+      Sql.named('''
+        UPDATE $_alertsTable
+        SET location_json = NULL,
+            alarm_location_json = NULL,
+            location_trail_json = NULL,
+            location_status = 'notRequested',
+            location_tracking_state = 'stopped'
+        WHERE (location_json IS NOT NULL OR alarm_location_json IS NOT NULL OR location_trail_json IS NOT NULL)
+          AND created_at_utc < @cutoffIso
+      '''),
+      parameters: <String, Object?>{'cutoffIso': cutoffIso},
+    );
+    for (final session in _sessionCacheById.values) {
+      final hostLoc = session.hostLatestLocation;
+      final updatedAt = session.hostLocationUpdatedAtUtc;
+      if ((hostLoc != null && hostLoc.isExpiredAt(nowUtc)) ||
+          (updatedAt != null && updatedAt.isBefore(cutoffUtc))) {
+        session.hostLatestLocation = null;
+        session.hostLocationStatus = 'notRequested';
+        session.hostLocationUpdatedAtUtc = null;
+        session.hostTrackingExpiresAtUtc = null;
+        _sessionStructuralFingerprint[session.pairingSessionId] =
+            _sessionSignature(session);
+      }
+    }
+    return sessionRes.affectedRows + alertRes.affectedRows;
+  }
+
+  @override
+  Future<int> clearSessionLocationHistory(String pairingSessionId) async {
+    final clearedCount = await _withConn(
+      (conn) => conn.runTx((tx) async {
+        final sRes = await tx.execute(
+          Sql.named('''
+            UPDATE $_sessionsTable
+            SET host_location_json = NULL,
+                host_location_status = 'notRequested',
+                host_location_updated_at_utc = NULL,
+                host_tracking_expires_at_utc = NULL
+            WHERE pairing_session_id = @sessionId
+          '''),
+          parameters: <String, Object?>{'sessionId': pairingSessionId},
+        );
+        final seqRows = await tx.execute(
+          Sql.named('''
+            SELECT COALESCE(MAX(GREATEST(alert_seq, updated_seq)), 0) + 1 AS next_seq
+            FROM $_alertsTable
+            WHERE pairing_session_id = @sessionId
+          '''),
+          parameters: <String, Object?>{'sessionId': pairingSessionId},
+        );
+        final nextSeq =
+            (seqRows.first.toColumnMap()['next_seq'] as num?)?.toInt() ?? 1;
+        final aRes = await tx.execute(
+          Sql.named('''
+            UPDATE $_alertsTable
+            SET updated_seq = @updatedSeq,
+                location_json = NULL,
+                alarm_location_json = NULL,
+                location_trail_json = NULL,
+                location_status = 'notRequested',
+                location_tracking_state = 'stopped'
+            WHERE pairing_session_id = @sessionId
+              AND (
+                location_json IS NOT NULL
+                OR alarm_location_json IS NOT NULL
+                OR location_trail_json IS NOT NULL
+                OR location_status IN ('attached', 'pending')
+              )
+          '''),
+          parameters: <String, Object?>{
+            'updatedSeq': nextSeq,
+            'sessionId': pairingSessionId,
+          },
+        );
+        if (aRes.affectedRows > 0) {
+          _latestSeqCacheBySessionId[pairingSessionId] = nextSeq;
+        }
+        return sRes.affectedRows + aRes.affectedRows;
+      }),
+    );
+    final cachedSession = _sessionCacheById[pairingSessionId];
+    if (cachedSession != null) {
+      cachedSession.hostLatestLocation = null;
+      cachedSession.hostLocationStatus = 'notRequested';
+      cachedSession.hostLocationUpdatedAtUtc = null;
+      cachedSession.hostTrackingExpiresAtUtc = null;
+      _sessionStructuralFingerprint[pairingSessionId] = _sessionSignature(
+        cachedSession,
+      );
+    }
+    return clearedCount;
   }
 
   @override
@@ -3495,7 +4148,9 @@ class WatSafeRelayServer {
     );
   }
 
-  static const String companionSwVersion = '2026.11.16-v3';
+  static const String companionSwVersion = '2026.11.17-v4';
+  static const int locationRetentionDays = 7;
+  static const Duration boundedAlarmTrackingMaxTtl = Duration(minutes: 15);
   static const String _codeAlphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
   final RelayStore _store;
@@ -3513,6 +4168,7 @@ class WatSafeRelayServer {
   HttpServer? _server;
   String? _dynamicPublicOrigin;
   int _seq = 0;
+  DateTime? _lastRetentionSweepUtc;
 
   final Map<String, _FailedAttemptWindow> _failedAttemptsByClient =
       <String, _FailedAttemptWindow>{};
@@ -3771,13 +4427,224 @@ class WatSafeRelayServer {
     DateTime nowUtc,
   ) {
     final online = session?.isHostOnlineAt(nowUtc, ttl: hostOnlineTtl) ?? false;
+    final trackingLive =
+        session?.isHostTrackingLiveAt(nowUtc, ttl: hostOnlineTtl) ?? false;
     return <String, Object?>{
       'hostOnline': online,
+      'hostTrackingLive': trackingLive,
       'hostLastSeenAtUtc': ?session?.hostLastSeenAtUtc?.toIso8601String(),
       'hostDisconnectedAtUtc': ?session?.hostDisconnectedAtUtc
           ?.toIso8601String(),
       'hostProtectionState': session?.hostProtectionState ?? 'off',
     };
+  }
+
+  Future<void> _maybeSweepLocationRetention(DateTime nowUtc) async {
+    final prev = _lastRetentionSweepUtc;
+    if (prev != null && nowUtc.difference(prev) < const Duration(minutes: 30)) {
+      return;
+    }
+    _lastRetentionSweepUtc = nowUtc;
+    try {
+      await _store.pruneExpiredLocationHistory(nowUtc);
+    } catch (_) {}
+  }
+
+  Future<({RelaySessionRecord session, CompanionBondRecord? bond})?>
+  _resolveAuthorizedSession(HttpRequest request) async {
+    final token = _extractBearerToken(request);
+    if (token == null) {
+      return null;
+    }
+    final bond = await _store.findActiveBondByCompanionToken(token);
+    if (bond != null) {
+      final session = await _store.findSessionById(bond.pairingSessionId);
+      if (session == null) {
+        return null;
+      }
+      return (session: session, bond: bond);
+    }
+    final hostSession = await _store.findSessionByHostToken(token);
+    if (hostSession != null) {
+      return (session: hostSession, bond: null);
+    }
+    return null;
+  }
+
+  static String _humanProtectionLabel(String rawState, {required bool online}) {
+    final lower = rawState.trim().toLowerCase();
+    switch (lower) {
+      case 'triggered':
+      case 'alarming':
+        return 'Alarm triggered';
+      case 'armed':
+      case 'protected':
+        return online ? 'Protected' : 'Protected · Laptop offline';
+      case 'arming':
+        return 'Arming';
+      case 'confirming':
+        return 'Movement detected — checking…';
+      case 'paused':
+      case 'monitoringpaused':
+        return 'Monitoring paused';
+      case 'error':
+        return 'Attention needed';
+      default:
+        return online ? 'Off' : 'Laptop offline';
+    }
+  }
+
+  Future<List<Map<String, Object?>>> _buildAuthorizedDevicesList(
+    RelaySessionRecord session,
+    DateTime nowUtc,
+  ) async {
+    await _maybeSweepLocationRetention(nowUtc);
+    final hostOnline = session.isHostOnlineAt(nowUtc, ttl: hostOnlineTtl);
+    final trackingLive = session.isHostTrackingLiveAt(
+      nowUtc,
+      ttl: hostOnlineTtl,
+    );
+    final isAlarming =
+        session.hostProtectionState == 'triggered' ||
+        session.hostProtectionState == 'alarming';
+
+    SessionAlertRecord? activeAlert;
+    final activeIncId = session.hostActiveIncidentId;
+    if (activeIncId != null && activeIncId.isNotEmpty) {
+      activeAlert = await _store.findAlertByIncidentId(
+        pairingSessionId: session.pairingSessionId,
+        incidentId: activeIncId,
+      );
+    }
+    if (activeAlert == null) {
+      final recent = await _store.listAlertsAfterSeq(
+        pairingSessionId: session.pairingSessionId,
+        afterSeq: 0,
+      );
+      for (var i = recent.length - 1; i >= 0; i--) {
+        if (!recent[i].isTest) {
+          activeAlert = recent[i];
+          break;
+        }
+      }
+    }
+
+    AlertLocationData? latestHostLoc = session.hostLatestLocation;
+    if (latestHostLoc != null && latestHostLoc.isExpiredAt(nowUtc)) {
+      latestHostLoc = null;
+    }
+    latestHostLoc ??= activeAlert?.location;
+    if (latestHostLoc != null && latestHostLoc.isExpiredAt(nowUtc)) {
+      latestHostLoc = null;
+    }
+
+    final alarmLoc = activeAlert?.alarmLocation;
+    final trail = activeAlert?.locationTrail ?? const <AlertLocationData>[];
+    final effectiveLocStatus = latestHostLoc != null
+        ? 'attached'
+        : session.hostLocationStatus;
+
+    String trackingState;
+    if (latestHostLoc == null) {
+      trackingState = effectiveLocStatus == 'pending' ? 'live' : 'unavailable';
+    } else if (trackingLive ||
+        (hostOnline &&
+            (session.hostProtectionState == 'armed' ||
+                session.hostProtectionState == 'protected' ||
+                isAlarming))) {
+      trackingState = 'live';
+    } else {
+      trackingState = 'last_known';
+    }
+
+    String statusExplanation;
+    if (latestHostLoc != null) {
+      if (!hostOnline) {
+        statusExplanation =
+            'Showing last reported location from ${session.hostDisplayName}. Sleeping, closed, or offline laptops stop reporting new positions.';
+      } else if (trackingLive) {
+        statusExplanation =
+            'Live post-alarm updates active on ${session.hostDisplayName}. Laptop Wi-Fi positioning may be approximate.';
+      } else {
+        statusExplanation =
+            'Reported by ${session.hostDisplayName}. Laptop Wi-Fi positioning may be approximate.';
+      }
+    } else if (effectiveLocStatus == 'permissionDenied') {
+      statusExplanation =
+          'Location unavailable because location permission is turned off on ${session.hostDisplayName}. Turn on Location Services in Settings on that device.';
+    } else if (effectiveLocStatus == 'pending') {
+      statusExplanation =
+          'Getting device location from ${session.hostDisplayName}…';
+    } else if (!hostOnline) {
+      statusExplanation =
+          'Location unavailable while ${session.hostDisplayName} is offline or asleep, and no recent location is saved.';
+    } else {
+      statusExplanation =
+          'Location unavailable. Enable "Share device location on alarm" in Settings on ${session.hostDisplayName} and arm protection to record its position.';
+    }
+
+    final hostDeviceId =
+        (session.hostDeviceId != null &&
+            session.hostDeviceId!.trim().isNotEmpty)
+        ? session.hostDeviceId!.trim()
+        : 'host_${session.pairingSessionId}';
+
+    final devices = <Map<String, Object?>>[
+      <String, Object?>{
+        'deviceId': hostDeviceId,
+        'displayName': session.hostDisplayName,
+        'role': 'protected_device',
+        'platform': 'Protected computer',
+        'online': hostOnline,
+        'protectionState': session.hostProtectionState,
+        'protectionStatusLabel': _humanProtectionLabel(
+          session.hostProtectionState,
+          online: hostOnline,
+        ),
+        'isAlarming': isAlarming,
+        'trackingState': trackingState,
+        if (latestHostLoc != null && latestHostLoc.isValid)
+          'latestLocation': latestHostLoc.toJson(),
+        if (alarmLoc != null && alarmLoc.isValid)
+          'alarmLocation': alarmLoc.toJson(),
+        if (trail.isNotEmpty)
+          'locationTrail': trail
+              .where((p) => p.isValid)
+              .map((p) => p.toJson())
+              .toList(growable: false),
+        'locationStatus': effectiveLocStatus,
+        'statusExplanation': statusExplanation,
+        'activeIncidentId': ?(activeAlert?.incidentId ?? activeIncId),
+        'lastSeenAtUtc': ?session.hostLastSeenAtUtc?.toIso8601String(),
+      },
+    ];
+
+    final bonds = await _store.listActiveBondsForSession(
+      session.pairingSessionId,
+    );
+    for (final bond in bonds) {
+      devices.add(<String, Object?>{
+        'deviceId': bond.deviceId,
+        'displayName': bond.displayName,
+        'role': 'companion_phone',
+        'platform': bond.platform,
+        'online': bond.connected,
+        'protectionState': bond.notificationsEnabled
+            ? 'alerts_active'
+            : 'companion_connected',
+        'protectionStatusLabel': bond.notificationsEnabled
+            ? 'Companion · Alerts on'
+            : 'Companion · Setup needed',
+        'isAlarming': false,
+        'trackingState': 'unavailable',
+        'locationStatus': 'notRequested',
+        'statusExplanation':
+            '${bond.displayName} receives alarm alerts for ${session.hostDisplayName}. WATSafe never tracks your companion phone or labels its location as your laptop.',
+        'lastSeenAtUtc': ?bond.lastSeenAtUtcIso,
+      });
+    }
+
+    return devices;
   }
 
   bool _isWebCompanionBond(
@@ -5498,29 +6365,68 @@ class WatSafeRelayServer {
 
         final nowUtc = _clock().toUtc();
         final nowIso = nowUtc.toIso8601String();
+        await _maybeSweepLocationRetention(nowUtc);
         final incidentId =
             (body['incidentId'] as String?)?.trim().isNotEmpty == true
             ? (body['incidentId'] as String).trim()
             : 'inc_${++_seq}_${_randomHex(4)}';
         final hostNameOverride = (body['deviceName'] as String?)?.trim();
         final isTestIncident = body['isTest'] as bool? ?? false;
+
+        AlertLocationData? initialLocation;
+        final rawLoc = body['location'];
+        if (rawLoc != null) {
+          if (rawLoc is! Map) {
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'INVALID_LOCATION_COORDINATES',
+                'message': 'Invalid location object.',
+              },
+            );
+            return;
+          }
+          initialLocation = AlertLocationData.tryFromJson(
+            Map<String, Object?>.from(rawLoc),
+          );
+          if (initialLocation == null) {
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'INVALID_LOCATION_COORDINATES',
+                'message': 'Coordinates must be valid finite latitude/longitude (never 0,0 or negative accuracy).',
+              },
+            );
+            return;
+          }
+        }
+        final locStatus =
+            (body['locationStatus'] as String?) ??
+            (initialLocation != null ? 'attached' : 'notRequested');
+
         session.markHostSeen(
           nowUtc,
           displayName: hostNameOverride,
           protectionState: isTestIncident ? null : 'triggered',
         );
-        await _store.saveSession(session);
-
-        AlertLocationData? initialLocation;
-        final rawLoc = body['location'];
-        if (rawLoc is Map) {
-          initialLocation = AlertLocationData.fromJson(
-            Map<String, Object?>.from(rawLoc),
-          );
+        if (!isTestIncident) {
+          session.hostActiveIncidentId = incidentId;
+          if (locStatus == 'pending' || locStatus == 'attached') {
+            session.hostTrackingExpiresAtUtc = nowUtc.add(
+              boundedAlarmTrackingMaxTtl,
+            );
+          }
         }
-        final locStatus =
-            (body['locationStatus'] as String?) ??
-            (initialLocation != null ? 'attached' : 'notRequested');
+        if (initialLocation != null) {
+          session.hostLatestLocation = initialLocation;
+          session.hostLocationStatus = 'attached';
+          session.hostLocationUpdatedAtUtc = nowUtc;
+        } else if (locStatus != 'notRequested') {
+          session.hostLocationStatus = locStatus;
+        }
+        await _store.saveSession(session);
 
         final activeBonds = await _store.listActiveBondsForSession(
           session.pairingSessionId,
@@ -5538,7 +6444,7 @@ class WatSafeRelayServer {
           createdAtUtc: nowIso,
           peakMotionScore: (body['peakMotionScore'] as num?)?.toDouble(),
           hostDisplayName: session.hostDisplayName,
-          isTest: body['isTest'] as bool? ?? false,
+          isTest: isTestIncident,
           location: initialLocation,
           locationStatus: locStatus,
         );
@@ -5554,7 +6460,8 @@ class WatSafeRelayServer {
         return;
       }
 
-      // Asynchronous location update from the protected device once a fix arrives.
+      // Asynchronous location update from the protected device once a fix arrives
+      // or during bounded post-alarm tracking.
       // Never triggers a second push notification; updates the authenticated event record.
       if (method == 'POST' && path == '/v1/incidents/location') {
         final body = await _readJsonBody(request);
@@ -5588,9 +6495,6 @@ class WatSafeRelayServer {
           return;
         }
 
-        session.markHostSeen(_clock().toUtc());
-        await _store.saveSession(session);
-
         final incidentId = (body['incidentId'] as String? ?? '').trim();
         if (incidentId.isEmpty) {
           _writeJson(request.response, HttpStatus.badRequest, <String, Object?>{
@@ -5602,20 +6506,64 @@ class WatSafeRelayServer {
 
         AlertLocationData? location;
         final rawLoc = body['location'];
-        if (rawLoc is Map) {
-          location = AlertLocationData.fromJson(
+        if (rawLoc != null) {
+          if (rawLoc is! Map) {
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'INVALID_LOCATION_COORDINATES',
+                'message': 'Invalid location object.',
+              },
+            );
+            return;
+          }
+          location = AlertLocationData.tryFromJson(
             Map<String, Object?>.from(rawLoc),
           );
+          if (location == null) {
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'INVALID_LOCATION_COORDINATES',
+                'message': 'Coordinates must be valid finite latitude/longitude (never 0,0 or negative accuracy).',
+              },
+            );
+            return;
+          }
         }
         final locationStatus =
             (body['locationStatus'] as String?) ??
             (location != null ? 'attached' : 'unavailable');
+        final trackingStateRaw = (body['locationTrackingState'] as String?)
+            ?.trim();
+
+        final nowUtc = _clock().toUtc();
+        session.markHostSeen(nowUtc);
+        if (location != null) {
+          session.hostLatestLocation = location;
+          session.hostLocationStatus = 'attached';
+          session.hostLocationUpdatedAtUtc = nowUtc;
+        } else {
+          session.hostLocationStatus = locationStatus;
+        }
+        if (trackingStateRaw == 'stopped') {
+          session.hostTrackingExpiresAtUtc = null;
+        } else if (session.hostProtectionState == 'triggered' &&
+            location != null) {
+          session.hostTrackingExpiresAtUtc ??= nowUtc.add(
+            boundedAlarmTrackingMaxTtl,
+          );
+        }
+        await _store.saveSession(session);
 
         final updated = await _store.updateSessionAlertLocation(
           pairingSessionId: session.pairingSessionId,
           incidentId: incidentId,
           location: location,
           locationStatus: locationStatus,
+          locationTrackingState: trackingStateRaw,
         );
         if (updated == null) {
           _writeJson(request.response, HttpStatus.notFound, <String, Object?>{
@@ -5633,6 +6581,252 @@ class WatSafeRelayServer {
           'incidentId': incidentId,
           'updatedSeq': updated.effectiveSeq,
           'locationStatus': updated.locationStatus,
+          'locationTrackingState': updated.locationTrackingState,
+          'trailCount': updated.locationTrail.length,
+        });
+        return;
+      }
+
+      // Protected-device location update while armed (battery-conscious) or
+      // during bounded post-alarm tracking. Strictly requires host bearer auth.
+      if (method == 'POST' && path == '/v1/host/location') {
+        final body = await _readJsonBody(request);
+        final forbidden = detectForbiddenSensitiveField(body);
+        if (forbidden != null) {
+          _writePrivacyViolation(request.response, forbidden);
+          return;
+        }
+        final hostToken = _extractBearerToken(request);
+        if (hostToken == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_HOST_SESSION',
+              'message': 'Missing host session bearer token.',
+            },
+          );
+          return;
+        }
+        final session = await _store.findSessionByHostToken(hostToken);
+        if (session == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_HOST_SESSION',
+              'message': 'Invalid host session bearer token.',
+            },
+          );
+          return;
+        }
+
+        AlertLocationData? location;
+        final rawLoc = body['location'];
+        if (rawLoc != null) {
+          if (rawLoc is! Map) {
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'INVALID_LOCATION_COORDINATES',
+                'message': 'Invalid location object.',
+              },
+            );
+            return;
+          }
+          location = AlertLocationData.tryFromJson(
+            Map<String, Object?>.from(rawLoc),
+          );
+          if (location == null) {
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'INVALID_LOCATION_COORDINATES',
+                'message': 'Coordinates must be valid finite latitude/longitude (never 0,0 or negative accuracy).',
+              },
+            );
+            return;
+          }
+        }
+
+        final nowUtc = _clock().toUtc();
+        final protectionState = (body['protectionState'] as String?)?.trim();
+        final isBoundedAlarmTracking =
+            body['isBoundedAlarmTracking'] as bool? ?? false;
+        final activeIncidentId = (body['activeIncidentId'] as String?)?.trim();
+        final locationStatus =
+            (body['locationStatus'] as String?) ??
+            (location != null ? 'attached' : 'unavailable');
+
+        session.markHostSeen(
+          nowUtc,
+          displayName: body['hostDisplayName'] as String?,
+          deviceId: body['hostDeviceId'] as String?,
+          protectionState: protectionState,
+        );
+        if (location != null) {
+          session.hostLatestLocation = location;
+          session.hostLocationStatus = 'attached';
+          session.hostLocationUpdatedAtUtc = nowUtc;
+        } else if (locationStatus != 'notRequested') {
+          session.hostLocationStatus = locationStatus;
+        }
+        if (isBoundedAlarmTracking) {
+          session.hostTrackingExpiresAtUtc = nowUtc.add(
+            boundedAlarmTrackingMaxTtl,
+          );
+          if (activeIncidentId != null && activeIncidentId.isNotEmpty) {
+            session.hostActiveIncidentId = activeIncidentId;
+          }
+        } else if (protectionState == 'off' || protectionState == 'disarmed') {
+          session.hostTrackingExpiresAtUtc = null;
+          session.hostActiveIncidentId = null;
+        }
+        await _store.saveSession(session);
+
+        SessionAlertRecord? updatedIncident;
+        if (activeIncidentId != null && activeIncidentId.isNotEmpty) {
+          updatedIncident = await _store.updateSessionAlertLocation(
+            pairingSessionId: session.pairingSessionId,
+            incidentId: activeIncidentId,
+            location: location,
+            locationStatus: locationStatus,
+            locationTrackingState: isBoundedAlarmTracking ? 'live' : 'stopped',
+          );
+          if (updatedIncident != null) {
+            _reportedIncidentsSnapshot['${session.pairingSessionId}::$activeIncidentId'] =
+                updatedIncident.toJson();
+          }
+        }
+
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'ok': true,
+          'pairingSessionId': session.pairingSessionId,
+          'locationStatus': session.hostLocationStatus,
+          'hostTrackingLive': session.isHostTrackingLiveAt(
+            nowUtc,
+            ttl: hostOnlineTtl,
+          ),
+          'updatedSeq': ?updatedIncident?.effectiveSeq,
+        });
+        return;
+      }
+
+      // Session-scoped authorized devices & locations for the Devices map view.
+      // Rejects unauthenticated requests and cross-session / unauthorized ID queries.
+      if (method == 'GET' && path == '/v1/devices/locations') {
+        final auth = await _resolveAuthorizedSession(request);
+        if (auth == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_LOCATION_ACCESS',
+              'message': 'Authenticated session token required to access device locations.',
+            },
+          );
+          return;
+        }
+        final session = auth.session;
+        final requestedSessionId =
+            (request.uri.queryParameters['pairingSessionId'] ??
+                    request.uri.queryParameters['sessionId'] ??
+                    '')
+                .trim();
+        if (requestedSessionId.isNotEmpty &&
+            requestedSessionId != session.pairingSessionId) {
+          _writeJson(request.response, HttpStatus.forbidden, <String, Object?>{
+            'error': 'FORBIDDEN_CROSS_SESSION_ACCESS',
+            'message': 'Cannot query device locations belonging to another pairing session.',
+          });
+          return;
+        }
+
+        final nowUtc = _clock().toUtc();
+        if (auth.bond != null) {
+          auth.bond!.connected = true;
+          auth.bond!.lastSeenAtUtcIso = nowUtc.toIso8601String();
+          await _store.saveCompanionBond(auth.bond!);
+        } else {
+          session.markHostSeen(nowUtc);
+          await _store.saveSession(session);
+        }
+
+        final devices = await _buildAuthorizedDevicesList(session, nowUtc);
+        final requestedDeviceId =
+            (request.uri.queryParameters['deviceId'] ?? '').trim();
+        if (requestedDeviceId.isNotEmpty) {
+          final match = devices
+              .where((d) => d['deviceId'] == requestedDeviceId)
+              .toList(growable: false);
+          if (match.isEmpty) {
+            _writeJson(
+              request.response,
+              HttpStatus.forbidden,
+              <String, Object?>{
+                'error': 'FORBIDDEN_DEVICE_ACCESS',
+                'message': 'Requested device is not authorized for this pairing session.',
+              },
+            );
+            return;
+          }
+          _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+            'pairingSessionId': session.pairingSessionId,
+            'retentionDays': locationRetentionDays,
+            ..._hostPresenceFields(session, nowUtc),
+            'devices': match,
+          });
+          return;
+        }
+
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'pairingSessionId': session.pairingSessionId,
+          'retentionDays': locationRetentionDays,
+          ..._hostPresenceFields(session, nowUtc),
+          'devices': devices,
+        });
+        return;
+      }
+
+      // User-initiated deletion of stored location history for this session.
+      if (method == 'DELETE' && path == '/v1/location-history') {
+        final auth = await _resolveAuthorizedSession(request);
+        if (auth == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_LOCATION_ACCESS',
+              'message': 'Authenticated session token required to delete location history.',
+            },
+          );
+          return;
+        }
+        final sessionId = auth.session.pairingSessionId;
+        final clearedCount = await _store.clearSessionLocationHistory(
+          sessionId,
+        );
+        for (final key in _reportedIncidentsSnapshot.keys.toList()) {
+          if (key.startsWith('$sessionId::')) {
+            final existing = _reportedIncidentsSnapshot[key];
+            if (existing != null) {
+              final next = Map<String, Object?>.from(existing)
+                ..remove('location')
+                ..remove('alarmLocation')
+                ..remove('locationTrail');
+              next['locationStatus'] = 'notRequested';
+              next['locationTrackingState'] = 'stopped';
+              _reportedIncidentsSnapshot[key] = next;
+            }
+          }
+        }
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'deleted': true,
+          'pairingSessionId': sessionId,
+          'clearedRecordsCount': clearedCount,
+          'retentionDays': locationRetentionDays,
         });
         return;
       }
@@ -5818,6 +7012,7 @@ class WatSafeRelayServer {
         await _store.saveCompanionBond(bond);
 
         final session = await _store.findSessionById(bond.pairingSessionId);
+        await _maybeSweepLocationRetention(nowUtc);
         final afterSeq =
             int.tryParse(request.uri.queryParameters['afterSeq'] ?? '0') ?? 0;
         final alerts = await _store.listAlertsAfterSeq(
@@ -5825,10 +7020,18 @@ class WatSafeRelayServer {
           afterSeq: afterSeq,
         );
         final latestSeq = await _store.latestAlertSeq(bond.pairingSessionId);
+        final hostLoc =
+            (session?.hostLatestLocation != null &&
+                session!.hostLatestLocation!.isValid &&
+                !session.hostLatestLocation!.isExpiredAt(nowUtc))
+            ? session.hostLatestLocation
+            : null;
 
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           'pairingSessionId': bond.pairingSessionId,
           'hostDisplayName': session?.hostDisplayName ?? 'My Laptop',
+          'hostDeviceId':
+              session?.hostDeviceId ?? 'host_${bond.pairingSessionId}',
           'deviceId': bond.deviceId,
           'connected': true,
           'notificationsEnabled': bond.notificationsEnabled,
@@ -5841,6 +7044,11 @@ class WatSafeRelayServer {
               ? 'push_and_live_poll'
               : 'foreground_poll',
           ..._hostPresenceFields(session, nowUtc),
+          if (hostLoc != null) 'hostLocation': hostLoc.toJson(),
+          'hostLocationStatus': hostLoc != null
+              ? 'attached'
+              : (session?.hostLocationStatus ?? 'notRequested'),
+          'retentionDays': locationRetentionDays,
           'latestSeq': latestSeq,
           'alerts': alerts.map((a) => a.toJson()).toList(growable: false),
         });

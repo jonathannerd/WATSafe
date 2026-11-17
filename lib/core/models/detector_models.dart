@@ -244,6 +244,9 @@ enum DetectorEventType {
 }
 
 /// Strongly typed detector event delivered to the central alarm controller.
+///
+/// Includes non-frame numerical diagnostics for Advanced / Developer tools
+/// without ever storing or transmitting camera frames or pixel buffers.
 @immutable
 class DetectorEvent {
   const DetectorEvent({
@@ -257,6 +260,11 @@ class DetectorEvent {
     this.threshold,
     this.averageLuminance,
     this.consecutiveAboveThresholdFrames,
+    this.coherentBlocks,
+    this.anchoredBlocks,
+    this.slowDriftScore,
+    this.loomingRejected,
+    this.acPowerUnplugged,
     this.errorCode,
     this.isSimulatedTest = false,
   });
@@ -279,6 +287,21 @@ class DetectorEvent {
 
   /// Number of consecutive frames exceeding [threshold].
   final int? consecutiveAboveThresholdFrames;
+
+  /// Number of blocks exhibiting coherent rigid translation/rotation.
+  final int? coherentBlocks;
+
+  /// Number of textured reference blocks remaining stationary.
+  final int? anchoredBlocks;
+
+  /// Multi-frame rolling rigid drift score in `[0.0, 1.0]` (for slow movement).
+  final double? slowDriftScore;
+
+  /// True when approaching/radial looming motion was detected and suppressed.
+  final bool? loomingRejected;
+
+  /// Optional weak supporting signal: true if host AC power was just unplugged.
+  final bool? acPowerUnplugged;
 
   /// Optional platform or capture error code.
   final String? errorCode;
