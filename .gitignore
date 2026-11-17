@@ -64,3 +64,4 @@ macos/Runner/GoogleService-Info.plist
 *.obj
 .watsafe-runtime/
 
+.neon

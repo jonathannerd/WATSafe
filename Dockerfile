@@ -20,7 +20,7 @@ RUN dart pub get
 COPY lib/relay ./lib/relay
 COPY backend ./backend
 
-RUN dart compile exe backend/server.dart -o /app/bin/watsafe-relay
+RUN mkdir -p /app/bin && dart compile exe backend/server.dart -o /app/bin/watsafe-relay
 
 FROM debian:bookworm-slim
 RUN apt-get update \
