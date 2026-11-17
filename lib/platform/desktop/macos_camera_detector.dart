@@ -11,10 +11,13 @@ import '../../core/models/detector_models.dart';
 /// (`dev.watsafe/macos_camera` and `dev.watsafe/macos_camera_events`).
 ///
 /// Algorithm notes:
-/// - Captures video frames via `AVCaptureSession` on a background dispatch queue.
+/// - Captures video frames via `AVCaptureSession` on a background dispatch queue
+///   and verifies that the first video frame arrives before reporting `started`.
 /// - Downsamples each frame to a compact grayscale grid (default 64x48) off the UI thread.
-/// - Computes normalized mean absolute pixel luminance delta (`motionScore` in `0.0..1.0`)
-///   against an exponentially updated background reference frame.
+/// - Estimates global camera ego-motion using affine illumination normalization,
+///   `4x4` static textured landmark anchoring, and 2x2 Lucas-Kanade optical flow
+///   so people passing in front of a stationary MacBook and brief lighting shifts
+///   do not trigger false alarms.
 /// - Enforces a startup calibration interval and consecutive-frame persistence filter
 ///   before emitting `DetectorEventType.motionTriggered`.
 /// - Reports low-light or covered-lens conditions as `DetectorEventType.poorInputWarning`.
@@ -46,6 +49,9 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
 
   @override
   DetectorType get detectorType => DetectorType.macosCameraSceneMotion;
+
+  @override
+  bool get supportsBackgroundMonitoring => false;
 
   @override
   Stream<DetectorEvent> get events => _eventsController.stream;
@@ -118,8 +124,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
           statusDetail:
               response['detail'] as String? ??
               'AVCaptureDevice.DiscoverySession returned 0 video devices.',
-          guidance:
-              'Connect a UVC-compatible webcam or use the manual Test Alarm to verify local siren operation.',
+          guidance: 'Connect a UVC-compatible webcam or use the manual Test Alarm to verify local siren operation.',
         );
       }
 
@@ -132,8 +137,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
             hardwareDeviceName: deviceName ?? 'Built-in macOS Camera',
             summary:
                 'Ready — ${deviceName ?? "macOS Camera"} available with camera permission granted.',
-            statusDetail:
-                'Local 64x48 grayscale scene-motion pipeline ready (no frames saved or uploaded).',
+            statusDetail: 'Local 64x48 grayscale scene-motion pipeline ready (no frames saved or uploaded).',
           );
 
         case PermissionStatus.notDetermined:
@@ -142,11 +146,9 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
             status: CapabilityStatus.permissionRequired,
             permissionStatus: PermissionStatus.notDetermined,
             hardwareDeviceName: deviceName ?? 'Built-in macOS Camera',
-            summary:
-                'Camera permission required to enable macOS scene-motion monitoring.',
+            summary: 'Camera permission required to enable macOS scene-motion monitoring.',
             statusDetail: 'Hardware detected: ${deviceName ?? "macOS Camera"}.',
-            guidance:
-                'Click "Grant Camera Permission" below to prompt macOS for local camera access.',
+            guidance: 'Click "Grant Camera Permission" below to prompt macOS for local camera access.',
           );
 
         case PermissionStatus.denied:
@@ -158,8 +160,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
             summary: 'Camera access was denied for WATSafe.',
             statusDetail:
                 'macOS blocked AVCaptureDevice access for this application.',
-            guidance:
-                'Open macOS System Settings → Privacy & Security → Camera, enable WATSafe, then click Refresh Status.',
+            guidance: 'Open macOS System Settings → Privacy & Security → Camera, enable WATSafe, then click Refresh Status.',
           );
 
         case PermissionStatus.restricted:
@@ -168,10 +169,8 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
             status: CapabilityStatus.permissionRequired,
             permissionStatus: PermissionStatus.restricted,
             hardwareDeviceName: deviceName,
-            summary:
-                'Camera access is restricted by a macOS Screen Time or MDM profile.',
-            guidance:
-                'Check macOS System Settings → Screen Time → Content & Privacy Restrictions.',
+            summary: 'Camera access is restricted by a macOS Screen Time or MDM profile.',
+            guidance: 'Check macOS System Settings → Screen Time → Content & Privacy Restrictions.',
           );
 
         case PermissionStatus.notApplicable:
@@ -188,8 +187,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
         status: CapabilityStatus.unsupported,
         permissionStatus: PermissionStatus.notDetermined,
         summary: 'Native macOS camera bridge is not registered in this runner.',
-        guidance:
-            'Run the full macOS desktop build (`flutter run -d macos`) so the native AVFoundation bridge is active.',
+        guidance: 'Run the full macOS desktop build (`flutter run -d macos`) so the native AVFoundation bridge is active.',
       );
     } on PlatformException catch (error) {
       return DetectorCapability(
@@ -248,16 +246,25 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
         );
       }
       final started = response['started'] as bool? ?? false;
+      final errorCode = response['errorCode'] as String?;
       final message =
           response['message'] as String? ??
-          (started
-              ? 'macOS camera scene-motion monitoring started.'
-              : 'Failed to start macOS camera monitoring.');
-      final errorCode = response['errorCode'] as String?;
+          _defaultMacCameraFailureMessage(
+            started: started,
+            errorCode: errorCode,
+          );
+      final status = started
+          ? CapabilityStatus.ready
+          : ((errorCode?.contains('PERMISSION') ?? false)
+                ? CapabilityStatus.permissionRequired
+                : CapabilityStatus.unsupported);
+      if (!started) {
+        await stopMonitoring(sessionId: config.sessionId);
+      }
 
       return DetectorStartResult(
         started: started,
-        status: started ? CapabilityStatus.ready : CapabilityStatus.unsupported,
+        status: status,
         message: message,
         errorCode: errorCode,
       );
@@ -269,12 +276,38 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
         errorCode: 'MISSING_PLUGIN',
       );
     } on PlatformException catch (error) {
+      await stopMonitoring(sessionId: config.sessionId);
+      final isPerm = error.code.contains('PERMISSION');
       return DetectorStartResult(
         started: false,
-        status: CapabilityStatus.unsupported,
+        status: isPerm
+            ? CapabilityStatus.permissionRequired
+            : CapabilityStatus.unsupported,
         message: error.message ?? 'Native camera capture failed to start.',
         errorCode: error.code,
       );
+    }
+  }
+
+  String _defaultMacCameraFailureMessage({
+    required bool started,
+    required String? errorCode,
+  }) {
+    if (started) {
+      return 'macOS camera scene-motion monitoring started.';
+    }
+    switch (errorCode) {
+      case 'PERMISSION_DENIED':
+      case 'PERMISSION_NOT_GRANTED':
+        return 'Camera permission was denied. Enable WATSafe in macOS System Settings → Privacy & Security → Camera.';
+      case 'NO_CAMERA_HARDWARE':
+        return 'No camera hardware detected on this Mac.';
+      case 'CAMERA_BUSY':
+        return 'Camera is currently in use by another application.';
+      case 'FRAME_TIMEOUT':
+        return 'Camera started, but no video frames arrived before timeout.';
+      default:
+        return 'Failed to initialize macOS camera monitoring.';
     }
   }
 
@@ -332,6 +365,11 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
     final threshold = (map['threshold'] as num?)?.toDouble();
     final averageLuminance = (map['averageLuminance'] as num?)?.toDouble();
     final consecutive = (map['consecutiveFrames'] as num?)?.toInt();
+    final coherentBlocks = (map['coherentBlocks'] as num?)?.toInt();
+    final anchoredBlocks = (map['anchoredBlocks'] as num?)?.toInt();
+    final slowDriftScore = (map['slowDriftScore'] as num?)?.toDouble();
+    final loomingRejected = map['loomingRejected'] as bool?;
+    final acPowerUnplugged = map['acPowerUnplugged'] as bool?;
     final errorCode = map['errorCode'] as String?;
     final timestampMs = (map['timestampMs'] as num?)?.toInt();
 
@@ -349,6 +387,11 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
         threshold: threshold,
         averageLuminance: averageLuminance,
         consecutiveAboveThresholdFrames: consecutive,
+        coherentBlocks: coherentBlocks,
+        anchoredBlocks: anchoredBlocks,
+        slowDriftScore: slowDriftScore,
+        loomingRejected: loomingRejected,
+        acPowerUnplugged: acPowerUnplugged,
         errorCode: errorCode,
       ),
     );

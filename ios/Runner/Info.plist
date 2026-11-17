@@ -8,10 +8,6 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>WATSafe</string>
-	<key>NSCameraUsageDescription</key>
-	<string>WATSafe uses the camera locally for motion monitoring when enabled. No video is saved or uploaded.</string>
-	<key>NSMotionUsageDescription</key>
-	<string>WATSafe uses Core Motion sensors while in the foreground to detect physical movement when armed.</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -30,6 +26,23 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>WATSafe uses the camera locally for motion monitoring when enabled. No video is saved or uploaded.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>WATSafe uses motion sensors while open to detect movement when protection is armed.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>WATSafe can share this device’s location with your paired phone when an alarm triggers so you can locate your device.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>dev.watsafe.pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>watsafe</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

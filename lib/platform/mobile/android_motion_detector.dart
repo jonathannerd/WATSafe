@@ -16,9 +16,11 @@ import '../../core/models/detector_models.dart';
 /// Algorithm notes:
 /// - Queries `SensorManager` for `Sensor.TYPE_LINEAR_ACCELERATION` (or fallback
 ///   `Sensor.TYPE_ACCELEROMETER` with a high-pass gravity filter).
-/// - Runs inside `WatSafeForegroundService` with a partial wake lock and
-///   dedicated sensor `HandlerThread` so monitoring continues when the screen
-///   turns off or the app is backgrounded.
+/// - Runs with `WatSafeForegroundService` (`specialUse`), a bounded partial
+///   wake lock, and a dedicated sensor `HandlerThread` so monitoring continues
+///   when the screen turns off or the app enters the background.
+/// - Emits `DetectorEventType.detectorFailed` (`FOREGROUND_SERVICE_STOPPED`) if
+///   the foreground service is stopped so `AlarmController` exits `armed`.
 /// - Calibrates the resting baseline vector and magnitude during the startup
 ///   calibration window, then computes 3D acceleration vector and magnitude
 ///   deltas (`motionScore`) with a consecutive-sample persistence filter.
@@ -27,14 +29,13 @@ class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
     MethodChannel? methodChannel,
     EventChannel? eventChannel,
     bool? isAndroidOverride,
-    RemoteNotificationAdapter? notificationAdapter,
+    this._notificationAdapter,
   }) : _methodChannel =
            methodChannel ?? const MethodChannel('dev.watsafe/android_motion'),
        _eventChannel =
            eventChannel ??
            const EventChannel('dev.watsafe/android_motion_events'),
-       _isAndroid = isAndroidOverride ?? (!kIsWeb && Platform.isAndroid),
-       _notificationAdapter = notificationAdapter {
+       _isAndroid = isAndroidOverride ?? (!kIsWeb && Platform.isAndroid) {
     if (_isAndroid) {
       _ensureEventSubscription();
     }
@@ -56,6 +57,9 @@ class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
 
   @override
   DetectorType get detectorType => DetectorType.androidMotionSensors;
+
+  @override
+  bool get supportsBackgroundMonitoring => _isAndroid;
 
   @override
   Stream<DetectorEvent> get events => _eventsController.stream;
@@ -109,10 +113,8 @@ class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
           type: DetectorType.androidMotionSensors,
           status: CapabilityStatus.unsupported,
           permissionStatus: PermissionStatus.notApplicable,
-          summary:
-              'Android Motion Sensors require an Android device or a paired Android companion phone.',
-          guidance:
-              'Run WATSafe on Android, or pair an Android companion device in the Paired Devices tab to bridge its Foreground Service motion sensors.',
+          summary: 'Android Motion Sensors require an Android device or a paired Android companion phone.',
+          guidance: 'Run WATSafe on Android, or pair an Android companion device in the Paired Devices tab to bridge its Foreground Service motion sensors.',
         );
       }
 
@@ -162,8 +164,7 @@ class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
           type: DetectorType.androidMotionSensors,
           status: CapabilityStatus.unsupported,
           permissionStatus: PermissionStatus.notApplicable,
-          summary:
-              'Android motion sensor bridge returned an empty capability response.',
+          summary: 'Android motion sensor bridge returned an empty capability response.',
         );
       }
 
@@ -181,22 +182,21 @@ class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
           summary: 'No accelerometer or linear acceleration sensor detected.',
           statusDetail:
               detail ?? 'Android SensorManager returned no motion sensors.',
-          guidance:
-              'Run WATSafe on an Android device with hardware accelerometer sensors.',
+          guidance: 'Run WATSafe on an Android device with hardware accelerometer sensors.',
         );
       }
 
-      if (permissionStatus == PermissionStatus.denied ||
+      if (permissionStatus == PermissionStatus.notDetermined ||
+          permissionStatus == PermissionStatus.denied ||
           permissionStatus == PermissionStatus.restricted) {
         return DetectorCapability(
           type: DetectorType.androidMotionSensors,
           status: CapabilityStatus.permissionRequired,
           permissionStatus: permissionStatus,
           hardwareDeviceName: deviceName ?? 'Android Motion Sensor',
-          summary: 'Android sensor or notification permission is required.',
+          summary: 'Notification permission is required to show the persistent Android foreground monitoring banner.',
           statusDetail: detail,
-          guidance:
-              'Grant sensor and notification permission in Android Settings, then tap Refresh Readiness.',
+          guidance: 'Tap "Grant Motion Sensor Permission" below (or allow notifications in Android Settings) so the persistent armed-monitoring banner can be shown.',
         );
       }
 
@@ -206,19 +206,15 @@ class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
         permissionStatus: PermissionStatus.granted,
         hardwareDeviceName: deviceName ?? 'Android Linear Accelerometer',
         summary: 'Ready — ${deviceName ?? "Android Motion Sensor"} available.',
-        statusDetail:
-            detail ??
-            'Android SensorManager 3-axis motion pipeline and Foreground Service ready for baseline calibration.',
+        statusDetail: detail ?? 'Android SensorManager 3-axis motion pipeline and Foreground Service ready for baseline calibration.',
       );
     } on MissingPluginException {
       return const DetectorCapability(
         type: DetectorType.androidMotionSensors,
         status: CapabilityStatus.unsupported,
         permissionStatus: PermissionStatus.notApplicable,
-        summary:
-            'Native Android motion sensor bridge is not registered in this runner.',
-        guidance:
-            'Build and run the Android target (`flutter run -d android`) so the native SensorManager bridge is active.',
+        summary: 'Native Android motion sensor bridge is not registered in this runner.',
+        guidance: 'Build and run the Android target (`flutter run -d android`) so the native SensorManager bridge is active.',
       );
     } on PlatformException catch (error) {
       return DetectorCapability(
@@ -280,8 +276,7 @@ class AndroidMotionDetectorAdapter implements MotionDetectorAdapter {
         return const DetectorStartResult(
           started: false,
           status: CapabilityStatus.unsupported,
-          message:
-              'Android motion sensor monitoring requires an Android host or a paired Android companion with Foreground Sensor Link enabled.',
+          message: 'Android motion sensor monitoring requires an Android host or a paired Android companion with Foreground Sensor Link enabled.',
           errorCode: 'UNSUPPORTED_OS',
         );
       }

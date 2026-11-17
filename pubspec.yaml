@@ -19,7 +19,8 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.11.4
+  sdk: ^3.13.0
+  flutter: ">=3.47.0"
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -36,9 +37,14 @@ dependencies:
   cupertino_icons: ^1.0.8
   cryptography: ^2.9.0
   crypto: ^3.0.8
+  web: ^1.1.1
+  postgres: ^3.6.0
+  qr: ^4.0.1
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
 
   # The "flutter_lints" package below contains a set of recommended lints to
@@ -61,6 +67,12 @@ flutter:
 
   assets:
     - assets/audio/alarm_siren.wav
+    - assets/fonts/Roboto-LICENSE.txt
+
+  fonts:
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto-Regular.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:

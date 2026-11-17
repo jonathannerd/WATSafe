@@ -39,12 +39,10 @@ class PinVerificationResult {
 /// Security invariant: Never logs or exposes plaintext PINs or raw hash material.
 class PinSecurityService {
   PinSecurityService({
-    required SecurePinStorageAdapter storage,
+    required this._storage,
     DateTime Function()? clock,
-    int pbkdf2Iterations = 20000,
-  }) : _storage = storage,
-       _clock = clock ?? DateTime.now,
-       _pbkdf2Iterations = pbkdf2Iterations;
+    this._pbkdf2Iterations = 20000,
+  }) : _clock = clock ?? DateTime.now;
 
   final SecurePinStorageAdapter _storage;
   final DateTime Function() _clock;
@@ -124,8 +122,7 @@ class PinSecurityService {
     if (await hasConfiguredPin()) {
       return const PinValidationResult(
         isValid: false,
-        errorMessage:
-            'A PIN is already configured. Use Change PIN with your current PIN.',
+        errorMessage: 'A PIN is already configured. Use Change PIN with your current PIN.',
       );
     }
     final validation = validateNewPin(pin: pin, confirmPin: confirmPin);
@@ -213,6 +210,13 @@ class PinSecurityService {
     await _storage.writePinRecord(record);
     _resetBackoff();
     return const PinValidationResult(isValid: true);
+  }
+
+  /// Deletes this installation's stored PIN record and resets lockout counters
+  /// for explicit developer demo resets.
+  Future<void> clearPinForInstallationReset() async {
+    await _storage.deletePinRecord();
+    _resetBackoff();
   }
 
   PinVerificationResult _recordFailedAttempt() {

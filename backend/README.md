@@ -1,79 +1,96 @@
-# WATSafe Backend & Remote Notification Boundary (`backend/`)
+# WATSafe Backend Relay & Web Push Companion (`backend/`)
 
-> **Milestone Status:** **Not Configured (Deferred to Team Area 4)**  
-> The first WATSafe milestone runs 100% locally without a cloud account, API key, phone pairing, or paid service. The Flutter client uses `RemoteNotificationAdapter` (`lib/core/contracts/platform_contracts.dart`) and defaults to `UnconfiguredRemoteNotificationService` (`CapabilityStatus.notConfigured`).
-
----
-
-## 1. Purpose & Security Boundary
-
-The backend service is responsible for:
-
-1. **Authenticated Device Registration & Pairing:** Linking a user's desktop laptop (`macOS` / `Windows`) with one or more mobile companion devices (`iOS` / `Android`) after verifying mutual ownership.
-2. **Authenticated Incident Submission:** Receiving metadata-only incident payloads when an armed device enters `ProtectionState.alarming` or experiences a mid-session detector failure.
-3. **Push Notification Relay (APNs & FCM):** Dispatching high-priority push notifications to paired mobile devices.
-
-### Strict Security & Privacy Invariants
-
-- **Server-Only Credentials:** Apple Push Notification service (`.p8` APNs auth keys) and Firebase Cloud Messaging (`service-account.json`) credentials **must reside exclusively on the backend server**. They must never be bundled in the Flutter app or committed to this repository.
-- **No Camera Images or Video:** Incident payloads sent to the backend contain timestamps, detector modality, and normalized motion scores only. Camera frames never leave the local device memory.
-- **No PIN Material:** The user's disarm PIN and its PBKDF2-HMAC-SHA256 salt/hash remain strictly local to each device's secure storage and are never transmitted to the backend.
-- **Local Siren Independence:** The Flutter `AlarmController` triggers the local siren immediately before attempting any network call. A backend timeout, HTTP error, or unconfigured state never stops or delays a local alarm.
+The standalone WATSafe Relay Server (`backend/server.dart`, backed by `lib/relay/`) connects a protected device (`macOS`, `Windows`, or Browser) with a paired companion phone (`iPhone` Home Screen Web App, `Android` Chrome/PWA, or native mobile app) using short-lived, single-use HTTPS QR pairing links, RFC 8030 / RFC 8291 / RFC 8292 Web Push encryption, and session-scoped bearer tokens.
 
 ---
 
-## 2. Planned Backend Data Models
+## 1. Security & Privacy Invariants
 
-### `DeviceRegistration`
-| Field | Type | Description |
+- **Strict Payload Sanitization:** Every write endpoint inspects incoming JSON keys and string values recursively and rejects (`400 PRIVACY_INVARIANT_VIOLATION`) any payload containing camera frames/images (`frame*`, `image*`, `rgba`, `nv12`, `data:image/*`), PIN material (`pin`, `pinHash`, `pbkdf2`, `salt*`), or database/provider credentials (`databaseUrl`, `aiven*`, `postgres://`, `privateKey`, `serviceAccount`).
+- **Authenticated Location Access Only:** Protected device coordinates attached via `POST /v1/incidents/location` are stored strictly on the session's authenticated event record (`GET /v1/companion/alerts` and `GET /v1/companion/events/<incidentId>`). Lock-screen Web Push / APNs / FCM notification payloads contain **only** the protected device name, plain alarm message, and `incidentId` — never coordinates.
+- **Zero Credentials in URLs:** Neither `companionToken` nor `hostToken` is ever placed in query strings. Moving from Mobile Safari into an isolated iOS Home Screen web app uses a short-lived, single-use 6-character setup code (`POST /v1/companion/handoff-code` -> `POST /v1/companion/claim-handoff`) that rotates the companion token on consumption.
+- **Built-In RFC 8291 + RFC 8292 Web Push & Durable VAPID Keys:** Encrypts push payloads with `aes128gcm` (NIST P-256 ECDH + HKDF-SHA-256), signs VAPID `ES256` JWT headers directly in pure Dart, persists generated VAPID keys in `watsafe_server_secrets` (`PostgresRelayStore`) or local `vapid_keys.json` (`FileRelayStore`), and auto-revokes expired (`404` / `410`) push subscriptions.
+- **Honest Storage Durability Telemetry:** `GET /v1/health` exposes `storageBackend`, `storageDurable`, and `storageDurabilityWarning` (`storageDurable: false` when running inside a cloud container such as Render without `AIVEN_DATABASE_URL`) so an ephemeral container filesystem is never mistaken for permanent storage.
+
+---
+
+## 2. Cloud HTTPS Deployment with Existing Aiven PostgreSQL (`render.yaml` + `Dockerfile`)
+
+Deployment files at the repository root (`Dockerfile` pinned to `dart:3.13.7-sdk` and `render.yaml`) prepare the HTTPS `watsafe-relay` service:
+
+1. **Important storage behavior:**
+   - `render.yaml` deploys the `watsafe-relay` Docker web service (providing a stable `https://<your-render-service>.onrender.com` certificate via `RENDER_EXTERNAL_URL`) and **prompts (`sync: false`) for environment secrets**. It **does not** provision PostgreSQL automatically.
+   - **Do not** use Render’s expiring 30-day free PostgreSQL database or Render’s ephemeral container filesystem for permanent pairing.
+   - Supply our existing **Aiven PostgreSQL** connection URI via `AIVEN_DATABASE_URL` in Render environment secrets (never in Git).
+2. **Deploy & set secrets in Render:**
+   - In the Render Dashboard, choose **New -> Blueprint** and select `jonathannerd/WATSafe`.
+   - Set `AIVEN_DATABASE_URL` (`postgres://avnadmin:<password>@<project>.aivencloud.com:<port>/defaultdb?sslmode=require`).
+   - Optionally set `AIVEN_CA_CERT` (PEM certificate string) if your URI uses `?sslmode=verify-full` or `?sslmode=verify-ca`.
+3. **Verify the live HTTPS endpoint and database persistence across a restart/redeploy:**
+   ```bash
+   dart run tool/verify_deployment.dart --require-postgres --phase=before-restart https://<your-render-service>.onrender.com
+   # Restart or redeploy watsafe-relay in Render, then run:
+   dart run tool/verify_deployment.dart --require-postgres --phase=after-restart --save https://<your-render-service>.onrender.com
+   ```
+   Passing `--save` writes the verified permanent HTTPS origin to `~/.watsafe/relay_service.json` (and syncs to the macOS `WATSafe.app` sandbox container) so every future launch of `WATSafe.app` or `./scripts/run_watsafe.sh` reconnects automatically.
+
+---
+
+## 3. Local Development Launch
+
+From the repository root:
+
+```bash
+./scripts/run_watsafe.sh
+```
+
+- If a permanent HTTPS URL has been saved in `~/.watsafe/relay_service.json`, `run_watsafe.sh` and `WATSafe.app` connect directly to that permanent origin.
+- If `WATSAFE_CLOUDFLARE_TUNNEL_TOKEN` + `WATSAFE_PUBLIC_URL` are set, `run_watsafe.sh` starts the local relay (`~/.watsafe/relay/`) behind your permanent Named Cloudflare Tunnel.
+- Otherwise, `run_watsafe.sh` starts the local relay with a temporary development tunnel and prints a notice explaining one-time permanent setup.
+
+---
+
+## 4. Environment Variables Reference
+
+| Variable | Purpose |
+| :--- | :--- |
+| `PORT` / `WATSAFE_BIND_HOST` | Listen port (default `8787`) and bind address (default `0.0.0.0`) |
+| `WATSAFE_PUBLIC_URL` | Permanent public HTTPS base URL encoded into QR pairing links (auto-detected on Render via `RENDER_EXTERNAL_URL`) |
+| `AIVEN_DATABASE_URL` / `DATABASE_URL` | Aiven / PostgreSQL connection URI (`postgres://...`, environment secret only—never committed to Git). Required in cloud containers for durable storage (`storageBackend: aiven_postgres`, `storageDurable: true`). |
+| `AIVEN_CA_CERT` / `AIVEN_CA_CERT_PATH` / `PGSSLROOTCERT` | Optional Aiven CA certificate (inline PEM string or file path) for `SslMode.verifyFull` |
+| `WATSAFE_DATA_DIR` | Directory for local host `FileRelayStore` when running on a personal Mac/PC (`~/.watsafe/relay` by default; ephemeral inside cloud containers unless `WATSAFE_PERSISTENT_VOLUME=true`) |
+| `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | Optional explicit NIST P-256 VAPID keypair (base64url); when omitted, WATSafe generates once and persists durably in `watsafe_server_secrets` (PostgreSQL) or local `vapid_keys.json` |
+| `VAPID_SUBJECT` | Contact URI for VAPID JWT `sub` claim (default `mailto:alerts@watsafe.app`) |
+| `FCM_PROJECT_ID` + `FCM_BEARER_TOKEN` / `FCM_SERVER_KEY` | Optional Firebase Cloud Messaging credentials for native Android/iOS push tokens |
+| `APNS_BUNDLE_ID` + `APNS_AUTH_TOKEN` | Optional Apple Push Notification service HTTP/2 credentials for native iOS builds |
+| `WATSAFE_PUSH_WEBHOOK_URL` | Optional external push gateway URL (verified on startup) |
+
+---
+
+## 5. Key Endpoints
+
+| Endpoint | Auth | Description |
 | :--- | :--- | :--- |
-| `deviceId` | `UUID` | Unique server-assigned identifier for the installation |
-| `ownerUserId` | `UUID` | Authenticated owner account ID |
-| `displayName` | `String` | User-assigned label (e.g., `"MacBook Pro 14"` or `"iPhone 16"`) |
-| `platform` | `Enum` | `macos` \| `windows` \| `ios` \| `android` |
-| `role` | `Enum` | `protected_host` \| `alert_receiver` \| `both` |
-| `pushProvider` | `Enum?` | `apns` \| `fcm` \| `null` |
-| `pushToken` | `String?` | Encrypted device push token for mobile receivers |
-| `lastSeenAtUtc` | `ISO-8601` | Last authenticated heartbeat or token refresh |
-
-### `DevicePairingBond`
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `bondId` | `UUID` | Unique pairing relationship ID |
-| `ownerUserId` | `UUID` | Must match `ownerUserId` on both devices |
-| `sourceDeviceId` | `UUID` | Protected device that emits incidents |
-| `targetDeviceId` | `UUID` | Companion device that receives alerts |
-| `createdAtUtc` | `ISO-8601` | Timestamp when the short-lived pairing code was verified |
-| `revokedAtUtc` | `ISO-8601?` | Non-null if unpaired by the user |
-
-### `RemoteIncidentReport`
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `incidentId` | `String` | Client-generated incident ID (idempotency key) |
-| `sourceDeviceId` | `UUID` | Authenticated device submitting the alert |
-| `sessionId` | `String` | Protection session identifier |
-| `kind` | `String` | `realDetectorTrigger` \| `detectorFailureDuringMonitoring` |
-| `detectorType` | `String` | e.g., `macos_camera_scene_motion`, `windows_accelerometer` |
-| `triggeredAtUtc` | `ISO-8601` | Timestamp of the trigger |
-| `peakMotionScore` | `Double?` | Normalized motion score (`0.0`..`1.0`) |
-| `triggerSummary` | `String` | Human-readable trigger summary |
-
----
-
-## 3. Planned REST / HTTPS API Endpoints
-
-1. `POST /v1/devices/register` — Registers a device and returns a signed device bearer token.
-2. `POST /v1/pairing/initiate` — Generates a 6-character, single-use, 5-minute pairing code bound to `ownerUserId`.
-3. `POST /v1/pairing/complete` — Verifies ownership and creates a `DevicePairingBond` between desktop and mobile devices.
-4. `GET /v1/pairing/devices` — Lists active paired devices for the authenticated owner (maps to `RemoteNotificationAdapter.listPairedDevices()`).
-5. `POST /v1/incidents:report` — Validates device ownership, stores the incident metadata idempotently, and dispatches APNs/FCM push notifications to all active `targetDeviceId`s paired with `sourceDeviceId` (maps to `RemoteNotificationAdapter.sendIncidentAlert()`).
-
----
-
-## 4. Connecting the Flutter Client (Team Area 4 Handoff)
-
-To connect a real backend in a feature branch without breaking local-only execution:
-
-1. Implement `HttpRemoteNotificationService implements RemoteNotificationAdapter` in `lib/services/remote_notification_service.dart`.
-2. Read the backend base URL via `--dart-define=WATSAFE_API_URL=...`.
-3. When `WATSAFE_API_URL` is empty or omitted, keep returning `UnconfiguredRemoteNotificationService` so local development, CI, and offline usage continue working out of the box.
+| `GET /`, `GET /pair`, `GET /companion` | Public HTML | Permanent-shell iPhone & Android Web Companion PWA (`X-WATSafe-Companion: 1`) |
+| `GET /manifest.webmanifest`, `GET /sw.js`, `GET /icons/*` | Public PWA | Stable Web App Manifest (`id: '/companion'`, `start_url: '/companion?source=homescreen'`, `scope: '/'`, `standalone`), icons, and offline-caching Service Worker |
+| `GET /v1/health` | Public JSON | Readiness check, `storageBackend`, `storageDurable`, `storageDurabilityWarning`, `vapidPublicKey`, and `permanentHttpsOrigin` |
+| `POST /v1/pairing/initiate` | Optional `Bearer <hostToken>` | Generates a 5-minute single-use code and HTTPS `/pair?code=...` QR URL |
+| `POST /v1/host/heartbeat` | `Bearer <hostToken>` | Marks protected laptop online (`hostOnline: true`, `hostLastSeenAtUtc`) and returns active paired devices |
+| `POST /v1/host/offline` | `Bearer <hostToken>` | Marks protected laptop offline on clean app exit while keeping pairing intact |
+| `GET /v1/pairing/lookup?code=...` | Rate-limited | Non-consuming code preview returning `hostDisplayName` and `vapidPublicKey` |
+| `POST /v1/pairing/complete` | Rate-limited `pairingCode` | Consumes single-use code, deduplicates by `deviceId`, and returns `companionToken` |
+| `POST /v1/companion/handoff-code` | `Bearer <companionToken>` | Mints 10-minute single-use 6-char code to move pairing from iOS Safari into Home Screen web app |
+| `POST /v1/companion/claim-handoff` | Rate-limited `handoffCode` | Transfers existing paired bond into Home Screen app and immediately invalidates the browser token |
+| `POST /v1/companion/token/refresh` | `Bearer <companionToken>` | Rotates `companionToken` in-place with a 60-second grace window on the previous token |
+| `POST /v1/companion/push-subscription` | `Bearer <companionToken>` | Validates & stores RFC 8291 Web Push subscription (`endpoint`, `p256dh`, `auth`) |
+| `DELETE /v1/companion/push-subscription` | `Bearer <companionToken>` | Removes Web Push subscription and marks notifications disabled |
+| `POST /v1/companion/status` | `Bearer <companionToken>` | Updates 5-state readiness and returns `hostOnline` + `hostLastSeenAtUtc` |
+| `POST /v1/companion/test-alert` | `Bearer <companionToken>` | Dispatches immediate or delayed (`delaySeconds` `0..10`) real Web Push test alert |
+| `POST /v1/companion/disconnect` | `Bearer <companionToken>` | Revokes companion bond from the phone |
+| `POST /v1/pairing/session/revoke` | `Bearer <hostToken>` | Revokes only this host installation's session, bonds, push registrations, and alerts |
+| `GET /v1/pairing/devices` | `Bearer <hostToken>` | Lists paired phones and accurate notification readiness for the host |
+| `DELETE /v1/pairing/devices/<id>` | `Bearer <hostToken>` | Disconnects a phone and revokes its `companionToken` |
+| `POST /v1/incidents:report` | `Bearer <hostToken>` | Records real or test alarm (`incidentId` deduplicated) and dispatches real Web Push |
+| `POST /v1/incidents/location` | `Bearer <hostToken>` | Attaches asynchronous device location to an existing `incidentId` |
+| `GET /v1/companion/alerts?afterSeq=<n>` | `Bearer <companionToken>` | Streams new and location-updated session alerts plus `hostOnline` / `hostLastSeenAtUtc` |
+| `GET /v1/companion/events/<incidentId>` | `Bearer <companionToken \| hostToken>` | Authenticated single-event + location lookup |

@@ -1,0 +1,43 @@
+# Render Blueprint for WATSafe HTTPS Companion & Relay (`watsafe-relay`)
+#
+# IMPORTANT — Storage & Secret Configuration:
+# - This blueprint deploys the Docker web service (`Dockerfile`) and provides an
+#   automatic Let's Encrypt HTTPS certificate (`RENDER_EXTERNAL_URL`).
+# - It does NOT provision PostgreSQL automatically; `sync: false` prompts for
+#   environment secrets securely outside Git.
+# - Do NOT rely on Render's container filesystem (ephemeral: wiped on every
+#   redeploy and spin-down) or Render's free PostgreSQL tier (expires after 30 days)
+#   for permanent pairing.
+# - Configure `DATABASE_URL` (e.g. a non-expiring Neon PostgreSQL connection URI
+#   `postgresql://...@ep-....neon.tech/neondb?sslmode=require`, or `AIVEN_DATABASE_URL`)
+#   in Render environment secrets so pairings, Web Push subscriptions, alerts, and
+#   VAPID keys (`watsafe_server_secrets`) persist across restarts and redeployments.
+services:
+  - type: web
+    name: watsafe-relay
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /v1/health
+    envVars:
+      - key: PORT
+        value: "8787"
+      - key: WATSAFE_BIND_HOST
+        value: "0.0.0.0"
+      - key: VAPID_SUBJECT
+        value: "mailto:alerts@watsafe.app"
+      # Required secret for permanent cloud durability: set your external durable
+      # PostgreSQL URI (e.g. Neon `DATABASE_URL`) in Render environment secrets.
+      - key: DATABASE_URL
+        sync: false
+      - key: AIVEN_DATABASE_URL
+        sync: false
+      # Optional: paste CA certificate PEM only if using `?sslmode=verify-full`.
+      - key: AIVEN_CA_CERT
+        sync: false
+      # Optional explicit overrides: when DATABASE_URL / AIVEN_DATABASE_URL is set,
+      # WATSafe generates and persists VAPID keys automatically in `watsafe_server_secrets`.
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false

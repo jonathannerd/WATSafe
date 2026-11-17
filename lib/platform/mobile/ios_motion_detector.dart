@@ -44,6 +44,9 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
   DetectorType get detectorType => DetectorType.iosCoreMotionForeground;
 
   @override
+  bool get supportsBackgroundMonitoring => false;
+
+  @override
   Stream<DetectorEvent> get events => _eventsController.stream;
 
   void _ensureEventSubscription() {
@@ -112,11 +115,8 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
           status: CapabilityStatus.unsupported,
           permissionStatus: PermissionStatus.notApplicable,
           summary: 'No Core Motion accelerometer/gyroscope hardware detected.',
-          statusDetail:
-              detail ??
-              'CMMotionManager reported isDeviceMotionAvailable and isAccelerometerAvailable as false.',
-          guidance:
-              'Run WATSafe on a physical iPhone or iPad with Core Motion hardware.',
+          statusDetail: detail ?? 'CMMotionManager reported isDeviceMotionAvailable and isAccelerometerAvailable as false.',
+          guidance: 'Run WATSafe on a physical iPhone or iPad with Core Motion hardware.',
         );
       }
 
@@ -129,8 +129,7 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
           hardwareDeviceName: deviceName ?? 'Apple Core Motion IMU',
           summary: 'iOS Motion & Fitness permission is disabled for WATSafe.',
           statusDetail: detail,
-          guidance:
-              'Open iOS Settings → Privacy & Security → Motion & Fitness, enable WATSafe, then tap Refresh Readiness.',
+          guidance: 'Open iOS Settings → Privacy & Security → Motion & Fitness, enable WATSafe, then tap Refresh Readiness.',
         );
       }
 
@@ -141,9 +140,7 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
         hardwareDeviceName: deviceName ?? 'Apple Core Motion IMU',
         summary:
             'Ready — ${deviceName ?? "iOS Core Motion"} available (foreground active monitoring).',
-        statusDetail:
-            detail ??
-            'CMMotionManager active in foreground; pauses automatically on app suspension or screen lock.',
+        statusDetail: detail ?? 'CMMotionManager active in foreground; pauses automatically on app suspension or screen lock.',
       );
     } on MissingPluginException {
       return const DetectorCapability(
@@ -152,8 +149,7 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
         permissionStatus: PermissionStatus.notApplicable,
         summary:
             'Native iOS Core Motion bridge is not registered in this runner.',
-        guidance:
-            'Build and run the iOS target (`flutter run -d ios`) so the native CMMotionManager bridge is active.',
+        guidance: 'Build and run the iOS target (`flutter run -d ios`) so the native CMMotionManager bridge is active.',
       );
     } on PlatformException catch (error) {
       return DetectorCapability(

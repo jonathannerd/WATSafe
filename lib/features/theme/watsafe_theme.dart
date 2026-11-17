@@ -4,245 +4,92 @@ import 'package:flutter/material.dart';
 
 import '../../core/alarm/alarm_state.dart';
 import '../../core/models/detector_models.dart';
-import '../../core/models/settings_models.dart';
 
-/// Color tokens for a single [WatSafeColorTheme].
-@immutable
-class WatSafePalette {
-  const WatSafePalette({
-    required this.brightness,
-    required this.backgroundDeep,
-    required this.surface,
-    required this.surfaceElevated,
-    required this.border,
-    required this.textPrimary,
-    required this.textMuted,
-    required this.textSubtle,
-    required this.primaryAccent,
-    required this.secondaryAccent,
-    required this.primaryContainer,
-    required this.secondaryContainer,
-    this.alarmCrimson = const Color(0xFFD6453A),
-    this.readyEmerald = const Color(0xFF2E9B68),
-    this.infoSteel = const Color(0xFF4F86C6),
-  });
-
-  final Brightness brightness;
-  final Color backgroundDeep;
-  final Color surface;
-  final Color surfaceElevated;
-  final Color border;
-  final Color textPrimary;
-  final Color textMuted;
-  final Color textSubtle;
-  final Color primaryAccent;
-  final Color secondaryAccent;
-  final Color primaryContainer;
-  final Color secondaryContainer;
-  final Color alarmCrimson;
-  final Color readyEmerald;
-  final Color infoSteel;
-}
-
-/// WATSafe color palette and Material 3 theme definition supporting multiple
-/// selectable user color themes.
+/// WATSafe color palette and Material 3 theme definition.
+/// Uses charcoal surfaces, warm off-white text/cards, and restrained amber/orange accents.
 class WatSafeTheme {
-  static WatSafeColorTheme _activeTheme = WatSafeColorTheme.obsidianAmber;
+  static const Color charcoalDeep = Color(0xFF141619);
+  static const Color charcoalSurface = Color(0xFF1D2025);
+  static const Color charcoalElevated = Color(0xFF262A31);
+  static const Color charcoalBorder = Color(0xFF363C46);
 
-  static WatSafeColorTheme get activeTheme => _activeTheme;
+  static const Color warmOffWhite = Color(0xFFF5F2EB);
+  static const Color warmMuted = Color(0xFFC8C2B6);
+  static const Color warmSubtle = Color(0xFF948E83);
 
-  static void setActiveTheme(WatSafeColorTheme theme) {
-    _activeTheme = theme;
-  }
+  static const Color amberAccent = Color(0xFFE58E26);
+  static const Color orangeAccent = Color(0xFFD96B27);
+  static const Color alarmCrimson = Color(0xFFD6453A);
+  static const Color readyEmerald = Color(0xFF2E9B68);
+  static const Color infoSteel = Color(0xFF4F86C6);
 
-  static const Map<WatSafeColorTheme, WatSafePalette> _palettes =
-      <WatSafeColorTheme, WatSafePalette>{
-        WatSafeColorTheme.obsidianAmber: WatSafePalette(
-          brightness: Brightness.dark,
-          backgroundDeep: Color(0xFF141619),
-          surface: Color(0xFF1D2025),
-          surfaceElevated: Color(0xFF262A31),
-          border: Color(0xFF363C46),
-          textPrimary: Color(0xFFF5F2EB),
-          textMuted: Color(0xFFC8C2B6),
-          textSubtle: Color(0xFF948E83),
-          primaryAccent: Color(0xFFE58E26),
-          secondaryAccent: Color(0xFFD96B27),
-          primaryContainer: Color(0xFF4A3010),
-          secondaryContainer: Color(0xFF462614),
-        ),
-        WatSafeColorTheme.cyberSentinel: WatSafePalette(
-          brightness: Brightness.dark,
-          backgroundDeep: Color(0xFF0A111D),
-          surface: Color(0xFF101B2E),
-          surfaceElevated: Color(0xFF172742),
-          border: Color(0xFF263E63),
-          textPrimary: Color(0xFFECF6FF),
-          textMuted: Color(0xFFA7C4E2),
-          textSubtle: Color(0xFF6E8FAF),
-          primaryAccent: Color(0xFF00D2FF),
-          secondaryAccent: Color(0xFF3A86FF),
-          primaryContainer: Color(0xFF08394F),
-          secondaryContainer: Color(0xFF122C57),
-        ),
-        WatSafeColorTheme.emeraldTactical: WatSafePalette(
-          brightness: Brightness.dark,
-          backgroundDeep: Color(0xFF0B1511),
-          surface: Color(0xFF12211B),
-          surfaceElevated: Color(0xFF1A2F27),
-          border: Color(0xFF2A4A3E),
-          textPrimary: Color(0xFFECFDF5),
-          textMuted: Color(0xFFA7D7C5),
-          textSubtle: Color(0xFF6E9E8D),
-          primaryAccent: Color(0xFF10B981),
-          secondaryAccent: Color(0xFF34D399),
-          primaryContainer: Color(0xFF0A3E2E),
-          secondaryContainer: Color(0xFF124636),
-        ),
-        WatSafeColorTheme.crimsonNight: WatSafePalette(
-          brightness: Brightness.dark,
-          backgroundDeep: Color(0xFF170D11),
-          surface: Color(0xFF231319),
-          surfaceElevated: Color(0xFF311B24),
-          border: Color(0xFF4F2B39),
-          textPrimary: Color(0xFFFFF0F3),
-          textMuted: Color(0xFFE2B6C1),
-          textSubtle: Color(0xFFA87B87),
-          primaryAccent: Color(0xFFFF4D6D),
-          secondaryAccent: Color(0xFFFF758F),
-          primaryContainer: Color(0xFF541625),
-          secondaryContainer: Color(0xFF4B1D28),
-        ),
-        WatSafeColorTheme.royalViolet: WatSafePalette(
-          brightness: Brightness.dark,
-          backgroundDeep: Color(0xFF110D1C),
-          surface: Color(0xFF1A142B),
-          surfaceElevated: Color(0xFF251D3D),
-          border: Color(0xFF3C3061),
-          textPrimary: Color(0xFFF3EEFF),
-          textMuted: Color(0xFFC8BBE8),
-          textSubtle: Color(0xFF8C7EB0),
-          primaryAccent: Color(0xFFA855F7),
-          secondaryAccent: Color(0xFFC084FC),
-          primaryContainer: Color(0xFF3B1A5E),
-          secondaryContainer: Color(0xFF321E4D),
-        ),
-        WatSafeColorTheme.arcticDaylight: WatSafePalette(
-          brightness: Brightness.light,
-          backgroundDeep: Color(0xFFF1F5F9),
-          surface: Color(0xFFFFFFFF),
-          surfaceElevated: Color(0xFFE2E8F0),
-          border: Color(0xFFCBD5E1),
-          textPrimary: Color(0xFF0F172A),
-          textMuted: Color(0xFF475569),
-          textSubtle: Color(0xFF64748B),
-          primaryAccent: Color(0xFF2563EB),
-          secondaryAccent: Color(0xFF4F46E5),
-          primaryContainer: Color(0xFFDBEAFE),
-          secondaryContainer: Color(0xFFE0E7FF),
-          alarmCrimson: Color(0xFFDC2626),
-          readyEmerald: Color(0xFF16A34A),
-          infoSteel: Color(0xFF0284C7),
-        ),
-      };
-
-  static WatSafePalette paletteFor(WatSafeColorTheme theme) {
-    return _palettes[theme] ?? _palettes[WatSafeColorTheme.obsidianAmber]!;
-  }
-
-  static WatSafePalette get currentPalette => paletteFor(_activeTheme);
-
-  static Color get charcoalDeep => currentPalette.backgroundDeep;
-  static Color get charcoalSurface => currentPalette.surface;
-  static Color get charcoalElevated => currentPalette.surfaceElevated;
-  static Color get charcoalBorder => currentPalette.border;
-
-  static Color get warmOffWhite => currentPalette.textPrimary;
-  static Color get warmMuted => currentPalette.textMuted;
-  static Color get warmSubtle => currentPalette.textSubtle;
-
-  static Color get amberAccent => currentPalette.primaryAccent;
-  static Color get orangeAccent => currentPalette.secondaryAccent;
-  static Color get alarmCrimson => currentPalette.alarmCrimson;
-  static Color get readyEmerald => currentPalette.readyEmerald;
-  static Color get infoSteel => currentPalette.infoSteel;
-
-  static ThemeData darkTheme([WatSafeColorTheme? theme]) {
-    return themeFor(theme ?? _activeTheme);
-  }
-
-  static ThemeData themeFor(WatSafeColorTheme theme) {
-    _activeTheme = theme;
-    final p = paletteFor(theme);
-    final isDark = p.brightness == Brightness.dark;
-    final onPrimary = isDark ? p.backgroundDeep : Colors.white;
-
-    final colorScheme = ColorScheme(
-      brightness: p.brightness,
-      primary: p.primaryAccent,
-      onPrimary: onPrimary,
-      primaryContainer: p.primaryContainer,
-      onPrimaryContainer: p.textPrimary,
-      secondary: p.secondaryAccent,
-      onSecondary: onPrimary,
-      secondaryContainer: p.secondaryContainer,
-      onSecondaryContainer: p.textPrimary,
-      tertiary: p.readyEmerald,
-      onTertiary: onPrimary,
-      error: p.alarmCrimson,
-      onError: Colors.white,
-      surface: p.surface,
-      onSurface: p.textPrimary,
-      onSurfaceVariant: p.textMuted,
-      outline: p.border,
+  static ThemeData darkTheme() {
+    const colorScheme = ColorScheme(
+      brightness: Brightness.dark,
+      primary: amberAccent,
+      onPrimary: charcoalDeep,
+      primaryContainer: Color(0xFF4A3010),
+      onPrimaryContainer: warmOffWhite,
+      secondary: orangeAccent,
+      onSecondary: charcoalDeep,
+      secondaryContainer: Color(0xFF462614),
+      onSecondaryContainer: warmOffWhite,
+      tertiary: readyEmerald,
+      onTertiary: charcoalDeep,
+      error: alarmCrimson,
+      onError: warmOffWhite,
+      surface: charcoalSurface,
+      onSurface: warmOffWhite,
+      onSurfaceVariant: warmMuted,
+      outline: charcoalBorder,
     );
 
     return ThemeData(
       useMaterial3: true,
-      brightness: p.brightness,
+      brightness: Brightness.dark,
       colorScheme: colorScheme,
-      scaffoldBackgroundColor: p.backgroundDeep,
+      scaffoldBackgroundColor: charcoalDeep,
       cardTheme: CardThemeData(
-        color: p.surface,
+        color: charcoalSurface,
         elevation: 0,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(14),
-          side: BorderSide(color: p.border, width: 1),
+          side: const BorderSide(color: charcoalBorder, width: 1),
         ),
       ),
-      appBarTheme: AppBarTheme(
-        backgroundColor: p.backgroundDeep,
-        foregroundColor: p.textPrimary,
+      appBarTheme: const AppBarTheme(
+        backgroundColor: charcoalDeep,
+        foregroundColor: warmOffWhite,
         elevation: 0,
         centerTitle: false,
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: p.surfaceElevated,
-        labelStyle: TextStyle(color: p.textMuted),
-        hintStyle: TextStyle(color: p.textSubtle),
+        fillColor: charcoalElevated,
+        labelStyle: const TextStyle(color: warmMuted),
+        hintStyle: const TextStyle(color: warmSubtle),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 16,
           vertical: 14,
         ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: p.border),
+          borderSide: const BorderSide(color: charcoalBorder),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: p.border),
+          borderSide: const BorderSide(color: charcoalBorder),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: p.primaryAccent, width: 2),
+          borderSide: const BorderSide(color: amberAccent, width: 2),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: p.primaryAccent,
-          foregroundColor: onPrimary,
+          backgroundColor: amberAccent,
+          foregroundColor: charcoalDeep,
           textStyle: const TextStyle(
             fontWeight: FontWeight.w700,
             letterSpacing: 0.2,
@@ -255,15 +102,15 @@ class WatSafeTheme {
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: p.textPrimary,
-          side: BorderSide(color: p.border),
+          foregroundColor: warmOffWhite,
+          side: const BorderSide(color: charcoalBorder),
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
           ),
         ),
       ),
-      dividerTheme: DividerThemeData(color: p.border, thickness: 1),
+      dividerTheme: const DividerThemeData(color: charcoalBorder, thickness: 1),
     );
   }
 
@@ -305,19 +152,18 @@ class WatSafeTheme {
   static String labelForCapabilityStatus(CapabilityStatus status) {
     switch (status) {
       case CapabilityStatus.ready:
-        return 'READY';
+        return 'Ready';
       case CapabilityStatus.supported:
-        return 'SUPPORTED';
+        return 'Available';
       case CapabilityStatus.permissionRequired:
-        return 'PERMISSION REQUIRED';
+        return 'Permission needed';
       case CapabilityStatus.degraded:
-        return 'DEGRADED INPUT';
+        return 'Needs attention';
       case CapabilityStatus.unsupported:
-        return 'UNSUPPORTED';
+        return 'Unavailable';
       case CapabilityStatus.notImplemented:
-        return 'NOT IMPLEMENTED';
       case CapabilityStatus.notConfigured:
-        return 'NOT CONFIGURED';
+        return 'Off';
     }
   }
 }
@@ -343,7 +189,6 @@ class WatSafeShieldGraphic extends StatelessWidget {
       child: CustomPaint(
         painter: _WatSafeShieldPainter(
           accentColor: accentColor,
-          coreColor: WatSafeTheme.warmOffWhite,
           isActiveWave: isActiveWave,
         ),
       ),
@@ -354,12 +199,10 @@ class WatSafeShieldGraphic extends StatelessWidget {
 class _WatSafeShieldPainter extends CustomPainter {
   _WatSafeShieldPainter({
     required this.accentColor,
-    required this.coreColor,
     required this.isActiveWave,
   });
 
   final Color accentColor;
-  final Color coreColor;
   final bool isActiveWave;
 
   @override
@@ -427,7 +270,7 @@ class _WatSafeShieldPainter extends CustomPainter {
 
     // Inner sensor core dot
     final corePaint = Paint()
-      ..color = coreColor
+      ..color = WatSafeTheme.warmOffWhite
       ..style = PaintingStyle.fill;
     canvas.drawCircle(
       Offset(center.dx, center.dy + h * 0.02),
@@ -439,7 +282,6 @@ class _WatSafeShieldPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _WatSafeShieldPainter oldDelegate) {
     return oldDelegate.accentColor != accentColor ||
-        oldDelegate.coreColor != coreColor ||
         oldDelegate.isActiveWave != isActiveWave;
   }
 }

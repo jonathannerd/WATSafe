@@ -50,6 +50,9 @@ class WindowsAccelerometerDetectorAdapter implements MotionDetectorAdapter {
   DetectorType get detectorType => DetectorType.windowsAccelerometer;
 
   @override
+  bool get supportsBackgroundMonitoring => false;
+
+  @override
   Stream<DetectorEvent> get events => _eventsController.stream;
 
   void _ensureEventSubscription() {
@@ -102,8 +105,7 @@ class WindowsAccelerometerDetectorAdapter implements MotionDetectorAdapter {
           type: DetectorType.windowsAccelerometer,
           status: CapabilityStatus.unsupported,
           permissionStatus: PermissionStatus.notApplicable,
-          summary:
-              'Windows accelerometer bridge returned an empty capability response.',
+          summary: 'Windows accelerometer bridge returned an empty capability response.',
         );
       }
 
@@ -120,11 +122,8 @@ class WindowsAccelerometerDetectorAdapter implements MotionDetectorAdapter {
           type: DetectorType.windowsAccelerometer,
           status: CapabilityStatus.unsupported,
           permissionStatus: PermissionStatus.notApplicable,
-          summary:
-              'No integrated 3-axis accelerometer hardware detected on this Windows PC.',
-          statusDetail:
-              detail ??
-              'Windows.Devices.Sensors.Accelerometer.GetDefault() returned null.',
+          summary: 'No integrated 3-axis accelerometer hardware detected on this Windows PC.',
+          statusDetail: detail ?? 'Windows.Devices.Sensors.Accelerometer.GetDefault() returned null.',
           guidance:
               'Standard clamshell Windows laptops often omit a WinRT accelerometer. '
               'Select "Windows Webcam Scene-Motion" below for live optical monitoring.',
@@ -165,8 +164,7 @@ class WindowsAccelerometerDetectorAdapter implements MotionDetectorAdapter {
         type: DetectorType.windowsAccelerometer,
         status: CapabilityStatus.unsupported,
         permissionStatus: PermissionStatus.notApplicable,
-        summary:
-            'Native Windows accelerometer bridge is not registered in this runner.',
+        summary: 'Native Windows accelerometer bridge is not registered in this runner.',
         guidance:
             'Rebuild and run the Windows desktop target (`flutter run -d windows`) '
             'so the native WinRT sensor bridge is active.',
@@ -349,12 +347,16 @@ class WindowsAccelerometerDetectorAdapter implements MotionDetectorAdapter {
 /// `dev.watsafe/windows_camera_events`).
 ///
 /// Algorithm notes:
-/// - Enumerates video capture hardware via `MFEnumDeviceSources` and reads
-///   frames off the UI thread via `IMFSourceReader`.
-/// - Downsamples each frame to a compact `64x48` grayscale grid (`NV12`, `YUY2`,
-///   `RGB32`, `RGB24`).
-/// - Calibrates an adaptive reference baseline and computes normalized mean
-///   absolute pixel luminance delta (`motionScore` in `0.0..1.0`).
+/// - Enumerates video capture hardware via `MFEnumDeviceSources`, configures
+///   `IMFSourceReader` on an MTA worker thread with hardware/video transforms
+///   enabled (`NV12`, `I420`, `YUY2`, `UYVY`, `RGB32`, `RGB24`), and verifies
+///   that the first video frame arrives before reporting `started`.
+/// - Locks 2D surfaces via `IMF2DBuffer::Lock2D` (preserving GPU row pitch) or
+///   resolves contiguous unpadded row strides so padded `MF_MT_DEFAULT_STRIDE`
+///   values never drop frames or skew rows into UV chroma planes.
+/// - Estimates global camera ego-motion using affine illumination normalization,
+///   `4x4` static textured landmark anchoring, and 2x2 Lucas-Kanade optical flow
+///   so passersby in front of a stationary laptop do not trigger false alarms.
 /// - Enforces a consecutive-frame persistence filter before emitting
 ///   `DetectorEventType.motionTriggered` and warns on dark/covered lenses via
 ///   `DetectorEventType.poorInputWarning`.
@@ -386,6 +388,9 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
 
   @override
   DetectorType get detectorType => DetectorType.windowsCameraSceneMotion;
+
+  @override
+  bool get supportsBackgroundMonitoring => false;
 
   @override
   Stream<DetectorEvent> get events => _eventsController.stream;
@@ -458,8 +463,7 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
           statusDetail:
               response['detail'] as String? ??
               'Media Foundation MFEnumDeviceSources returned 0 video devices.',
-          guidance:
-              'Connect a USB/UVC webcam or use the manual Test Alarm to verify local siren operation.',
+          guidance: 'Connect a USB/UVC webcam or use the manual Test Alarm to verify local siren operation.',
         );
       }
 
@@ -472,8 +476,7 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
             hardwareDeviceName: deviceName ?? 'Built-in Windows Camera',
             summary:
                 'Ready — ${deviceName ?? "Windows Camera"} available with camera access enabled.',
-            statusDetail:
-                'Local 64x48 grayscale scene-motion pipeline ready via Media Foundation (no frames saved or uploaded).',
+            statusDetail: 'Local 64x48 grayscale scene-motion pipeline ready via Media Foundation (no frames saved or uploaded).',
           );
 
         case PermissionStatus.notDetermined:
@@ -482,12 +485,10 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
             status: CapabilityStatus.permissionRequired,
             permissionStatus: PermissionStatus.notDetermined,
             hardwareDeviceName: deviceName ?? 'Built-in Windows Camera',
-            summary:
-                'Camera permission required to enable Windows scene-motion monitoring.',
+            summary: 'Camera permission required to enable Windows scene-motion monitoring.',
             statusDetail:
                 'Hardware detected: ${deviceName ?? "Windows Camera"}.',
-            guidance:
-                'Click "Grant Camera Permission" below to check or open Windows Camera Privacy Settings.',
+            guidance: 'Click "Grant Camera Permission" below to check or open Windows Camera Privacy Settings.',
           );
 
         case PermissionStatus.denied:
@@ -498,10 +499,8 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
             permissionStatus: permissionStatus,
             hardwareDeviceName: deviceName ?? 'Built-in Windows Camera',
             summary: 'Camera access is disabled in Windows Privacy Settings.',
-            statusDetail:
-                'Windows ConsentStore blocked webcam access for desktop applications.',
-            guidance:
-                'Open Windows Settings → Privacy & security → Camera, enable "Camera access" and "Let desktop apps access your camera", then click Refresh Readiness.',
+            statusDetail: 'Windows ConsentStore blocked webcam access for desktop applications.',
+            guidance: 'Open Windows Settings → Privacy & security → Camera, enable "Camera access" and "Let desktop apps access your camera", then click Refresh Readiness.',
           );
 
         case PermissionStatus.notApplicable:
@@ -580,16 +579,25 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
         );
       }
       final started = response['started'] as bool? ?? false;
+      final errorCode = response['errorCode'] as String?;
       final message =
           response['message'] as String? ??
-          (started
-              ? 'Windows camera scene-motion monitoring started.'
-              : 'Failed to start Windows camera monitoring.');
-      final errorCode = response['errorCode'] as String?;
+          _defaultWindowsCameraFailureMessage(
+            started: started,
+            errorCode: errorCode,
+          );
+      final status = started
+          ? CapabilityStatus.ready
+          : ((errorCode?.contains('PERMISSION') ?? false)
+                ? CapabilityStatus.permissionRequired
+                : CapabilityStatus.unsupported);
+      if (!started) {
+        await stopMonitoring(sessionId: config.sessionId);
+      }
 
       return DetectorStartResult(
         started: started,
-        status: started ? CapabilityStatus.ready : CapabilityStatus.unsupported,
+        status: status,
         message: message,
         errorCode: errorCode,
       );
@@ -601,13 +609,40 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
         errorCode: 'MISSING_PLUGIN',
       );
     } on PlatformException catch (error) {
+      await stopMonitoring(sessionId: config.sessionId);
+      final isPerm = error.code.contains('PERMISSION');
       return DetectorStartResult(
         started: false,
-        status: CapabilityStatus.unsupported,
+        status: isPerm
+            ? CapabilityStatus.permissionRequired
+            : CapabilityStatus.unsupported,
         message:
             error.message ?? 'Native Windows camera capture failed to start.',
         errorCode: error.code,
       );
+    }
+  }
+
+  String _defaultWindowsCameraFailureMessage({
+    required bool started,
+    required String? errorCode,
+  }) {
+    if (started) {
+      return 'Windows camera scene-motion monitoring started.';
+    }
+    switch (errorCode) {
+      case 'PERMISSION_DENIED':
+      case 'PERMISSION_NOT_GRANTED':
+        return 'Windows camera access is disabled in Privacy Settings.';
+      case 'NO_CAMERA_HARDWARE':
+        return 'No camera hardware detected on this Windows PC.';
+      case 'CAMERA_BUSY':
+      case 'SOURCE_ACTIVATE_FAILED':
+        return 'Windows camera is currently in use by another application.';
+      case 'FRAME_TIMEOUT':
+        return 'Windows camera opened, but no video frames arrived before timeout.';
+      default:
+        return 'Failed to initialize Windows camera monitoring.';
     }
   }
 
@@ -666,6 +701,11 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
     final threshold = (map['threshold'] as num?)?.toDouble();
     final averageLuminance = (map['averageLuminance'] as num?)?.toDouble();
     final consecutive = (map['consecutiveFrames'] as num?)?.toInt();
+    final coherentBlocks = (map['coherentBlocks'] as num?)?.toInt();
+    final anchoredBlocks = (map['anchoredBlocks'] as num?)?.toInt();
+    final slowDriftScore = (map['slowDriftScore'] as num?)?.toDouble();
+    final loomingRejected = map['loomingRejected'] as bool?;
+    final acPowerUnplugged = map['acPowerUnplugged'] as bool?;
     final errorCode = map['errorCode'] as String?;
     final timestampMs = (map['timestampMs'] as num?)?.toInt();
 
@@ -683,6 +723,11 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
         threshold: threshold,
         averageLuminance: averageLuminance,
         consecutiveAboveThresholdFrames: consecutive,
+        coherentBlocks: coherentBlocks,
+        anchoredBlocks: anchoredBlocks,
+        slowDriftScore: slowDriftScore,
+        loomingRejected: loomingRejected,
+        acPowerUnplugged: acPowerUnplugged,
         errorCode: errorCode,
       ),
     );
