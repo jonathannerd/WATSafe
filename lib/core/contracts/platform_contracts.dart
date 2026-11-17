@@ -63,6 +63,16 @@ abstract class AudioAlarmAdapter {
   /// Adjusts the volume (`0.0`..`1.0`) of the alarm output.
   Future<void> setVolume(double volume);
 
+  /// Configures the active built-in or user-added custom alarm sound.
+  Future<void> configureAlarmSound({
+    required String soundId,
+    CustomAlarmSound? customSound,
+  }) async {}
+
+  /// Opens the platform's native file picker to select a `.wav` audio file
+  /// when supported by the host runner.
+  Future<String?> pickCustomAudioFilePath() async => null;
+
   bool get isPlaying;
 
   /// Honest explanation of host audio routing and OS mute limitations.

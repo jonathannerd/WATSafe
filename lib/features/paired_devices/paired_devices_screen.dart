@@ -189,7 +189,7 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
                       const SizedBox(height: 10),
                       Text(
                         status.detail,
-                        style: const TextStyle(color: WatSafeTheme.warmMuted),
+                        style: TextStyle(color: WatSafeTheme.warmMuted),
                       ),
                     ],
                   ),
@@ -205,7 +205,7 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
                     ),
                     child: Column(
                       children: <Widget>[
-                        const Icon(
+                        Icon(
                           Icons.phonelink_off_outlined,
                           size: 46,
                           color: WatSafeTheme.warmSubtle,
@@ -220,7 +220,7 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                         const SizedBox(height: 8),
-                        const Text(
+                        Text(
                           'WATSafe only displays real local hardware and verified paired devices. '
                           'Pair a companion phone below to dispatch metadata-only incident alerts when an alarm triggers.',
                           textAlign: TextAlign.center,
@@ -273,7 +273,7 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
                             ),
                       ),
                       const SizedBox(height: 10),
-                      const Text(
+                      Text(
                         '• Desktop (macOS / Windows) protects laptops locally and dispatches authenticated incident alerts to paired phones when configured.\n'
                         '• Mobile (iOS / Android) receives push alerts from paired laptops and can monitor its own sensors where OS rules permit.\n'
                         '• iOS lifecycle constraint: iOS suspends background motion capture after screen lock or app backgrounding; backgrounded iOS devices can still receive remote APNs alerts from paired laptops.\n'
@@ -349,7 +349,7 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
                     const SizedBox(height: 3),
                     Text(
                       '${device.platform} • ID: ${device.deviceId} • ${device.remoteStateLabel}',
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: WatSafeTheme.warmMuted,
                         fontSize: 12.5,
                       ),
@@ -399,10 +399,7 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
                 IconButton(
                   key: Key('unpair_device_${device.deviceId}'),
                   tooltip: 'Unpair device',
-                  icon: const Icon(
-                    Icons.link_off,
-                    color: WatSafeTheme.warmMuted,
-                  ),
+                  icon: Icon(Icons.link_off, color: WatSafeTheme.warmMuted),
                   onPressed: () {
                     widget.controller.unpairCompanionDevice(device.deviceId);
                   },
@@ -423,7 +420,7 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
               child: Text(
                 'Latest Activity: ${device.lastActionSummary}',
                 key: Key('device_last_action_${device.deviceId}'),
-                style: const TextStyle(
+                style: TextStyle(
                   color: WatSafeTheme.warmOffWhite,
                   fontSize: 12,
                 ),
@@ -546,7 +543,7 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
                     Expanded(
                       child: Text(
                         '${item.deviceName}: ${item.summary}',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12.5,
                           color: WatSafeTheme.warmOffWhite,
                         ),
@@ -668,7 +665,7 @@ class _PairedDevicesScreenState extends State<PairedDevicesScreen> {
               Text(
                 _feedbackMessage!,
                 key: const Key('pairing_feedback_message'),
-                style: const TextStyle(
+                style: TextStyle(
                   color: WatSafeTheme.amberAccent,
                   fontSize: 13,
                   fontWeight: FontWeight.w600,

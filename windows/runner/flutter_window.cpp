@@ -7,6 +7,7 @@
 #include <flutter/standard_method_codec.h>
 
 #include <windows.h>
+#include <commdlg.h>
 #include <dpapi.h>
 #include <mfapi.h>
 #include <mferror.h>
@@ -263,6 +264,25 @@ class WindowsAudioAlarmBridge {
       return;
     }
 
+    if (method == "pickCustomAudioFile") {
+      wchar_t file_buf[MAX_PATH] = {0};
+      OPENFILENAMEW ofn;
+      std::memset(&ofn, 0, sizeof(ofn));
+      ofn.lStructSize = sizeof(ofn);
+      ofn.hwndOwner = nullptr;
+      ofn.lpstrFile = file_buf;
+      ofn.nMaxFile = MAX_PATH;
+      ofn.lpstrFilter = L"WAV Audio Files (*.wav)\0*.wav\0All Files (*.*)\0*.*\0";
+      ofn.nFilterIndex = 1;
+      ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+      if (::GetOpenFileNameW(&ofn)) {
+        result->Success(flutter::EncodableValue(WideToUtf8(file_buf)));
+      } else {
+        result->Success(flutter::EncodableValue());
+      }
+      return;
+    }
+
     result->NotImplemented();
   }
 
@@ -309,17 +329,58 @@ class WindowsAudioAlarmBridge {
     if (scaled_wav_bytes_.size() <= 44) {
       return;
     }
-    // Scale 16-bit signed little-endian PCM samples after the 44-byte WAV header.
+
+    // Locate the "fmt " and "data" subchunks dynamically in case the WAV file
+    // contains extra metadata/LIST chunks before "data".
+    size_t data_offset = 44;
+    size_t data_len = scaled_wav_bytes_.size() - 44;
+    uint16_t bits_per_sample = 16;
+
+    size_t pos = 12;
+    while (pos + 8 <= scaled_wav_bytes_.size()) {
+      const uint32_t chunk_size =
+          static_cast<uint32_t>(scaled_wav_bytes_[pos + 4]) |
+          (static_cast<uint32_t>(scaled_wav_bytes_[pos + 5]) << 8) |
+          (static_cast<uint32_t>(scaled_wav_bytes_[pos + 6]) << 16) |
+          (static_cast<uint32_t>(scaled_wav_bytes_[pos + 7]) << 24);
+      if (std::memcmp(&scaled_wav_bytes_[pos], "fmt ", 4) == 0 &&
+          pos + 8 + 16 <= scaled_wav_bytes_.size()) {
+        bits_per_sample =
+            static_cast<uint16_t>(scaled_wav_bytes_[pos + 22]) |
+            (static_cast<uint16_t>(scaled_wav_bytes_[pos + 23]) << 8);
+      } else if (std::memcmp(&scaled_wav_bytes_[pos], "data", 4) == 0) {
+        data_offset = pos + 8;
+        data_len = std::min<size_t>(chunk_size,
+                                    scaled_wav_bytes_.size() - data_offset);
+        break;
+      }
+      pos += 8 + chunk_size + (chunk_size & 1);
+    }
+
     const double clamped = std::clamp(volume, 0.0, 1.0);
-    for (size_t i = 44; i + 1 < scaled_wav_bytes_.size(); i += 2) {
-      int16_t sample = static_cast<int16_t>(
-          static_cast<uint16_t>(scaled_wav_bytes_[i]) |
-          (static_cast<uint16_t>(scaled_wav_bytes_[i + 1]) << 8));
-      int32_t scaled = static_cast<int32_t>(std::lround(sample * clamped));
-      scaled = std::clamp(scaled, -32768, 32767);
-      const uint16_t encoded = static_cast<uint16_t>(static_cast<int16_t>(scaled));
-      scaled_wav_bytes_[i] = static_cast<uint8_t>(encoded & 0xFF);
-      scaled_wav_bytes_[i + 1] = static_cast<uint8_t>((encoded >> 8) & 0xFF);
+    const size_t end_offset =
+        std::min(scaled_wav_bytes_.size(), data_offset + data_len);
+
+    if (bits_per_sample == 16) {
+      for (size_t i = data_offset; i + 1 < end_offset; i += 2) {
+        int16_t sample = static_cast<int16_t>(
+            static_cast<uint16_t>(scaled_wav_bytes_[i]) |
+            (static_cast<uint16_t>(scaled_wav_bytes_[i + 1]) << 8));
+        int32_t scaled = static_cast<int32_t>(std::lround(sample * clamped));
+        scaled = std::clamp(scaled, -32768, 32767);
+        const uint16_t encoded =
+            static_cast<uint16_t>(static_cast<int16_t>(scaled));
+        scaled_wav_bytes_[i] = static_cast<uint8_t>(encoded & 0xFF);
+        scaled_wav_bytes_[i + 1] =
+            static_cast<uint8_t>((encoded >> 8) & 0xFF);
+      }
+    } else if (bits_per_sample == 8) {
+      for (size_t i = data_offset; i < end_offset; ++i) {
+        int32_t centered = static_cast<int32_t>(scaled_wav_bytes_[i]) - 128;
+        int32_t scaled = static_cast<int32_t>(std::lround(centered * clamped));
+        scaled_wav_bytes_[i] =
+            static_cast<uint8_t>(std::clamp(scaled + 128, 0, 255));
+      }
     }
   }
 

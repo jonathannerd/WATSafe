@@ -93,15 +93,12 @@ class _WarningBanner extends StatelessWidget {
       ),
       child: Row(
         children: <Widget>[
-          const Icon(
-            Icons.warning_amber_rounded,
-            color: WatSafeTheme.amberAccent,
-          ),
+          Icon(Icons.warning_amber_rounded, color: WatSafeTheme.amberAccent),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
               message,
-              style: const TextStyle(
+              style: TextStyle(
                 color: WatSafeTheme.warmOffWhite,
                 fontWeight: FontWeight.w600,
               ),
@@ -230,7 +227,7 @@ class _ProtectionHeroCard extends StatelessWidget {
                       state == ProtectionState.paused
                           ? 'Protection Paused — Not Actively Monitoring'
                           : 'Detector Readiness & Permission Guidance',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w700,
                         color: WatSafeTheme.amberAccent,
                       ),
@@ -240,7 +237,7 @@ class _ProtectionHeroCard extends StatelessWidget {
                       capability?.guidance ??
                           capability?.statusDetail ??
                           'Ensure the selected detector hardware is connected and OS permissions are granted.',
-                      style: const TextStyle(
+                      style: TextStyle(
                         color: WatSafeTheme.warmMuted,
                         fontSize: 13,
                       ),
@@ -380,7 +377,7 @@ class _ArmingCountdownBar extends StatelessWidget {
                 controller.isCalibrating
                     ? 'Calibrating baseline scene...'
                     : 'Arming Countdown in Progress',
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.w700,
                   color: WatSafeTheme.warmOffWhite,
                 ),
@@ -388,7 +385,7 @@ class _ArmingCountdownBar extends StatelessWidget {
               Text(
                 controller.isCalibrating ? 'CALIBRATING' : '${remaining}s',
                 key: const Key('countdown_seconds_label'),
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.w800,
                   fontSize: 18,
                   color: WatSafeTheme.amberAccent,
@@ -434,7 +431,7 @@ class _TelemetryAndTestAlarmColumn extends StatelessWidget {
               children: <Widget>[
                 Row(
                   children: <Widget>[
-                    const Icon(
+                    Icon(
                       Icons.analytics_outlined,
                       color: WatSafeTheme.amberAccent,
                       size: 20,
@@ -479,10 +476,7 @@ class _TelemetryAndTestAlarmColumn extends StatelessWidget {
                 const SizedBox(height: 12),
                 Text(
                   controller.selectedDetectorType.limitationNote,
-                  style: const TextStyle(
-                    color: WatSafeTheme.warmMuted,
-                    fontSize: 12,
-                  ),
+                  style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 12),
                 ),
               ],
             ),
@@ -497,7 +491,7 @@ class _TelemetryAndTestAlarmColumn extends StatelessWidget {
               children: <Widget>[
                 Row(
                   children: <Widget>[
-                    const Icon(
+                    Icon(
                       Icons.volume_up_outlined,
                       color: WatSafeTheme.amberAccent,
                       size: 20,
@@ -513,7 +507,7 @@ class _TelemetryAndTestAlarmColumn extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Verifies local siren playback and incident logging independently of camera hardware. '
                   'Automatically stops after at most 5 seconds and records a clearly marked TEST incident.',
                   style: TextStyle(
@@ -568,13 +562,13 @@ class _TelemetryMetricRow extends StatelessWidget {
       children: <Widget>[
         Text(
           label,
-          style: const TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13),
+          style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13),
         ),
         Flexible(
           child: Text(
             value,
             textAlign: TextAlign.right,
-            style: const TextStyle(
+            style: TextStyle(
               color: WatSafeTheme.warmOffWhite,
               fontWeight: FontWeight.w600,
               fontSize: 13,
@@ -608,7 +602,7 @@ class _DetectorSelectorCard extends StatelessWidget {
                 Expanded(
                   child: Row(
                     children: <Widget>[
-                      const Icon(
+                      Icon(
                         Icons.tune_outlined,
                         color: WatSafeTheme.amberAccent,
                         size: 20,
@@ -632,7 +626,7 @@ class _DetectorSelectorCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 6),
-            const Text(
+            Text(
               'Select a detector to inspect its hardware readiness, OS permission state, and platform implementation status.',
               style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 12.5),
             ),
@@ -680,7 +674,7 @@ class _DetectorSelectorCard extends StatelessWidget {
                             Expanded(
                               child: Text(
                                 type.displayName,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontWeight: FontWeight.w700,
                                   color: WatSafeTheme.warmOffWhite,
                                 ),
@@ -712,7 +706,7 @@ class _DetectorSelectorCard extends StatelessWidget {
                           padding: const EdgeInsets.only(left: 28),
                           child: Text(
                             cap?.summary ?? type.limitationNote,
-                            style: const TextStyle(
+                            style: TextStyle(
                               color: WatSafeTheme.warmMuted,
                               fontSize: 12.5,
                             ),

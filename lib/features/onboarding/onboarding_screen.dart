@@ -73,7 +73,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 children: <Widget>[
                   Row(
                     children: <Widget>[
-                      const WatSafeShieldGraphic(
+                      WatSafeShieldGraphic(
                         accentColor: WatSafeTheme.amberAccent,
                         size: 56,
                         isActiveWave: true,
@@ -111,7 +111,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         children: <Widget>[
                           Row(
                             children: <Widget>[
-                              const Icon(
+                              Icon(
                                 Icons.sensors,
                                 color: WatSafeTheme.amberAccent,
                                 size: 20,
@@ -206,7 +206,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         children: <Widget>[
                           Row(
                             children: <Widget>[
-                              const Icon(
+                              Icon(
                                 Icons.lock_outline,
                                 color: WatSafeTheme.amberAccent,
                                 size: 20,
@@ -288,7 +288,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                               ),
                               child: Text(
                                 _errorMessage!,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   color: WatSafeTheme.warmOffWhite,
                                   fontWeight: FontWeight.w600,
                                 ),

@@ -103,10 +103,7 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
             child: Card(
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
-                side: const BorderSide(
-                  color: WatSafeTheme.alarmCrimson,
-                  width: 2,
-                ),
+                side: BorderSide(color: WatSafeTheme.alarmCrimson, width: 2),
               ),
               child: Padding(
                 padding: const EdgeInsets.all(24),
@@ -115,7 +112,7 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                   children: <Widget>[
                     Row(
                       children: <Widget>[
-                        const WatSafeShieldGraphic(
+                        WatSafeShieldGraphic(
                           accentColor: WatSafeTheme.alarmCrimson,
                           size: 56,
                           isActiveWave: true,
@@ -134,7 +131,7 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                                   color: WatSafeTheme.alarmCrimson,
                                   borderRadius: BorderRadius.circular(6),
                                 ),
-                                child: const Text(
+                                child: Text(
                                   'ALARM ACTIVE — SIREN SOUNDING',
                                   style: TextStyle(
                                     color: WatSafeTheme.warmOffWhite,
@@ -221,7 +218,7 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                         ),
                         child: Text(
                           widget.controller.warningMessage!,
-                          style: const TextStyle(
+                          style: TextStyle(
                             color: WatSafeTheme.warmOffWhite,
                             fontWeight: FontWeight.w600,
                           ),
@@ -255,7 +252,7 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                         isLocked
                             ? 'Repeated failed attempts. Wait $lockoutSec second${lockoutSec == 1 ? '' : 's'} before retrying.'
                             : _feedbackMessage!,
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: WatSafeTheme.amberAccent,
                           fontWeight: FontWeight.w600,
                         ),
@@ -304,7 +301,7 @@ class _InfoRow extends StatelessWidget {
           width: 135,
           child: Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               color: WatSafeTheme.warmMuted,
               fontWeight: FontWeight.w600,
               fontSize: 13,
@@ -314,7 +311,7 @@ class _InfoRow extends StatelessWidget {
         Expanded(
           child: Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               color: WatSafeTheme.warmOffWhite,
               fontWeight: FontWeight.w600,
               fontSize: 13,
@@ -395,7 +392,7 @@ class _DisarmPinDialogState extends State<_DisarmPinDialog> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            const Text(
+            Text(
               'Enter your 6+ digit WATSafe security PIN to stop monitoring and disarm protection.',
               style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13),
             ),

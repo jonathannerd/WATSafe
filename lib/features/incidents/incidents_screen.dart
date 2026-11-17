@@ -47,7 +47,7 @@ class IncidentsScreen extends StatelessWidget {
                               ?.copyWith(fontWeight: FontWeight.w800),
                         ),
                         const SizedBox(height: 4),
-                        const Text(
+                        Text(
                           'Privacy guarantee: Incident logs contain timestamps and motion telemetry only—never camera frames or PIN data.',
                           style: TextStyle(
                             color: WatSafeTheme.warmMuted,
@@ -79,7 +79,7 @@ class IncidentsScreen extends StatelessWidget {
                     ),
                     child: Column(
                       children: <Widget>[
-                        const Icon(
+                        Icon(
                           Icons.history_toggle_off_outlined,
                           size: 48,
                           color: WatSafeTheme.warmSubtle,
@@ -91,7 +91,7 @@ class IncidentsScreen extends StatelessWidget {
                               ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                         const SizedBox(height: 6),
-                        const Text(
+                        Text(
                           'Real detector triggers and manual Test Alarm runs on this device will appear here.',
                           textAlign: TextAlign.center,
                           style: TextStyle(color: WatSafeTheme.warmMuted),
@@ -172,7 +172,7 @@ class _IncidentCard extends StatelessWidget {
                 ),
                 Text(
                   formatDateTime(incident.triggeredAt),
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: WatSafeTheme.warmMuted,
                     fontSize: 12.5,
                     fontWeight: FontWeight.w600,
@@ -183,7 +183,7 @@ class _IncidentCard extends StatelessWidget {
             const SizedBox(height: 12),
             Text(
               incident.triggerSummary,
-              style: const TextStyle(
+              style: TextStyle(
                 color: WatSafeTheme.warmOffWhite,
                 fontWeight: FontWeight.w700,
                 fontSize: 15,
@@ -197,7 +197,7 @@ class _IncidentCard extends StatelessWidget {
                 if (incident.detectorType != null)
                   Text(
                     'Detector: ${incident.detectorType!.displayName}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: WatSafeTheme.warmMuted,
                       fontSize: 12.5,
                     ),
@@ -205,14 +205,14 @@ class _IncidentCard extends StatelessWidget {
                 if (incident.peakMotionScore != null)
                   Text(
                     'Peak Motion Score: ${incident.peakMotionScore!.toStringAsFixed(3)}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: WatSafeTheme.warmMuted,
                       fontSize: 12.5,
                     ),
                   ),
                 Text(
                   'Resolution: ${incident.resolutionSummary}',
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: WatSafeTheme.warmMuted,
                     fontSize: 12.5,
                   ),
@@ -220,14 +220,14 @@ class _IncidentCard extends StatelessWidget {
                 if (incident.resolvedAt != null)
                   Text(
                     'Resolved At: ${formatDateTime(incident.resolvedAt!)}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       color: WatSafeTheme.warmMuted,
                       fontSize: 12.5,
                     ),
                   ),
                 Text(
                   'Remote Alert: ${incident.remoteNotificationStatus}',
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: WatSafeTheme.warmSubtle,
                     fontSize: 12.5,
                   ),
