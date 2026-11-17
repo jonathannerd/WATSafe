@@ -203,6 +203,11 @@ class PairedDeviceSummary {
     this.isRingingRemotely = false,
     this.lastActionSummary,
     this.lastSeenAt,
+    this.pushSubscriptionNeedsRenewal = false,
+    this.lastPushErrorCode,
+    this.lastReceiptIncidentId,
+    this.lastReceiptAt,
+    this.lastReceiptSource,
   });
 
   final String deviceId;
@@ -219,6 +224,11 @@ class PairedDeviceSummary {
   final bool isRingingRemotely;
   final String? lastActionSummary;
   final DateTime? lastSeenAt;
+  final bool pushSubscriptionNeedsRenewal;
+  final String? lastPushErrorCode;
+  final String? lastReceiptIncidentId;
+  final DateTime? lastReceiptAt;
+  final String? lastReceiptSource;
 
   bool get isAndroidDevice => platform.toLowerCase().contains('android');
   bool get isIosDevice => platform.toLowerCase().contains('ios');
@@ -238,6 +248,11 @@ class PairedDeviceSummary {
     bool? isRingingRemotely,
     String? lastActionSummary,
     DateTime? lastSeenAt,
+    bool? pushSubscriptionNeedsRenewal,
+    String? lastPushErrorCode,
+    String? lastReceiptIncidentId,
+    DateTime? lastReceiptAt,
+    String? lastReceiptSource,
   }) {
     return PairedDeviceSummary(
       deviceId: deviceId ?? this.deviceId,
@@ -255,6 +270,13 @@ class PairedDeviceSummary {
       isRingingRemotely: isRingingRemotely ?? this.isRingingRemotely,
       lastActionSummary: lastActionSummary ?? this.lastActionSummary,
       lastSeenAt: lastSeenAt ?? this.lastSeenAt,
+      pushSubscriptionNeedsRenewal:
+          pushSubscriptionNeedsRenewal ?? this.pushSubscriptionNeedsRenewal,
+      lastPushErrorCode: lastPushErrorCode ?? this.lastPushErrorCode,
+      lastReceiptIncidentId:
+          lastReceiptIncidentId ?? this.lastReceiptIncidentId,
+      lastReceiptAt: lastReceiptAt ?? this.lastReceiptAt,
+      lastReceiptSource: lastReceiptSource ?? this.lastReceiptSource,
     );
   }
 
@@ -274,12 +296,18 @@ class PairedDeviceSummary {
       'isRingingRemotely': isRingingRemotely,
       'lastActionSummary': lastActionSummary,
       'lastSeenAtUtcIso': lastSeenAt?.toUtc().toIso8601String(),
+      'pushSubscriptionNeedsRenewal': pushSubscriptionNeedsRenewal,
+      'lastPushErrorCode': ?lastPushErrorCode,
+      'lastReceiptIncidentId': ?lastReceiptIncidentId,
+      'lastReceiptAtUtcIso': ?lastReceiptAt?.toUtc().toIso8601String(),
+      'lastReceiptSource': ?lastReceiptSource,
     };
   }
 
   factory PairedDeviceSummary.fromJson(Map<String, Object?> json) {
     final pairedAtRaw = json['pairedAtUtcIso'] as String? ?? '';
     final lastSeenRaw = json['lastSeenAtUtcIso'] as String?;
+    final lastReceiptRaw = json['lastReceiptAtUtcIso'] as String?;
     final pushReady = json['pushChannelReady'] as bool? ?? true;
     return PairedDeviceSummary(
       deviceId: json['deviceId'] as String? ?? 'dev_unknown',
@@ -301,6 +329,14 @@ class PairedDeviceSummary {
       lastSeenAt: lastSeenRaw != null
           ? DateTime.tryParse(lastSeenRaw)?.toLocal()
           : null,
+      pushSubscriptionNeedsRenewal:
+          json['pushSubscriptionNeedsRenewal'] as bool? ?? false,
+      lastPushErrorCode: json['lastPushErrorCode'] as String?,
+      lastReceiptIncidentId: json['lastReceiptIncidentId'] as String?,
+      lastReceiptAt: lastReceiptRaw != null
+          ? DateTime.tryParse(lastReceiptRaw)?.toLocal()
+          : null,
+      lastReceiptSource: json['lastReceiptSource'] as String?,
     );
   }
 }
@@ -638,17 +674,30 @@ class NotificationServiceStatus {
 }
 
 /// Result of attempting to dispatch a remote incident notification.
+///
+/// Explicitly distinguishes whether the relay recorded the Activity event
+/// ([relayRecorded]), whether an upstream push provider accepted the push
+/// ([pushAccepted]), and whether the phone itself confirmed receipt
+/// ([receiptConfirmed]).
 @immutable
 class NotificationDispatchResult {
   const NotificationDispatchResult({
     required this.delivered,
     required this.capabilityStatus,
     required this.message,
+    this.relayRecorded = false,
+    this.pushAccepted = false,
+    this.receiptConfirmed = false,
+    this.deliveryStage = 'unknown',
   });
 
   final bool delivered;
   final CapabilityStatus capabilityStatus;
   final String message;
+  final bool relayRecorded;
+  final bool pushAccepted;
+  final bool receiptConfirmed;
+  final String deliveryStage;
 }
 
 /// Contract for remote device pairing and push alert delivery (APNs/FCM via backend).

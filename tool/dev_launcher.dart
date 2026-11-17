@@ -24,6 +24,8 @@ Future<void> main(List<String> args) async {
   final requireHttps = args.contains('--require-https');
   final saveOnly = args.contains('--save-only');
   final clearPermanent = args.contains('--clear-permanent-url');
+  final forceFlutterRun = args.contains('--flutter-run');
+  final prepareMacosBundleOnly = args.contains('--prepare-macos-bundle');
 
   String? savePermanentArg;
   var preferredPort = 8787;
@@ -37,7 +39,9 @@ Future<void> main(List<String> args) async {
         arg == '--no-tunnel' ||
         arg == '--require-https' ||
         arg == '--save-only' ||
-        arg == '--clear-permanent-url') {
+        arg == '--clear-permanent-url' ||
+        arg == '--flutter-run' ||
+        arg == '--prepare-macos-bundle') {
       continue;
     }
     if (arg.startsWith('--save-permanent-url=')) {
@@ -91,6 +95,25 @@ Future<void> main(List<String> args) async {
   }
   final stateFile = File('${runtimeDir.path}/launcher_state.json');
   final endpointFile = File('${runtimeDir.path}/relay_endpoint.json');
+  final bundleStampFile = File('${runtimeDir.path}/macos_bundle_stamp.json');
+
+  if (prepareMacosBundleOnly) {
+    if (!Platform.isMacOS) {
+      stdout.writeln('[WATSafe] --prepare-macos-bundle is macOS-only.');
+      return;
+    }
+    final builtBundle = await _ensureReusableMacosAppBundle(
+      stampFile: bundleStampFile,
+    );
+    if (builtBundle == null) {
+      exitCode = 1;
+      return;
+    }
+    stdout.writeln(
+      '[WATSafe] Prepared reusable macOS app bundle (stable signature): ${builtBundle.path}',
+    );
+    return;
+  }
 
   await _cleanupPreviousOwnedProcesses(stateFile);
 
@@ -134,6 +157,7 @@ Future<void> main(List<String> args) async {
       if (!activeUrlIsPermanent && endpointFile.existsSync()) {
         endpointFile.deleteSync();
       }
+      _cleanupSandboxRuntimeFiles(keepPermanentEndpoint: activeUrlIsPermanent);
     } catch (_) {}
   }
 
@@ -327,22 +351,26 @@ Future<void> main(List<String> args) async {
       }
     }
 
-    stateFile.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert(<String, Object?>{
-        'startedAtUtc': DateTime.now().toUtc().toIso8601String(),
-        'localRelayUrl': ?localRelayUrl,
-        'effectiveApiUrl': effectiveApiUrl,
-        'isPermanentHttps': activeUrlIsPermanent,
-        'ownedPids': <int>[pid, ...ownedProcesses.map((p) => p.pid)],
-      }),
-    );
-    endpointFile.writeAsStringSync(
-      const JsonEncoder.withIndent('  ').convert(<String, Object?>{
-        'relayEndpointUrl': effectiveApiUrl,
-        'isPermanentHttps': activeUrlIsPermanent,
-        'updatedAtUtc': DateTime.now().toUtc().toIso8601String(),
-      }),
-    );
+    final stateJson = const JsonEncoder.withIndent('  ')
+        .convert(<String, Object?>{
+          'startedAtUtc': DateTime.now().toUtc().toIso8601String(),
+          'localRelayUrl': ?localRelayUrl,
+          'effectiveApiUrl': effectiveApiUrl,
+          'isPermanentHttps': activeUrlIsPermanent,
+          'ownedPids': <int>[pid, ...ownedProcesses.map((p) => p.pid)],
+        });
+    final endpointJson = const JsonEncoder.withIndent('  ')
+        .convert(<String, Object?>{
+          'relayEndpointUrl': effectiveApiUrl,
+          'isPermanentHttps': activeUrlIsPermanent,
+          'updatedAtUtc': DateTime.now().toUtc().toIso8601String(),
+        });
+    stateFile.writeAsStringSync(stateJson);
+    endpointFile.writeAsStringSync(endpointJson);
+    _syncSandboxRuntimeFiles(stateJson: stateJson, endpointJson: endpointJson);
+    if (activeUrlIsPermanent) {
+      await RelayConfig.savePermanentRelayUrl(effectiveApiUrl);
+    }
 
     stdout.writeln('');
     stdout.writeln('========================================================');
@@ -412,6 +440,31 @@ Future<void> main(List<String> args) async {
     }
 
     final targetDevice = deviceOverride ?? _defaultDesktopDevice();
+    if (Platform.isMacOS &&
+        targetDevice == 'macos' &&
+        !forceFlutterRun &&
+        extraFlutterArgs.isEmpty) {
+      final appBundle = await _ensureReusableMacosAppBundle(
+        stampFile: bundleStampFile,
+      );
+      if (appBundle != null) {
+        stdout.writeln(
+          '[WATSafe] Launching built macOS app without re-signing '
+          '(preserves Keychain trust across launches; pass --flutter-run for hot reload): '
+          '${appBundle.path}',
+        );
+        final openProc = await Process.start('/usr/bin/open', <String>[
+          '-W',
+          '--env',
+          'WATSAFE_API_URL=$effectiveApiUrl',
+          appBundle.path,
+        ], mode: ProcessStartMode.inheritStdio);
+        ownedProcesses.add(openProc);
+        exitCode = await openProc.exitCode;
+        return;
+      }
+    }
+
     final flutterCmd = Platform.isWindows ? 'flutter.bat' : 'flutter';
     final flutterArgs = <String>[
       'run',
@@ -437,6 +490,143 @@ Future<void> main(List<String> args) async {
     await sigTermSub?.cancel();
     await cleanupOwned();
   }
+}
+
+Directory? _macosSandboxRuntimeDir() {
+  if (!Platform.isMacOS) return null;
+  final home = (Platform.environment['HOME'] ?? '').trim();
+  if (home.isEmpty || home.contains('/Library/Containers/')) return null;
+  final containerData = Directory(
+    '$home/Library/Containers/dev.watsafe.temp.watsafe/Data',
+  );
+  if (!containerData.existsSync()) return null;
+  return Directory('${containerData.path}/.watsafe-runtime');
+}
+
+void _syncSandboxRuntimeFiles({
+  required String stateJson,
+  required String endpointJson,
+}) {
+  final dir = _macosSandboxRuntimeDir();
+  if (dir == null) return;
+  try {
+    dir.createSync(recursive: true);
+    File('${dir.path}/launcher_state.json').writeAsStringSync(stateJson);
+    File('${dir.path}/relay_endpoint.json').writeAsStringSync(endpointJson);
+  } catch (_) {}
+}
+
+void _cleanupSandboxRuntimeFiles({required bool keepPermanentEndpoint}) {
+  final dir = _macosSandboxRuntimeDir();
+  if (dir == null) return;
+  try {
+    final s = File('${dir.path}/launcher_state.json');
+    if (s.existsSync()) s.deleteSync();
+    if (!keepPermanentEndpoint) {
+      final e = File('${dir.path}/relay_endpoint.json');
+      if (e.existsSync()) e.deleteSync();
+    }
+  } catch (_) {}
+}
+
+DateTime _latestSourceModifiedUtc() {
+  var latest = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+  void checkFile(File f) {
+    try {
+      if (!f.existsSync()) return;
+      final m = f.lastModifiedSync().toUtc();
+      if (m.isAfter(latest)) latest = m;
+    } catch (_) {}
+  }
+
+  checkFile(File('pubspec.yaml'));
+  checkFile(File('pubspec.lock'));
+  for (final dirPath in const <String>['lib', 'macos', 'assets']) {
+    final dir = Directory(dirPath);
+    if (!dir.existsSync()) continue;
+    try {
+      for (final entity in dir.listSync(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          final p = entity.path;
+          if (p.contains('/Pods/') ||
+              p.contains('/ephemeral/') ||
+              p.endsWith('.DS_Store')) {
+            continue;
+          }
+          checkFile(entity);
+        }
+      }
+    } catch (_) {}
+  }
+  return latest;
+}
+
+Directory? _findUpToDateMacosBundle(File stampFile) {
+  if (!stampFile.existsSync()) return null;
+  try {
+    final stamp = jsonDecode(stampFile.readAsStringSync());
+    if (stamp is! Map) return null;
+    final bundlePath = (stamp['bundlePath'] as String? ?? '').trim();
+    final stampedExecMs = (stamp['executableModifiedEpochMs'] as num?)?.toInt();
+    if (bundlePath.isEmpty || stampedExecMs == null) return null;
+    final bundleDir = Directory(bundlePath);
+    final execFile = File('${bundleDir.path}/Contents/MacOS/WATSafe');
+    if (!bundleDir.existsSync() || !execFile.existsSync()) return null;
+    final execModified = execFile.lastModifiedSync().toUtc();
+    if ((execModified.millisecondsSinceEpoch - stampedExecMs).abs() > 2000) {
+      // Bundle was modified outside dev_launcher (e.g., an ad-hoc `flutter run`
+      // with a temporary `--dart-define`); rebuild cleanly once.
+      return null;
+    }
+    final latestSource = _latestSourceModifiedUtc();
+    if (latestSource.isAfter(execModified)) {
+      return null;
+    }
+    return bundleDir;
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<Directory?> _ensureReusableMacosAppBundle({
+  required File stampFile,
+}) async {
+  final existing = _findUpToDateMacosBundle(stampFile);
+  if (existing != null) {
+    return existing;
+  }
+  stdout.writeln(
+    '[WATSafe] Building WATSafe.app once (subsequent launches will reuse this '
+    'signed bundle without re-signing or prompting for Keychain access)...',
+  );
+  final buildProc = await Process.start('flutter', const <String>[
+    'build',
+    'macos',
+    '--debug',
+  ], mode: ProcessStartMode.inheritStdio);
+  final code = await buildProc.exitCode;
+  if (code != 0) {
+    return null;
+  }
+  final debugBundle = Directory('build/macos/Build/Products/Debug/WATSafe.app');
+  final execFile = File('${debugBundle.path}/Contents/MacOS/WATSafe');
+  if (!debugBundle.existsSync() || !execFile.existsSync()) {
+    return null;
+  }
+  try {
+    stampFile.parent.createSync(recursive: true);
+    stampFile.writeAsStringSync(
+      const JsonEncoder.withIndent('  ').convert(<String, Object?>{
+        'bundlePath': debugBundle.path,
+        'executableModifiedEpochMs': execFile
+            .lastModifiedSync()
+            .toUtc()
+            .millisecondsSinceEpoch,
+        'builtAtUtc': DateTime.now().toUtc().toIso8601String(),
+      }),
+    );
+  } catch (_) {}
+  return debugBundle;
 }
 
 String _defaultDesktopDevice() {

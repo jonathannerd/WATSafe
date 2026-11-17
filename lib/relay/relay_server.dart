@@ -140,6 +140,14 @@ class CompanionBondRecord {
     this.webPushEndpoint,
     this.webPushP256dh,
     this.webPushAuth,
+    this.subscribedVapidPublicKey,
+    this.lastPushAttemptAtUtcIso,
+    this.lastPushAcceptedAtUtcIso,
+    this.lastPushStatusCode,
+    this.lastPushErrorCode,
+    this.lastReceiptAtUtcIso,
+    this.lastReceiptIncidentId,
+    this.lastReceiptSource,
     this.activeHandoffCode,
     this.handoffExpiresAtUtc,
     this.revokedAtUtcIso,
@@ -169,12 +177,28 @@ class CompanionBondRecord {
   String? webPushEndpoint;
   String? webPushP256dh;
   String? webPushAuth;
+  String? subscribedVapidPublicKey;
+  String? lastPushAttemptAtUtcIso;
+  String? lastPushAcceptedAtUtcIso;
+  int? lastPushStatusCode;
+  String? lastPushErrorCode;
+  String? lastReceiptAtUtcIso;
+  String? lastReceiptIncidentId;
+  String? lastReceiptSource;
   String? activeHandoffCode;
   DateTime? handoffExpiresAtUtc;
   String? revokedAtUtcIso;
   String? lastSeenAtUtcIso;
 
   bool get isRevoked => revokedAtUtcIso != null;
+
+  bool get pushSubscriptionNeedsRenewal =>
+      lastPushStatusCode == 404 ||
+      lastPushStatusCode == 410 ||
+      lastPushErrorCode == 'VapidPkHashMismatch' ||
+      lastPushErrorCode == 'BadWebPushToken' ||
+      lastPushErrorCode == 'Unregistered' ||
+      lastPushErrorCode == 'ExpiredSubscription';
 
   bool matchesCompanionToken(String candidate, DateTime nowUtc) {
     if (isRevoked || candidate.isEmpty) {
@@ -202,14 +226,19 @@ class CompanionBondRecord {
       webPushAuth != null &&
       webPushAuth!.isNotEmpty;
 
-  void clearWebPushSubscription() {
+  void clearWebPushSubscription({bool clearErrorTelemetry = false}) {
     webPushEndpoint = null;
     webPushP256dh = null;
     webPushAuth = null;
+    subscribedVapidPublicKey = null;
     pushSubscribed = false;
     backendPushRegistered = false;
     notificationsEnabled = false;
     pushChannelReady = false;
+    if (clearErrorTelemetry) {
+      lastPushStatusCode = null;
+      lastPushErrorCode = null;
+    }
     if (notificationChannel == 'web_push') {
       notificationChannel = 'foreground_only';
     }
@@ -234,6 +263,15 @@ class CompanionBondRecord {
       'notificationPermission': notificationPermission,
       'pushSubscribed': pushSubscribed,
       'backendPushRegistered': backendPushRegistered,
+      'subscribedVapidPublicKey': ?subscribedVapidPublicKey,
+      'pushSubscriptionNeedsRenewal': pushSubscriptionNeedsRenewal,
+      'lastPushAttemptAtUtcIso': ?lastPushAttemptAtUtcIso,
+      'lastPushAcceptedAtUtcIso': ?lastPushAcceptedAtUtcIso,
+      'lastPushStatusCode': ?lastPushStatusCode,
+      'lastPushErrorCode': ?lastPushErrorCode,
+      'lastReceiptAtUtcIso': ?lastReceiptAtUtcIso,
+      'lastReceiptIncidentId': ?lastReceiptIncidentId,
+      'lastReceiptSource': ?lastReceiptSource,
       'lastSeenAtUtcIso': ?lastSeenAtUtcIso,
     };
   }
@@ -264,6 +302,14 @@ class CompanionBondRecord {
       'webPushEndpoint': ?webPushEndpoint,
       'webPushP256dh': ?webPushP256dh,
       'webPushAuth': ?webPushAuth,
+      'subscribedVapidPublicKey': ?subscribedVapidPublicKey,
+      'lastPushAttemptAtUtcIso': ?lastPushAttemptAtUtcIso,
+      'lastPushAcceptedAtUtcIso': ?lastPushAcceptedAtUtcIso,
+      'lastPushStatusCode': ?lastPushStatusCode,
+      'lastPushErrorCode': ?lastPushErrorCode,
+      'lastReceiptAtUtcIso': ?lastReceiptAtUtcIso,
+      'lastReceiptIncidentId': ?lastReceiptIncidentId,
+      'lastReceiptSource': ?lastReceiptSource,
       'activeHandoffCode': ?activeHandoffCode,
       'handoffExpiresAtUtc': ?handoffExpiresAtUtc?.toIso8601String(),
       'revokedAtUtcIso': ?revokedAtUtcIso,
@@ -302,6 +348,14 @@ class CompanionBondRecord {
       webPushEndpoint: json['webPushEndpoint'] as String?,
       webPushP256dh: json['webPushP256dh'] as String?,
       webPushAuth: json['webPushAuth'] as String?,
+      subscribedVapidPublicKey: json['subscribedVapidPublicKey'] as String?,
+      lastPushAttemptAtUtcIso: json['lastPushAttemptAtUtcIso'] as String?,
+      lastPushAcceptedAtUtcIso: json['lastPushAcceptedAtUtcIso'] as String?,
+      lastPushStatusCode: (json['lastPushStatusCode'] as num?)?.toInt(),
+      lastPushErrorCode: json['lastPushErrorCode'] as String?,
+      lastReceiptAtUtcIso: json['lastReceiptAtUtcIso'] as String?,
+      lastReceiptIncidentId: json['lastReceiptIncidentId'] as String?,
+      lastReceiptSource: json['lastReceiptSource'] as String?,
       activeHandoffCode: json['activeHandoffCode'] as String?,
       handoffExpiresAtUtc: handoffRaw != null
           ? DateTime.tryParse(handoffRaw)?.toUtc()
@@ -371,6 +425,8 @@ class SessionAlertRecord {
     this.isTest = false,
     this.location,
     this.locationStatus = 'notRequested',
+    this.receiptConfirmedAtUtc,
+    this.receiptSource,
   });
 
   final int alertSeq;
@@ -388,6 +444,11 @@ class SessionAlertRecord {
   final bool isTest;
   final AlertLocationData? location;
   final String locationStatus;
+  final String? receiptConfirmedAtUtc;
+  final String? receiptSource;
+
+  bool get isReceiptConfirmed =>
+      receiptConfirmedAtUtc != null && receiptConfirmedAtUtc!.isNotEmpty;
 
   int get effectiveSeq =>
       updatedSeq != null && updatedSeq! > alertSeq ? updatedSeq! : alertSeq;
@@ -396,6 +457,8 @@ class SessionAlertRecord {
     int? updatedSeq,
     AlertLocationData? location,
     String? locationStatus,
+    String? receiptConfirmedAtUtc,
+    String? receiptSource,
   }) {
     return SessionAlertRecord(
       alertSeq: alertSeq,
@@ -413,6 +476,9 @@ class SessionAlertRecord {
       isTest: isTest,
       location: location ?? this.location,
       locationStatus: locationStatus ?? this.locationStatus,
+      receiptConfirmedAtUtc:
+          receiptConfirmedAtUtc ?? this.receiptConfirmedAtUtc,
+      receiptSource: receiptSource ?? this.receiptSource,
     );
   }
 
@@ -433,6 +499,9 @@ class SessionAlertRecord {
       'isTest': isTest,
       if (location != null) 'location': location!.toJson(),
       'locationStatus': locationStatus,
+      'receiptConfirmed': isReceiptConfirmed,
+      'receiptConfirmedAtUtc': ?receiptConfirmedAtUtc,
+      'receiptSource': ?receiptSource,
     };
   }
 
@@ -458,6 +527,8 @@ class SessionAlertRecord {
       isTest: json['isTest'] as bool? ?? false,
       location: loc,
       locationStatus: json['locationStatus'] as String? ?? 'notRequested',
+      receiptConfirmedAtUtc: json['receiptConfirmedAtUtc'] as String?,
+      receiptSource: json['receiptSource'] as String?,
     );
   }
 }
@@ -508,6 +579,46 @@ class OutboundPushEnvelope {
   }
 }
 
+/// Structured outcome of attempting server-side push delivery to paired bonds.
+///
+/// Explicitly distinguishes "push service accepted" ([pushAcceptedCount] > 0)
+/// from provider rejection ([pushFailedCount] > 0) and unconfigured web bonds
+/// ([webBondsMissingPushCount] > 0). Confirmed phone receipt is tracked
+/// separately when the phone Service Worker or app calls `/v1/companion/events/<id>/ack`.
+class PushDispatchSummary {
+  const PushDispatchSummary({
+    required this.activeBondCount,
+    required this.pushAttemptedCount,
+    required this.pushAcceptedCount,
+    required this.pushFailedCount,
+    required this.webBondsMissingPushCount,
+    this.failureReasons = const <String>[],
+  });
+
+  final int activeBondCount;
+  final int pushAttemptedCount;
+  final int pushAcceptedCount;
+  final int pushFailedCount;
+  final int webBondsMissingPushCount;
+  final List<String> failureReasons;
+
+  String get deliveryStage {
+    if (pushAcceptedCount > 0) {
+      return 'push_service_accepted';
+    }
+    if (pushFailedCount > 0) {
+      return 'push_rejected';
+    }
+    if (webBondsMissingPushCount > 0) {
+      return 'notifications_not_enabled';
+    }
+    if (activeBondCount > 0) {
+      return 'companion_poll_queued';
+    }
+    return 'no_paired_phone';
+  }
+}
+
 /// Server-side push provider adapter. Reads provider keys strictly from server
 /// environment variables (or server-private local runtime key file) and never
 /// exposes private keys to clients.
@@ -515,6 +626,7 @@ abstract class PushProviderAdapter {
   bool get isConfigured;
   String get providerSummary;
   String? get vapidPublicKey;
+  String? get vapidSubject => null;
 
   Future<void> verifyConfiguredSenders() async {}
 
@@ -525,6 +637,30 @@ abstract class PushProviderAdapter {
     Future<void> Function(CompanionBondRecord expiredBond)?
     onBondSubscriptionExpired,
   });
+
+  Future<PushDispatchSummary> dispatchAlertWithSummary({
+    required List<CompanionBondRecord> bonds,
+    required SessionAlertRecord alert,
+    required String hostDisplayName,
+    Future<void> Function(CompanionBondRecord updatedBond)? onBondUpdated,
+    Future<void> Function(CompanionBondRecord expiredBond)?
+    onBondSubscriptionExpired,
+  }) async {
+    final active = bonds.where((b) => !b.isRevoked).length;
+    final accepted = await dispatchAlertToBonds(
+      bonds: bonds,
+      alert: alert,
+      hostDisplayName: hostDisplayName,
+      onBondSubscriptionExpired: onBondSubscriptionExpired,
+    );
+    return PushDispatchSummary(
+      activeBondCount: active,
+      pushAttemptedCount: accepted,
+      pushAcceptedCount: accepted,
+      pushFailedCount: 0,
+      webBondsMissingPushCount: 0,
+    );
+  }
 }
 
 /// Server push dispatcher supporting:
@@ -538,6 +674,7 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
     this._customSender,
     bool persistVapidKeysToDisk = false,
     File? vapidKeyFile,
+    this.logWebPushFailures = true,
   }) : _env = environment ?? Platform.environment {
     final envPriv = (_env['VAPID_PRIVATE_KEY'] ?? '').trim();
     final envPub = (_env['VAPID_PUBLIC_KEY'] ?? '').trim();
@@ -564,11 +701,14 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
     _webPushSender = DirectWebPushSender(
       vapidKeyPair: _vapidKeyPair,
       vapidSubject: _vapidSubject,
+      publicHttpsOrigin: _publicOriginHint,
+      logFailuresToStderr: logWebPushFailures,
     );
   }
 
   final Map<String, String> _env;
   final Future<bool> Function(OutboundPushEnvelope envelope)? _customSender;
+  final bool logWebPushFailures;
   late final bool _hasExplicitEnvVapidKey;
   late VapidKeyPair _vapidKeyPair;
   late final String? _publicKeyOverride;
@@ -599,6 +739,8 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
         _webPushSender = DirectWebPushSender(
           vapidKeyPair: _vapidKeyPair,
           vapidSubject: _vapidSubject,
+          publicHttpsOrigin: _publicOriginHint,
+          logFailuresToStderr: logWebPushFailures,
         );
         return;
       }
@@ -626,10 +768,26 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
   bool get _apnsSandbox =>
       (_env['APNS_USE_SANDBOX'] ?? '').trim().toLowerCase() == 'true';
   String get _pushWebhookUrl => (_env['WATSAFE_PUSH_WEBHOOK_URL'] ?? '').trim();
-  String get _vapidSubject {
-    final sub = (_env['VAPID_SUBJECT'] ?? '').trim();
-    return sub.isEmpty ? 'mailto:alerts@watsafe.app' : sub;
+  String? get _publicOriginHint {
+    for (final key in const <String>[
+      'WATSAFE_PUBLIC_URL',
+      'RENDER_EXTERNAL_URL',
+    ]) {
+      final raw = (_env[key] ?? '').trim();
+      if (raw.startsWith('https://')) {
+        return raw;
+      }
+    }
+    return null;
   }
+
+  String get _vapidSubject => VapidKeyPair.normalizeSubject(
+    _env['VAPID_SUBJECT'],
+    publicHttpsOrigin: _publicOriginHint,
+  );
+
+  @override
+  String? get vapidSubject => _vapidSubject;
 
   @override
   String? get vapidPublicKey =>
@@ -698,6 +856,23 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
     }
   }
 
+  static bool _looksLikeWebBond(CompanionBondRecord bond) {
+    final lowerPlat = bond.platform.toLowerCase();
+    if (lowerPlat.contains('web') ||
+        lowerPlat.contains('safari') ||
+        lowerPlat.contains('chrome') ||
+        lowerPlat.contains('home screen') ||
+        lowerPlat.contains('browser')) {
+      return true;
+    }
+    return bond.notificationChannel == 'web_push' ||
+        bond.notificationChannel == 'needs_https' ||
+        bond.notificationChannel == 'needs_home_screen' ||
+        bond.notificationChannel == 'pending_permission' ||
+        bond.notificationChannel == 'pending_setup' ||
+        bond.notificationChannel == 'permission_denied';
+  }
+
   @override
   Future<int> dispatchAlertToBonds({
     required List<CompanionBondRecord> bonds,
@@ -706,7 +881,31 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
     Future<void> Function(CompanionBondRecord expiredBond)?
     onBondSubscriptionExpired,
   }) async {
-    var deliveredCount = 0;
+    final summary = await dispatchAlertWithSummary(
+      bonds: bonds,
+      alert: alert,
+      hostDisplayName: hostDisplayName,
+      onBondSubscriptionExpired: onBondSubscriptionExpired,
+    );
+    return summary.pushAcceptedCount;
+  }
+
+  @override
+  Future<PushDispatchSummary> dispatchAlertWithSummary({
+    required List<CompanionBondRecord> bonds,
+    required SessionAlertRecord alert,
+    required String hostDisplayName,
+    Future<void> Function(CompanionBondRecord updatedBond)? onBondUpdated,
+    Future<void> Function(CompanionBondRecord expiredBond)?
+    onBondSubscriptionExpired,
+  }) async {
+    var activeCount = 0;
+    var attemptedCount = 0;
+    var acceptedCount = 0;
+    var failedCount = 0;
+    var webMissingPushCount = 0;
+    final failureReasons = <String>[];
+
     // Lock-screen privacy invariant: ONLY device name and plain alarm message.
     // Coordinates are NEVER included in push notification payloads.
     final title = hostDisplayName.trim().isEmpty
@@ -715,11 +914,14 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
     final body = alert.isTest
         ? 'Test alert from $title — tap to open in Activity.'
         : 'Alarm triggered on $title — tap to view event.';
+    final nowIso = DateTime.now().toUtc().toIso8601String();
 
     for (final bond in bonds) {
       if (bond.isRevoked) {
         continue;
       }
+      activeCount += 1;
+
       final envelope = OutboundPushEnvelope(
         bondId: bond.bondId,
         deviceId: bond.deviceId,
@@ -736,19 +938,41 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
       _sentEnvelopes.add(envelope);
 
       if (_customSender != null) {
+        attemptedCount += 1;
+        bond.lastPushAttemptAtUtcIso = nowIso;
         final ok = await _customSender(envelope);
-        if (ok) deliveredCount += 1;
+        if (ok) {
+          acceptedCount += 1;
+          bond.lastPushAcceptedAtUtcIso = nowIso;
+          bond.lastPushStatusCode = 201;
+          bond.lastPushErrorCode = null;
+        } else {
+          failedCount += 1;
+          bond.lastPushStatusCode = 502;
+          bond.lastPushErrorCode = 'CUSTOM_SENDER_REJECTED';
+          failureReasons.add('CUSTOM_SENDER_REJECTED');
+        }
+        if (onBondUpdated != null) {
+          await onBondUpdated(bond);
+        }
         continue;
       }
 
       if (!bond.notificationsEnabled) {
+        if (_looksLikeWebBond(bond)) {
+          webMissingPushCount += 1;
+        }
         continue;
       }
 
+      var attemptedThisBond = false;
       var sent = false;
+      String? bondFailureReason;
 
       // 1. Direct RFC 8291 + RFC 8292 Web Push (iOS 16.4+ Home Screen PWA & Android Chrome)
       if (bond.hasValidWebPushSubscription) {
+        attemptedThisBond = true;
+        bond.lastPushAttemptAtUtcIso = nowIso;
         try {
           final subscription = WebPushSubscriptionData.validate(
             endpointRaw: bond.webPushEndpoint!,
@@ -770,17 +994,31 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
             },
             incidentId: envelope.incidentId,
           );
+          bond.lastPushStatusCode = pushRes.statusCode;
           if (pushRes.delivered) {
             sent = true;
-          } else if (pushRes.subscriptionExpired) {
-            bond.clearWebPushSubscription();
-            if (onBondSubscriptionExpired != null) {
-              await onBondSubscriptionExpired(bond);
+            bond.lastPushAcceptedAtUtcIso = nowIso;
+            bond.lastPushErrorCode = null;
+          } else {
+            bondFailureReason = pushRes.providerReason ?? 'PUSH_REJECTED';
+            bond.lastPushErrorCode = bondFailureReason;
+            if (pushRes.subscriptionExpired || pushRes.vapidMismatch) {
+              bond.clearWebPushSubscription();
+              if (onBondSubscriptionExpired != null) {
+                await onBondSubscriptionExpired(bond);
+              }
             }
           }
-        } catch (_) {
+        } catch (err) {
+          bondFailureReason = DirectWebPushSender.sanitizeDiagnosticText(
+            '$err',
+          );
+          bond.lastPushStatusCode = 0;
+          bond.lastPushErrorCode = bondFailureReason;
           sent = false;
         }
+      } else if (_looksLikeWebBond(bond)) {
+        webMissingPushCount += 1;
       }
 
       // 2. Native APNs / FCM push tokens (when native mobile companion apps register tokens)
@@ -788,22 +1026,60 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
       final isIos = bond.platform.toLowerCase().contains('ios');
       if (!sent && token != null && token.isNotEmpty) {
         if (isIos && _hasApns) {
+          attemptedThisBond = true;
+          bond.lastPushAttemptAtUtcIso = nowIso;
           sent = await _sendApns(token: token, envelope: envelope);
+          if (!sent) {
+            bondFailureReason ??= 'APNS_REJECTED';
+          }
         } else if (_hasFcm) {
+          attemptedThisBond = true;
+          bond.lastPushAttemptAtUtcIso = nowIso;
           sent = await _sendFcm(token: token, envelope: envelope);
+          if (!sent) {
+            bondFailureReason ??= 'FCM_REJECTED';
+          }
         }
       }
 
       // 3. Verified external webhook gateway (only when configured & reachable)
       if (!sent && _hasVerifiedWebhook) {
+        attemptedThisBond = true;
+        bond.lastPushAttemptAtUtcIso = nowIso;
         sent = await _sendWebhook(envelope);
+        if (!sent) {
+          bondFailureReason ??= 'WEBHOOK_REJECTED';
+        }
       }
 
-      if (sent) {
-        deliveredCount += 1;
+      if (attemptedThisBond) {
+        attemptedCount += 1;
+        if (sent) {
+          acceptedCount += 1;
+          bond.lastPushAcceptedAtUtcIso = nowIso;
+          bond.lastPushErrorCode = null;
+        } else {
+          failedCount += 1;
+          final reason = bondFailureReason ?? 'PUSH_REJECTED';
+          bond.lastPushErrorCode ??= reason;
+          if (!failureReasons.contains(reason)) {
+            failureReasons.add(reason);
+          }
+        }
+        if (onBondUpdated != null) {
+          await onBondUpdated(bond);
+        }
       }
     }
-    return deliveredCount;
+
+    return PushDispatchSummary(
+      activeBondCount: activeCount,
+      pushAttemptedCount: attemptedCount,
+      pushAcceptedCount: acceptedCount,
+      pushFailedCount: failedCount,
+      webBondsMissingPushCount: webMissingPushCount,
+      failureReasons: List<String>.unmodifiable(failureReasons),
+    );
   }
 
   Future<bool> _sendFcm({
@@ -993,6 +1269,13 @@ abstract class RelayStore {
     required String incidentId,
     AlertLocationData? location,
     required String locationStatus,
+  });
+
+  Future<SessionAlertRecord?> confirmSessionAlertReceipt({
+    required String pairingSessionId,
+    required String incidentId,
+    required String confirmedAtUtc,
+    required String receiptSource,
   });
 
   Future<SessionAlertRecord?> findAlertByIncidentId({
@@ -1241,6 +1524,36 @@ class InMemoryRelayStore implements RelayStore {
       updatedSeq: nextSeq,
       location: location,
       locationStatus: locationStatus,
+    );
+    list[idx] = updated;
+    return updated;
+  }
+
+  @override
+  Future<SessionAlertRecord?> confirmSessionAlertReceipt({
+    required String pairingSessionId,
+    required String incidentId,
+    required String confirmedAtUtc,
+    required String receiptSource,
+  }) async {
+    final list = _alertsBySession[pairingSessionId];
+    if (list == null) {
+      return null;
+    }
+    final idx = list.indexWhere((a) => a.incidentId == incidentId);
+    if (idx < 0) {
+      return null;
+    }
+    final current = list[idx];
+    if (current.isReceiptConfirmed && current.receiptSource == 'push_sw') {
+      return current;
+    }
+    final nextSeq = (_seqBySession[pairingSessionId] ?? 0) + 1;
+    _seqBySession[pairingSessionId] = nextSeq;
+    final updated = current.copyWith(
+      updatedSeq: nextSeq,
+      receiptConfirmedAtUtc: current.receiptConfirmedAtUtc ?? confirmedAtUtc,
+      receiptSource: receiptSource,
     );
     list[idx] = updated;
     return updated;
@@ -1656,6 +1969,26 @@ class FileRelayStore implements RelayStore {
   }
 
   @override
+  Future<SessionAlertRecord?> confirmSessionAlertReceipt({
+    required String pairingSessionId,
+    required String incidentId,
+    required String confirmedAtUtc,
+    required String receiptSource,
+  }) async {
+    await initialize();
+    final updated = await _inner.confirmSessionAlertReceipt(
+      pairingSessionId: pairingSessionId,
+      incidentId: incidentId,
+      confirmedAtUtc: confirmedAtUtc,
+      receiptSource: receiptSource,
+    );
+    if (updated != null) {
+      await _flushSnapshot();
+    }
+    return updated;
+  }
+
+  @override
   Future<SessionAlertRecord?> findAlertByIncidentId({
     required String pairingSessionId,
     required String incidentId,
@@ -1857,6 +2190,14 @@ class PostgresRelayStore implements RelayStore {
       b.webPushEndpoint,
       b.webPushP256dh,
       b.webPushAuth,
+      b.subscribedVapidPublicKey,
+      b.lastPushAttemptAtUtcIso,
+      b.lastPushAcceptedAtUtcIso,
+      b.lastPushStatusCode,
+      b.lastPushErrorCode,
+      b.lastReceiptAtUtcIso,
+      b.lastReceiptIncidentId,
+      b.lastReceiptSource,
       b.activeHandoffCode,
       b.handoffExpiresAtUtc?.toIso8601String(),
       b.revokedAtUtcIso,
@@ -2082,6 +2423,30 @@ class PostgresRelayStore implements RelayStore {
     await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS handoff_expires_at_utc TIMESTAMPTZ',
     );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS subscribed_vapid_public_key TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS last_push_attempt_at_utc_iso TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS last_push_accepted_at_utc_iso TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS last_push_status_code INTEGER',
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS last_push_error_code TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS last_receipt_at_utc_iso TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS last_receipt_incident_id TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS last_receipt_source TEXT',
+    );
 
     await _exec('''
       CREATE TABLE IF NOT EXISTS $_alertsTable (
@@ -2100,6 +2465,8 @@ class PostgresRelayStore implements RelayStore {
         is_test BOOLEAN NOT NULL DEFAULT FALSE,
         location_json TEXT,
         location_status TEXT NOT NULL DEFAULT 'notRequested',
+        receipt_confirmed_at_utc TEXT,
+        receipt_source TEXT,
         PRIMARY KEY (pairing_session_id, alert_seq),
         UNIQUE (pairing_session_id, incident_id)
       )
@@ -2112,6 +2479,12 @@ class PostgresRelayStore implements RelayStore {
     );
     await _exec(
       "ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS location_status TEXT NOT NULL DEFAULT 'notRequested'",
+    );
+    await _exec(
+      'ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS receipt_confirmed_at_utc TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_alertsTable ADD COLUMN IF NOT EXISTS receipt_source TEXT',
     );
   }
 
@@ -2225,6 +2598,14 @@ class PostgresRelayStore implements RelayStore {
       webPushEndpoint: map['web_push_endpoint'] as String?,
       webPushP256dh: map['web_push_p256dh'] as String?,
       webPushAuth: map['web_push_auth'] as String?,
+      subscribedVapidPublicKey: map['subscribed_vapid_public_key'] as String?,
+      lastPushAttemptAtUtcIso: map['last_push_attempt_at_utc_iso'] as String?,
+      lastPushAcceptedAtUtcIso: map['last_push_accepted_at_utc_iso'] as String?,
+      lastPushStatusCode: (map['last_push_status_code'] as num?)?.toInt(),
+      lastPushErrorCode: map['last_push_error_code'] as String?,
+      lastReceiptAtUtcIso: map['last_receipt_at_utc_iso'] as String?,
+      lastReceiptIncidentId: map['last_receipt_incident_id'] as String?,
+      lastReceiptSource: map['last_receipt_source'] as String?,
       activeHandoffCode: map['active_handoff_code'] as String?,
       handoffExpiresAtUtc: _parseDbUtc(map['handoff_expires_at_utc']),
       revokedAtUtcIso: map['revoked_at_utc_iso'] as String?,
@@ -2261,6 +2642,8 @@ class PostgresRelayStore implements RelayStore {
       isTest: map['is_test'] as bool? ?? false,
       location: loc,
       locationStatus: map['location_status'] as String? ?? 'notRequested',
+      receiptConfirmedAtUtc: map['receipt_confirmed_at_utc'] as String?,
+      receiptSource: map['receipt_source'] as String?,
     );
   }
 
@@ -2438,6 +2821,14 @@ class PostgresRelayStore implements RelayStore {
           web_push_endpoint,
           web_push_p256dh,
           web_push_auth,
+          subscribed_vapid_public_key,
+          last_push_attempt_at_utc_iso,
+          last_push_accepted_at_utc_iso,
+          last_push_status_code,
+          last_push_error_code,
+          last_receipt_at_utc_iso,
+          last_receipt_incident_id,
+          last_receipt_source,
           active_handoff_code,
           handoff_expires_at_utc,
           revoked_at_utc_iso,
@@ -2466,6 +2857,14 @@ class PostgresRelayStore implements RelayStore {
           @webPushEndpoint,
           @webPushP256dh,
           @webPushAuth,
+          @subscribedVapidPublicKey,
+          @lastPushAttemptAtUtcIso,
+          @lastPushAcceptedAtUtcIso,
+          @lastPushStatusCode,
+          @lastPushErrorCode,
+          @lastReceiptAtUtcIso,
+          @lastReceiptIncidentId,
+          @lastReceiptSource,
           @activeHandoffCode,
           @handoffExpiresAtUtc,
           @revokedAt,
@@ -2490,6 +2889,14 @@ class PostgresRelayStore implements RelayStore {
           web_push_endpoint = EXCLUDED.web_push_endpoint,
           web_push_p256dh = EXCLUDED.web_push_p256dh,
           web_push_auth = EXCLUDED.web_push_auth,
+          subscribed_vapid_public_key = EXCLUDED.subscribed_vapid_public_key,
+          last_push_attempt_at_utc_iso = EXCLUDED.last_push_attempt_at_utc_iso,
+          last_push_accepted_at_utc_iso = EXCLUDED.last_push_accepted_at_utc_iso,
+          last_push_status_code = EXCLUDED.last_push_status_code,
+          last_push_error_code = EXCLUDED.last_push_error_code,
+          last_receipt_at_utc_iso = EXCLUDED.last_receipt_at_utc_iso,
+          last_receipt_incident_id = EXCLUDED.last_receipt_incident_id,
+          last_receipt_source = EXCLUDED.last_receipt_source,
           active_handoff_code = EXCLUDED.active_handoff_code,
           handoff_expires_at_utc = EXCLUDED.handoff_expires_at_utc,
           revoked_at_utc_iso = EXCLUDED.revoked_at_utc_iso,
@@ -2519,6 +2926,14 @@ class PostgresRelayStore implements RelayStore {
         'webPushEndpoint': bond.webPushEndpoint,
         'webPushP256dh': bond.webPushP256dh,
         'webPushAuth': bond.webPushAuth,
+        'subscribedVapidPublicKey': bond.subscribedVapidPublicKey,
+        'lastPushAttemptAtUtcIso': bond.lastPushAttemptAtUtcIso,
+        'lastPushAcceptedAtUtcIso': bond.lastPushAcceptedAtUtcIso,
+        'lastPushStatusCode': bond.lastPushStatusCode,
+        'lastPushErrorCode': bond.lastPushErrorCode,
+        'lastReceiptAtUtcIso': bond.lastReceiptAtUtcIso,
+        'lastReceiptIncidentId': bond.lastReceiptIncidentId,
+        'lastReceiptSource': bond.lastReceiptSource,
         'activeHandoffCode': bond.activeHandoffCode,
         'handoffExpiresAtUtc': bond.handoffExpiresAtUtc,
         'revokedAt': bond.revokedAtUtcIso,
@@ -2876,6 +3291,75 @@ class PostgresRelayStore implements RelayStore {
   }
 
   @override
+  Future<SessionAlertRecord?> confirmSessionAlertReceipt({
+    required String pairingSessionId,
+    required String incidentId,
+    required String confirmedAtUtc,
+    required String receiptSource,
+  }) async {
+    final updated = await _withConn(
+      (conn) => conn.runTx((tx) async {
+        final existingRows = await tx.execute(
+          Sql.named('''
+            SELECT * FROM $_alertsTable
+            WHERE pairing_session_id = @sessionId AND incident_id = @incidentId
+            LIMIT 1
+          '''),
+          parameters: <String, Object?>{
+            'sessionId': pairingSessionId,
+            'incidentId': incidentId,
+          },
+        );
+        if (existingRows.isEmpty) {
+          return null;
+        }
+        final current = _rowToAlert(existingRows.first.toColumnMap());
+        if (current.isReceiptConfirmed && current.receiptSource == 'push_sw') {
+          return current;
+        }
+        final seqRows = await tx.execute(
+          Sql.named('''
+            SELECT COALESCE(MAX(GREATEST(alert_seq, updated_seq)), 0) + 1 AS next_seq
+            FROM $_alertsTable
+            WHERE pairing_session_id = @sessionId
+          '''),
+          parameters: <String, Object?>{'sessionId': pairingSessionId},
+        );
+        final nextSeq =
+            (seqRows.first.toColumnMap()['next_seq'] as num?)?.toInt() ?? 1;
+        final updatedRows = await tx.execute(
+          Sql.named('''
+            UPDATE $_alertsTable
+            SET updated_seq = @updatedSeq,
+                receipt_confirmed_at_utc = COALESCE(receipt_confirmed_at_utc, @confirmedAtUtc),
+                receipt_source = @receiptSource
+            WHERE pairing_session_id = @sessionId AND incident_id = @incidentId
+            RETURNING *
+          '''),
+          parameters: <String, Object?>{
+            'updatedSeq': nextSeq,
+            'confirmedAtUtc': confirmedAtUtc,
+            'receiptSource': receiptSource,
+            'sessionId': pairingSessionId,
+            'incidentId': incidentId,
+          },
+        );
+        if (updatedRows.isEmpty) {
+          return null;
+        }
+        return _rowToAlert(updatedRows.first.toColumnMap());
+      }),
+    );
+    if (updated != null) {
+      final prevSeq = _latestSeqCacheBySessionId[pairingSessionId] ?? 0;
+      if (updated.effectiveSeq > prevSeq) {
+        _latestSeqCacheBySessionId[pairingSessionId] = updated.effectiveSeq;
+      }
+    }
+    return updated;
+  }
+
+  @override
   Future<SessionAlertRecord?> findAlertByIncidentId({
     required String pairingSessionId,
     required String incidentId,
@@ -3011,7 +3495,7 @@ class WatSafeRelayServer {
     );
   }
 
-  static const String companionSwVersion = '2026.11.16-v2';
+  static const String companionSwVersion = '2026.11.16-v3';
   static const String _codeAlphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
   final RelayStore _store;
@@ -3326,6 +3810,85 @@ class WatSafeRelayServer {
     _pairedDevicesSnapshot.add(bond.toDeviceSummaryJson());
   }
 
+  Map<String, Object?> _vapidMismatchFields(CompanionBondRecord bond) {
+    final serverKey = _pushProvider.vapidPublicKey;
+    final subKey = bond.subscribedVapidPublicKey;
+    final mismatch =
+        subKey != null &&
+        subKey.isNotEmpty &&
+        serverKey != null &&
+        serverKey.isNotEmpty &&
+        subKey != serverKey;
+    return <String, Object?>{
+      'vapidKeyMismatch': mismatch,
+      'pushSubscriptionNeedsRenewal':
+          bond.pushSubscriptionNeedsRenewal || mismatch,
+      'lastPushErrorCode': ?bond.lastPushErrorCode,
+    };
+  }
+
+  Future<Map<String, Object?>> _dispatchRecordedSessionAlert({
+    required String pairingSessionId,
+    required String hostDisplayName,
+    required ({SessionAlertRecord alert, bool deduplicated}) recorded,
+    required List<CompanionBondRecord> activeBonds,
+  }) async {
+    final dedupKey = '$pairingSessionId::${recorded.alert.incidentId}';
+    PushDispatchSummary summary;
+    if (recorded.deduplicated) {
+      summary = PushDispatchSummary(
+        activeBondCount: activeBonds.where((b) => !b.isRevoked).length,
+        pushAttemptedCount: 0,
+        pushAcceptedCount: 0,
+        pushFailedCount: 0,
+        webBondsMissingPushCount: 0,
+      );
+    } else {
+      _reportedIncidentsSnapshot[dedupKey] = recorded.alert.toJson();
+      summary = await _pushProvider.dispatchAlertWithSummary(
+        bonds: activeBonds,
+        alert: recorded.alert,
+        hostDisplayName: hostDisplayName,
+        onBondUpdated: (updatedBond) async {
+          await _store.saveCompanionBond(updatedBond);
+          _syncPairedSnapshot(updatedBond);
+        },
+        onBondSubscriptionExpired: (expiredBond) async {
+          await _store.saveCompanionBond(expiredBond);
+          _syncPairedSnapshot(expiredBond);
+        },
+      );
+    }
+    final delivered =
+        recorded.deduplicated ||
+        summary.pushAcceptedCount > 0 ||
+        (summary.activeBondCount > 0 &&
+            summary.pushFailedCount == 0 &&
+            summary.webBondsMissingPushCount == 0);
+    return <String, Object?>{
+      'delivered': delivered,
+      'alertRecorded': true,
+      'deduplicated': recorded.deduplicated,
+      'pairingSessionId': pairingSessionId,
+      'incidentId': recorded.alert.incidentId,
+      'alertSeq': recorded.alert.alertSeq,
+      'deliveryStage': recorded.deduplicated
+          ? 'deduplicated'
+          : summary.deliveryStage,
+      'pushAccepted': summary.pushAcceptedCount > 0,
+      'receiptConfirmed': recorded.alert.isReceiptConfirmed,
+      'receiptConfirmedAtUtc': ?recorded.alert.receiptConfirmedAtUtc,
+      'receiptSource': ?recorded.alert.receiptSource,
+      'dispatchedCount': summary.activeBondCount,
+      'pushAttemptedCount': summary.pushAttemptedCount,
+      'pushAcceptedCount': summary.pushAcceptedCount,
+      'pushDispatchedCount': summary.pushAcceptedCount,
+      'pushFailedCount': summary.pushFailedCount,
+      'webBondsMissingPushCount': summary.webBondsMissingPushCount,
+      'pushFailureReasons': summary.failureReasons,
+    };
+  }
+
   Future<void> _writePngBytes(HttpResponse response, List<int> bytes) async {
     response.statusCode = HttpStatus.ok;
     response.headers.contentType = ContentType('image', 'png');
@@ -3561,6 +4124,7 @@ class WatSafeRelayServer {
           'pushConfigured': _pushProvider.isConfigured,
           'pushProvider': _pushProvider.providerSummary,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,
+          'vapidSubject': ?_pushProvider.vapidSubject,
           'publicHttpsOrigin': ?publicHttpsOrigin,
           'permanentHttpsOrigin': ?permanentHttpsOrigin,
           'isPermanentHttpsOrigin': permanentHttpsOrigin != null,
@@ -4219,15 +4783,14 @@ class WatSafeRelayServer {
         }
 
         if (method == 'DELETE') {
-          bond.clearWebPushSubscription();
+          bond.clearWebPushSubscription(clearErrorTelemetry: true);
           bond.lastSeenAtUtcIso = _clock().toUtc().toIso8601String();
           await _store.saveCompanionBond(bond);
           _syncPairedSnapshot(bond);
-          _writeJson(
-            request.response,
-            HttpStatus.ok,
-            bond.toDeviceSummaryJson(),
-          );
+          _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+            ...bond.toDeviceSummaryJson(),
+            ..._vapidMismatchFields(bond),
+          });
           return;
         }
 
@@ -4235,6 +4798,21 @@ class WatSafeRelayServer {
         final forbidden = detectForbiddenSensitiveField(body);
         if (forbidden != null) {
           _writePrivacyViolation(request.response, forbidden);
+          return;
+        }
+
+        final subscribedKey =
+            (body['subscribedVapidPublicKey'] as String? ?? '').trim();
+        final serverVapidKey = _pushProvider.vapidPublicKey;
+        if (subscribedKey.isNotEmpty &&
+            serverVapidKey != null &&
+            serverVapidKey.isNotEmpty &&
+            subscribedKey != serverVapidKey) {
+          _writeJson(request.response, HttpStatus.conflict, <String, Object?>{
+            'error': 'VAPID_KEY_MISMATCH',
+            'vapidPublicKey': serverVapidKey,
+            'message': 'Server notification key changed. Refreshing subscription automatically.',
+          });
           return;
         }
 
@@ -4272,6 +4850,11 @@ class WatSafeRelayServer {
         bond.webPushEndpoint = endpoint;
         bond.webPushP256dh = p256dh;
         bond.webPushAuth = auth;
+        bond.subscribedVapidPublicKey = subscribedKey.isNotEmpty
+            ? subscribedKey
+            : serverVapidKey;
+        bond.lastPushStatusCode = null;
+        bond.lastPushErrorCode = null;
         bond.pushSubscribed = true;
         bond.backendPushRegistered = true;
 
@@ -4293,6 +4876,7 @@ class WatSafeRelayServer {
         final session = await _store.findSessionById(bond.pairingSessionId);
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           ...bond.toDeviceSummaryJson(),
+          ..._vapidMismatchFields(bond),
           'hostDisplayName': session?.hostDisplayName ?? 'My Laptop',
           'pushConfigured': _pushProvider.isConfigured,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,
@@ -4349,6 +4933,7 @@ class WatSafeRelayServer {
           _syncPairedSnapshot(bond);
           _writeJson(request.response, HttpStatus.ok, <String, Object?>{
             ...bond.toDeviceSummaryJson(),
+            ..._vapidMismatchFields(bond),
             'hostDisplayName': session?.hostDisplayName ?? 'My Laptop',
             'pushConfigured': _pushProvider.isConfigured,
             'vapidPublicKey': ?_pushProvider.vapidPublicKey,
@@ -4372,6 +4957,10 @@ class WatSafeRelayServer {
             (body['notificationPermission'] as String).trim().isNotEmpty) {
           bond.notificationPermission =
               (body['notificationPermission'] as String).trim();
+        }
+        if (body['subscribedVapidPublicKey'] is String) {
+          final sk = (body['subscribedVapidPublicKey'] as String).trim();
+          bond.subscribedVapidPublicKey = sk.isEmpty ? null : sk;
         }
         if (body['pushSubscribed'] is bool) {
           bond.pushSubscribed = body['pushSubscribed'] as bool;
@@ -4397,6 +4986,9 @@ class WatSafeRelayServer {
         }
 
         if (_isWebCompanionBond(bond, body)) {
+          final mismatchInfo = _vapidMismatchFields(bond);
+          final needsRenewal =
+              mismatchInfo['pushSubscriptionNeedsRenewal'] == true;
           // Enforce strict Web Push readiness: never report `notificationsEnabled`
           // unless HTTPS + Home Screen (on iOS) + permission + subscription + backend registration all hold!
           final fullReady =
@@ -4405,7 +4997,8 @@ class WatSafeRelayServer {
               bond.notificationPermission == 'granted' &&
               bond.pushSubscribed &&
               bond.backendPushRegistered &&
-              bond.hasValidWebPushSubscription;
+              bond.hasValidWebPushSubscription &&
+              !needsRenewal;
           bond.notificationsEnabled = fullReady;
           bond.pushChannelReady = fullReady;
           if (fullReady) {
@@ -4416,6 +5009,8 @@ class WatSafeRelayServer {
             bond.notificationChannel = 'needs_home_screen';
           } else if (bond.notificationPermission == 'denied') {
             bond.notificationChannel = 'permission_denied';
+          } else if (needsRenewal) {
+            bond.notificationChannel = 'needs_push_renewal';
           } else {
             bond.notificationChannel = 'pending_setup';
           }
@@ -4436,6 +5031,7 @@ class WatSafeRelayServer {
 
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           ...bond.toDeviceSummaryJson(),
+          ..._vapidMismatchFields(bond),
           'hostDisplayName': session?.hostDisplayName ?? 'My Laptop',
           'pushConfigured': _pushProvider.isConfigured,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,
@@ -4535,25 +5131,14 @@ class WatSafeRelayServer {
           locationStatus: locStatus,
         );
 
-        final dedupKey = '${bond.pairingSessionId}::$incidentId';
-        _reportedIncidentsSnapshot[dedupKey] = recorded.alert.toJson();
-
-        final pushDispatchedCount = await _pushProvider.dispatchAlertToBonds(
-          bonds: activeBonds,
-          alert: recorded.alert,
+        final dispatchFields = await _dispatchRecordedSessionAlert(
+          pairingSessionId: bond.pairingSessionId,
           hostDisplayName: hostDisplayName,
-          onBondSubscriptionExpired: (expiredBond) async {
-            await _store.saveCompanionBond(expiredBond);
-            _syncPairedSnapshot(expiredBond);
-          },
+          recorded: recorded,
+          activeBonds: activeBonds,
         );
 
-        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
-          'delivered': true,
-          'incidentId': incidentId,
-          'alertSeq': recorded.alert.alertSeq,
-          'pushDispatchedCount': pushDispatchedCount,
-        });
+        _writeJson(request.response, HttpStatus.ok, dispatchFields);
         return;
       }
 
@@ -4818,12 +5403,54 @@ class WatSafeRelayServer {
           return;
         }
         final hostToken = _extractBearerToken(request);
+        RelaySessionRecord? session;
         if (hostToken != null) {
-          final session = await _store.findSessionByHostToken(hostToken);
+          session = await _store.findSessionByHostToken(hostToken);
           if (session != null) {
             session.markHostSeen(_clock().toUtc());
             await _store.saveSession(session);
           }
+        }
+        final commandName = (body['command'] as String? ?? '').trim();
+        if (commandName == 'send_test_push' && session != null) {
+          final nowIso = _clock().toUtc().toIso8601String();
+          final incidentId = 'test_cmd_${++_seq}_${_randomHex(4)}';
+          final targetDeviceId = (body['deviceId'] as String? ?? '').trim();
+          final allBonds = await _store.listActiveBondsForSession(
+            session.pairingSessionId,
+          );
+          final targetBonds = targetDeviceId.isEmpty
+              ? allBonds
+              : allBonds.where((b) => b.deviceId == targetDeviceId).toList();
+          final recorded = await _store.recordSessionAlert(
+            pairingSessionId: session.pairingSessionId,
+            incidentId: incidentId,
+            sessionId: session.pairingSessionId,
+            kind: 'companionTestAlert',
+            detectorType: 'test_alert',
+            triggeredAtUtc: nowIso,
+            triggerSummary:
+                (body['summary'] as String?)?.trim().isNotEmpty == true
+                ? (body['summary'] as String).trim()
+                : 'Test alert sent from ${session.hostDisplayName}',
+            createdAtUtc: nowIso,
+            hostDisplayName: session.hostDisplayName,
+            isTest: true,
+            locationStatus: 'notRequested',
+          );
+          final dispatchFields = await _dispatchRecordedSessionAlert(
+            pairingSessionId: session.pairingSessionId,
+            hostDisplayName: session.hostDisplayName,
+            recorded: recorded,
+            activeBonds: targetBonds.isEmpty ? allBonds : targetBonds,
+          );
+          _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+            ...dispatchFields,
+            'commandId': 'cmd_${++_seq}',
+            'deviceId': body['deviceId'],
+            'command': body['command'],
+          });
+          return;
         }
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           'delivered': true,
@@ -4916,30 +5543,14 @@ class WatSafeRelayServer {
           locationStatus: locStatus,
         );
 
-        var pushDispatchedCount = 0;
-        final dedupKey = '${session.pairingSessionId}::$incidentId';
-        if (!recorded.deduplicated) {
-          _reportedIncidentsSnapshot[dedupKey] = recorded.alert.toJson();
-          pushDispatchedCount = await _pushProvider.dispatchAlertToBonds(
-            bonds: activeBonds,
-            alert: recorded.alert,
-            hostDisplayName: session.hostDisplayName,
-            onBondSubscriptionExpired: (expiredBond) async {
-              await _store.saveCompanionBond(expiredBond);
-              _syncPairedSnapshot(expiredBond);
-            },
-          );
-        }
+        final dispatchFields = await _dispatchRecordedSessionAlert(
+          pairingSessionId: session.pairingSessionId,
+          hostDisplayName: session.hostDisplayName,
+          recorded: recorded,
+          activeBonds: activeBonds,
+        );
 
-        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
-          'delivered': true,
-          'deduplicated': recorded.deduplicated,
-          'pairingSessionId': session.pairingSessionId,
-          'incidentId': incidentId,
-          'alertSeq': recorded.alert.alertSeq,
-          'dispatchedCount': activeBonds.length,
-          'pushDispatchedCount': pushDispatchedCount,
-        });
+        _writeJson(request.response, HttpStatus.ok, dispatchFields);
         return;
       }
 
@@ -5022,6 +5633,100 @@ class WatSafeRelayServer {
           'incidentId': incidentId,
           'updatedSeq': updated.effectiveSeq,
           'locationStatus': updated.locationStatus,
+        });
+        return;
+      }
+
+      // Phone receipt acknowledgement from Service Worker (`push_sw`) or active
+      // companion poll (`companion_poll`) so WATSafe distinguishes "push service
+      // accepted" from confirmed phone receipt.
+      if (method == 'POST' &&
+          path.startsWith('/v1/companion/events/') &&
+          path.endsWith('/ack')) {
+        final body = await _readJsonBody(request);
+        final forbidden = detectForbiddenSensitiveField(body);
+        if (forbidden != null) {
+          _writePrivacyViolation(request.response, forbidden);
+          return;
+        }
+        final companionToken = _extractBearerToken(request);
+        if (companionToken == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_COMPANION_SESSION',
+              'message': 'Missing companion session bearer token.',
+            },
+          );
+          return;
+        }
+        final bond = await _store.findActiveBondByCompanionToken(
+          companionToken,
+        );
+        if (bond == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_COMPANION_SESSION',
+              'message': 'Companion session is unpaired or revoked.',
+            },
+          );
+          return;
+        }
+        final middle = path.substring(
+          '/v1/companion/events/'.length,
+          path.length - '/ack'.length,
+        );
+        final incidentId = Uri.decodeComponent(middle).trim();
+        if (incidentId.isEmpty) {
+          _writeJson(request.response, HttpStatus.badRequest, <String, Object?>{
+            'error': 'MISSING_INCIDENT_ID',
+            'message': 'incidentId is required.',
+          });
+          return;
+        }
+        final rawSource = (body['source'] as String? ?? 'companion_ack').trim();
+        const allowedSources = <String>{
+          'push_sw',
+          'companion_poll',
+          'companion_ack',
+        };
+        final receiptSource = allowedSources.contains(rawSource)
+            ? rawSource
+            : 'companion_ack';
+        final nowIso = _clock().toUtc().toIso8601String();
+        final updated = await _store.confirmSessionAlertReceipt(
+          pairingSessionId: bond.pairingSessionId,
+          incidentId: incidentId,
+          confirmedAtUtc: nowIso,
+          receiptSource: receiptSource,
+        );
+        if (updated == null) {
+          _writeJson(request.response, HttpStatus.notFound, <String, Object?>{
+            'error': 'EVENT_NOT_FOUND',
+            'message': 'Event not found for this paired session.',
+          });
+          return;
+        }
+        bond.connected = true;
+        bond.lastSeenAtUtcIso = nowIso;
+        bond.lastReceiptAtUtcIso = updated.receiptConfirmedAtUtc ?? nowIso;
+        bond.lastReceiptIncidentId = incidentId;
+        bond.lastReceiptSource = updated.receiptSource ?? receiptSource;
+        await _store.saveCompanionBond(bond);
+        _syncPairedSnapshot(bond);
+        final dedupKey = '${bond.pairingSessionId}::$incidentId';
+        _reportedIncidentsSnapshot[dedupKey] = updated.toJson();
+
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'acknowledged': true,
+          'incidentId': incidentId,
+          'receiptConfirmed': true,
+          'receiptConfirmedAtUtc': updated.receiptConfirmedAtUtc,
+          'receiptSource': updated.receiptSource,
+          'updatedSeq': updated.effectiveSeq,
         });
         return;
       }
@@ -5128,6 +5833,7 @@ class WatSafeRelayServer {
           'connected': true,
           'notificationsEnabled': bond.notificationsEnabled,
           'backendPushRegistered': bond.backendPushRegistered,
+          ..._vapidMismatchFields(bond),
           'pushConfigured': _pushProvider.isConfigured,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,
           'permanentHttpsOrigin': ?_configuredPermanentHttpsOrigin(),
