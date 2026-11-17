@@ -981,7 +981,11 @@ class ConfigurableRemoteNotificationService
           a[i].connected != b[i].connected ||
           a[i].displayName != b[i].displayName ||
           a[i].notificationsEnabled != b[i].notificationsEnabled ||
-          a[i].notificationChannel != b[i].notificationChannel) {
+          a[i].notificationChannel != b[i].notificationChannel ||
+          a[i].pushSubscriptionNeedsRenewal !=
+              b[i].pushSubscriptionNeedsRenewal ||
+          a[i].lastPushErrorCode != b[i].lastPushErrorCode ||
+          a[i].lastReceiptIncidentId != b[i].lastReceiptIncidentId) {
         return false;
       }
     }
@@ -1800,6 +1804,80 @@ class ConfigurableRemoteNotificationService
           timeout: alertTimeout,
         );
       }
+      Map<String, Object?>? responseJson;
+      if (postResult.isSuccess && postResult.body.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(postResult.body);
+          if (decoded is Map) {
+            responseJson = Map<String, Object?>.from(decoded);
+          }
+        } catch (_) {}
+      }
+
+      final names = connectedDevices
+          .map((d) => '"${d.displayName}"')
+          .join(', ');
+      final relayRecorded =
+          postResult.isSuccess &&
+          (responseJson?['alertRecorded'] as bool? ?? true);
+      final pushAcceptedCount =
+          (responseJson?['pushAcceptedCount'] as num?)?.toInt() ??
+          (responseJson?['pushDispatchedCount'] as num?)?.toInt() ??
+          0;
+      final pushFailedCount =
+          (responseJson?['pushFailedCount'] as num?)?.toInt() ?? 0;
+      final webMissingPushCount =
+          (responseJson?['webBondsMissingPushCount'] as num?)?.toInt() ?? 0;
+      final receiptConfirmed =
+          responseJson?['receiptConfirmed'] as bool? ?? false;
+      final deliveryStage =
+          responseJson?['deliveryStage'] as String? ??
+          (postResult.isSuccess ? 'companion_poll_queued' : 'network_error');
+      final rawReasons = responseJson?['pushFailureReasons'];
+      final failureReasons = rawReasons is List
+          ? rawReasons.map((e) => '$e').where((s) => s.isNotEmpty).toList()
+          : const <String>[];
+      final serverDelivered =
+          postResult.isSuccess && (responseJson?['delivered'] as bool? ?? true);
+
+      String statusMsg;
+      String actionLabel;
+      CapabilityStatus capStatus;
+      if (!postResult.isSuccess) {
+        statusMsg = 'Could not reach phone alert service right now';
+        actionLabel = 'Alert service unreachable';
+        capStatus = CapabilityStatus.degraded;
+      } else if (receiptConfirmed) {
+        statusMsg = 'Phone receipt confirmed on $names';
+        actionLabel = 'Phone receipt confirmed';
+        capStatus = CapabilityStatus.ready;
+      } else if (pushAcceptedCount > 0) {
+        statusMsg =
+            'Push service accepted alert for $names — awaiting phone receipt';
+        actionLabel = 'Push service accepted (awaiting phone receipt)';
+        capStatus = CapabilityStatus.ready;
+      } else if (pushFailedCount > 0) {
+        final reasonSuffix = failureReasons.isNotEmpty
+            ? ' (${failureReasons.join(", ")})'
+            : '';
+        statusMsg =
+            'Push delivery rejected$reasonSuffix — recorded in Activity only. Open WATSafe on $names and tap Repair notifications.';
+        actionLabel = 'Push rejected — repair on phone';
+        capStatus = CapabilityStatus.degraded;
+      } else if (webMissingPushCount > 0 || !serverDelivered) {
+        statusMsg =
+            'Recorded in Activity only — finish enabling notifications on $names for lock-screen alerts.';
+        actionLabel = 'Notifications not enabled on phone';
+        capStatus = CapabilityStatus.degraded;
+      } else {
+        statusMsg =
+            'Delivered via HTTP relay to ${connectedDevices.length} paired device(s) — awaiting phone receipt';
+        actionLabel = incident.isTest
+            ? 'Queued on relay (awaiting receipt)'
+            : 'Alarm queued on relay (awaiting receipt)';
+        capStatus = CapabilityStatus.ready;
+      }
+
       _devices = _devices
           .map(
             (d) => d.connected
@@ -1807,9 +1885,7 @@ class ConfigurableRemoteNotificationService
                     remoteStateLabel: postResult.isSuccess
                         ? 'Phone connected'
                         : 'Connection issue',
-                    lastActionSummary: incident.isTest
-                        ? 'Test alert sent'
-                        : 'Alarm alert sent',
+                    lastActionSummary: actionLabel,
                     lastSeenAt: now,
                   )
                 : d,
@@ -1821,27 +1897,28 @@ class ConfigurableRemoteNotificationService
           deviceName: d.displayName,
           commandType: PairedDeviceCommandType.sendTestPush,
           timestamp: now,
-          delivered: postResult.isSuccess,
-          summary: postResult.isSuccess
-              ? '${incident.isTest ? "Test alert" : "Alarm alert"} sent to "${d.displayName}".'
-              : 'Could not reach "${d.displayName}" right now.',
+          delivered: serverDelivered,
+          summary: serverDelivered
+              ? (receiptConfirmed
+                    ? '${incident.isTest ? "Test alert" : "Alarm alert"} receipt confirmed on "${d.displayName}".'
+                    : (pushAcceptedCount > 0
+                          ? 'Push service accepted ${incident.isTest ? "test alert" : "alarm alert"} for "${d.displayName}" (awaiting phone receipt).'
+                          : '${incident.isTest ? "Test alert" : "Alarm alert"} queued on relay for "${d.displayName}".'))
+              : statusMsg,
         );
       }
       if (postResult.isSuccess) {
         await _appendAlertToLocalOutbox(payload);
-        await _persistState();
-        return NotificationDispatchResult(
-          delivered: true,
-          capabilityStatus: CapabilityStatus.ready,
-          message:
-              'Delivered via HTTP relay to ${connectedDevices.length} paired device(s)',
-        );
       }
       await _persistState();
-      return const NotificationDispatchResult(
-        delivered: false,
-        capabilityStatus: CapabilityStatus.degraded,
-        message: 'Could not reach phone alert service right now',
+      return NotificationDispatchResult(
+        delivered: serverDelivered,
+        capabilityStatus: capStatus,
+        message: statusMsg,
+        relayRecorded: relayRecorded,
+        pushAccepted: pushAcceptedCount > 0,
+        receiptConfirmed: receiptConfirmed,
+        deliveryStage: deliveryStage,
       );
     }
 

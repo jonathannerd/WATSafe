@@ -135,10 +135,22 @@ Future<void> writePersistedPermanentRelayUrl(String? url) async {
   }
 }
 
-bool _isLauncherRuntimeStillActive() {
+bool _isLauncherRuntimeStillActive([File? explicitStateFile]) {
   try {
-    final stateFile = File('.watsafe-runtime/launcher_state.json');
-    if (!stateFile.existsSync()) return false;
+    final home = (Platform.environment['HOME'] ?? '').trim();
+    final candidates = <File>[
+      ?explicitStateFile,
+      File('.watsafe-runtime/launcher_state.json'),
+      if (home.isNotEmpty) File('$home/.watsafe-runtime/launcher_state.json'),
+    ];
+    File? stateFile;
+    for (final c in candidates) {
+      if (c.existsSync()) {
+        stateFile = c;
+        break;
+      }
+    }
+    if (stateFile == null) return false;
     final decoded = jsonDecode(stateFile.readAsStringSync());
     if (decoded is! Map) return false;
     final pids = decoded['ownedPids'];
@@ -184,9 +196,14 @@ String? readRuntimeRelayEnvUrl() {
   if (envPub.isNotEmpty) {
     return envPub;
   }
-  try {
-    final runtimeFile = File('.watsafe-runtime/relay_endpoint.json');
-    if (runtimeFile.existsSync()) {
+  final home = (Platform.environment['HOME'] ?? '').trim();
+  final runtimeCandidates = <File>[
+    File('.watsafe-runtime/relay_endpoint.json'),
+    if (home.isNotEmpty) File('$home/.watsafe-runtime/relay_endpoint.json'),
+  ];
+  for (final runtimeFile in runtimeCandidates) {
+    try {
+      if (!runtimeFile.existsSync()) continue;
       final decoded = jsonDecode(runtimeFile.readAsStringSync());
       if (decoded is Map) {
         final url = (decoded['relayEndpointUrl'] as String? ?? '').trim();
@@ -199,9 +216,9 @@ String? readRuntimeRelayEnvUrl() {
           }
         }
       }
+    } catch (_) {
+      // Ignore when running inside a restricted mobile/desktop sandbox container.
     }
-  } catch (_) {
-    // Ignore when running inside a restricted mobile/desktop sandbox container.
   }
   return null;
 }

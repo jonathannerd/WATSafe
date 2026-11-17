@@ -471,16 +471,116 @@ class VapidKeyPair {
     return generated;
   }
 
+  static const String defaultSubject = 'mailto:alerts@watsafe.app';
+
+  static const Set<String> _reservedNonPublicTlds = <String>{
+    'local',
+    'localhost',
+    'internal',
+    'test',
+    'invalid',
+    'lan',
+    'home',
+    'arpa',
+    'corp',
+  };
+
+  static bool _isPublicRoutableDomain(String rawHost) {
+    final host = rawHost.trim().toLowerCase();
+    if (host.isEmpty || host.contains('[') || host.contains(']')) {
+      return false;
+    }
+    if (InternetAddress.tryParse(host) != null) {
+      return false;
+    }
+    final labels = host.split('.');
+    if (labels.length < 2) {
+      return false;
+    }
+    for (final label in labels) {
+      if (label.isEmpty ||
+          label.startsWith('-') ||
+          label.endsWith('-') ||
+          !RegExp(r'^[a-z0-9-]+$').hasMatch(label)) {
+        return false;
+      }
+    }
+    final tld = labels.last;
+    if (tld.length < 2 || RegExp(r'^\d+$').hasMatch(tld)) {
+      return false;
+    }
+    return !_reservedNonPublicTlds.contains(tld);
+  }
+
+  /// Returns `true` iff [candidate] is an RFC 8292 `mailto:` or `https://` URI
+  /// with a public routable domain accepted by Apple Web Push (`web.push.apple.com`)
+  /// and Google FCM (rejecting `.local`, `.localhost`, `.internal`, IP literals, etc.).
+  static bool isValidPublicSubject(String? candidate) {
+    if (candidate == null) {
+      return false;
+    }
+    final trimmed = candidate.trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+    if (trimmed.toLowerCase().startsWith('mailto:')) {
+      final addr = trimmed.substring('mailto:'.length).trim();
+      final atIdx = addr.indexOf('@');
+      if (atIdx <= 0 || atIdx != addr.lastIndexOf('@')) {
+        return false;
+      }
+      final localPart = addr.substring(0, atIdx);
+      final domainPart = addr.substring(atIdx + 1);
+      if (localPart.isEmpty || localPart.contains(' ')) {
+        return false;
+      }
+      return _isPublicRoutableDomain(domainPart);
+    }
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null ||
+        uri.scheme.toLowerCase() != 'https' ||
+        !uri.hasAuthority) {
+      return false;
+    }
+    if (uri.userInfo.isNotEmpty) {
+      return false;
+    }
+    return _isPublicRoutableDomain(uri.host);
+  }
+
+  /// Normalizes [rawSubject] to a valid RFC 8292 VAPID `sub` claim.
+  ///
+  /// Apple Web Push (`web.push.apple.com`) rejects `.local` / non-public domains
+  /// with `HTTP 403 {"reason":"BadJwtToken"}`. When [rawSubject] is empty or uses
+  /// a non-public domain, falls back to [publicHttpsOrigin] (if valid `https://`)
+  /// or [defaultSubject].
+  static String normalizeSubject(
+    String? rawSubject, {
+    String? publicHttpsOrigin,
+  }) {
+    final trimmed = (rawSubject ?? '').trim();
+    if (isValidPublicSubject(trimmed)) {
+      return trimmed;
+    }
+    final fallbackOrigin = (publicHttpsOrigin ?? '').trim();
+    if (isValidPublicSubject(fallbackOrigin)) {
+      final parsed = Uri.parse(fallbackOrigin);
+      return '${parsed.scheme.toLowerCase()}://${parsed.authority.toLowerCase()}';
+    }
+    return defaultSubject;
+  }
+
   /// Builds an RFC 8292 VAPID `ES256` JWT and `Authorization` header value for
   /// pushing to [endpoint].
   ({String jwt, String authorizationHeader, String cryptoKeyHeader})
   buildVapidHeaders({
     required Uri endpoint,
-    String subject = 'mailto:alerts@watsafe.app',
+    String subject = defaultSubject,
     DateTime? nowUtc,
     Duration validity = const Duration(hours: 12),
     Random? random,
   }) {
+    final normalizedSub = normalizeSubject(subject);
     final origin = '${endpoint.scheme}://${endpoint.authority}';
     final now = (nowUtc ?? DateTime.now()).toUtc();
     final exp =
@@ -494,7 +594,7 @@ class VapidKeyPair {
     final payloadJson = jsonEncode(<String, Object>{
       'aud': origin,
       'exp': exp,
-      'sub': subject,
+      'sub': normalizedSub,
     });
 
     final signingInput =
@@ -774,17 +874,27 @@ class WebPushCrypto {
 }
 
 /// Result of dispatching an RFC 8030 + RFC 8291 + RFC 8292 Web Push request.
+///
+/// Note: [delivered] means the push service (`web.push.apple.com` / FCM)
+/// accepted the encrypted payload (`HTTP 2xx`). Confirmed phone receipt is
+/// tracked separately when the phone's Service Worker or app acknowledges the event.
 class WebPushDeliveryResult {
   const WebPushDeliveryResult({
     required this.delivered,
     required this.statusCode,
     this.subscriptionExpired = false,
+    this.vapidMismatch = false,
+    this.providerReason,
+    this.endpointHost,
     this.errorDetail,
   });
 
   final bool delivered;
   final int statusCode;
   final bool subscriptionExpired;
+  final bool vapidMismatch;
+  final String? providerReason;
+  final String? endpointHost;
   final String? errorDetail;
 }
 
@@ -793,13 +903,27 @@ class WebPushDeliveryResult {
 class DirectWebPushSender {
   DirectWebPushSender({
     required this.vapidKeyPair,
-    this.vapidSubject = 'mailto:alerts@watsafe.app',
+    String vapidSubject = VapidKeyPair.defaultSubject,
+    String? publicHttpsOrigin,
     this.timeout = const Duration(seconds: 6),
-  });
+    this.logFailuresToStderr = true,
+  }) : vapidSubject = VapidKeyPair.normalizeSubject(
+         vapidSubject,
+         publicHttpsOrigin: publicHttpsOrigin,
+       );
 
   final VapidKeyPair vapidKeyPair;
   final String vapidSubject;
   final Duration timeout;
+  final bool logFailuresToStderr;
+
+  static const Set<String> _expiredProviderReasons = <String>{
+    'BadWebPushToken',
+    'Unregistered',
+    'ExpiredSubscription',
+    'DeviceTokenNotForTopic',
+    'VapidPkHashMismatch',
+  };
 
   static String derivePushTopic(String incidentId) {
     final digest = crypto.sha256.convert(utf8.encode(incidentId)).bytes;
@@ -808,12 +932,69 @@ class DirectWebPushSender {
     ); // 24 base64url chars (<= 32)
   }
 
+  /// Strips any URLs, paths, or long token-like segments so logs and status
+  /// fields never expose subscription endpoints or secrets.
+  static String sanitizeDiagnosticText(String raw) {
+    var cleaned = raw.replaceAll(RegExp(r'https?://\S+'), '<redacted-url>');
+    cleaned = cleaned.replaceAll(
+      RegExp(r'[A-Za-z0-9_-]{40,}'),
+      '<redacted-token>',
+    );
+    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (cleaned.length > 140) {
+      cleaned = '${cleaned.substring(0, 140)}...';
+    }
+    return cleaned;
+  }
+
+  static String? _extractProviderReason(String rawBody, int statusCode) {
+    final trimmed = rawBody.trim();
+    if (trimmed.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(trimmed);
+        if (decoded is Map) {
+          for (final key in const <String>['reason', 'error', 'message']) {
+            final val = decoded[key];
+            if (val is String && val.trim().isNotEmpty) {
+              return sanitizeDiagnosticText(val);
+            }
+          }
+        }
+      } catch (_) {
+        return sanitizeDiagnosticText(trimmed);
+      }
+    }
+    if (statusCode > 0) {
+      return 'HTTP_$statusCode';
+    }
+    return null;
+  }
+
+  static Future<String> _readBoundedUtf8(
+    HttpClientResponse response, {
+    int maxBytes = 2048,
+  }) async {
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in response) {
+      final remaining = maxBytes - builder.length;
+      if (remaining > 0) {
+        if (chunk.length <= remaining) {
+          builder.add(chunk);
+        } else {
+          builder.add(chunk.sublist(0, remaining));
+        }
+      }
+    }
+    return utf8.decode(builder.takeBytes(), allowMalformed: true);
+  }
+
   Future<WebPushDeliveryResult> sendJsonNotification({
     required WebPushSubscriptionData subscription,
     required Map<String, Object?> payload,
     String? incidentId,
     int ttlSeconds = 86400,
   }) async {
+    final host = subscription.endpoint.host;
     final plaintext = utf8.encode(jsonEncode(payload));
     final encryptedBody = await WebPushCrypto.encryptAes128Gcm(
       plaintext: plaintext,
@@ -846,19 +1027,53 @@ class DirectWebPushSender {
       req.add(encryptedBody);
 
       final res = await req.close().timeout(timeout);
-      await res.drain<void>();
       final code = res.statusCode;
+      final accepted = code >= 200 && code < 300;
+      String? reason;
+      if (accepted) {
+        await res.drain<void>();
+      } else {
+        final rawErrorBody = await _readBoundedUtf8(res);
+        reason = _extractProviderReason(rawErrorBody, code);
+      }
+
+      final vapidMismatch = reason == 'VapidPkHashMismatch';
+      final expired =
+          code == HttpStatus.notFound ||
+          code == HttpStatus.gone ||
+          (reason != null && _expiredProviderReasons.contains(reason));
+
+      if (!accepted && logFailuresToStderr) {
+        stderr.writeln(
+          '[WATSafe WebPush] Rejected by push gateway host=$host '
+          'status=$code reason=${reason ?? "unknown"} '
+          'expired=$expired incidentId=${incidentId ?? "none"}',
+        );
+      }
+
       return WebPushDeliveryResult(
-        delivered: code >= 200 && code < 300,
+        delivered: accepted,
         statusCode: code,
-        subscriptionExpired:
-            code == HttpStatus.notFound || code == HttpStatus.gone,
+        subscriptionExpired: expired,
+        vapidMismatch: vapidMismatch,
+        providerReason: reason,
+        endpointHost: host,
+        errorDetail: accepted ? null : reason,
       );
     } catch (error) {
+      final safeErr = sanitizeDiagnosticText('$error');
+      if (logFailuresToStderr) {
+        stderr.writeln(
+          '[WATSafe WebPush] Network failure host=$host '
+          'reason=$safeErr incidentId=${incidentId ?? "none"}',
+        );
+      }
       return WebPushDeliveryResult(
         delivered: false,
         statusCode: 0,
-        errorDetail: '$error',
+        providerReason: 'NETWORK_ERROR',
+        endpointHost: host,
+        errorDetail: safeErr,
       );
     } finally {
       client.close(force: true);

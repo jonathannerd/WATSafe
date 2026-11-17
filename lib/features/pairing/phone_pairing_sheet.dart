@@ -357,9 +357,9 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
     setState(() {
       _isBusy = false;
       if (res.delivered) {
-        _infoMessage = 'Test alert sent! Check your phone.';
+        _infoMessage = res.message;
       } else {
-        _errorMessage = 'Could not deliver the test alert right now. Check your connection and try again.';
+        _errorMessage = res.message.isNotEmpty ? res.message : 'Could not deliver the test alert right now. Check your connection and try again.';
       }
     });
   }
@@ -1035,7 +1035,11 @@ class _ConnectedPhoneDetailsBodyState
     setState(() {
       _isBusy = false;
       _feedbackIsError = !res.delivered;
-      _feedbackMessage = res.delivered ? 'Test alert sent to your phone.' : 'Could not reach your phone right now. Check your connection and try again.';
+      _feedbackMessage = res.message.isNotEmpty
+          ? res.message
+          : (res.delivered
+                ? 'Push service accepted test alert — awaiting phone receipt.'
+                : 'Could not reach your phone right now. Check your connection and try again.');
     });
   }
 

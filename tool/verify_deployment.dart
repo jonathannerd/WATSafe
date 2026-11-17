@@ -191,6 +191,21 @@ class DeploymentVerifier {
         );
       }
 
+      final vapidSubject = (healthJson['vapidSubject'] as String? ?? '').trim();
+      if (vapidSubject.isNotEmpty &&
+          !VapidKeyPair.isValidPublicSubject(vapidSubject)) {
+        return DeploymentVerificationResult(
+          ok: false,
+          endpointUrl: baseUrl,
+          storageBackend: storageBackend,
+          storageDurable: storageDurable,
+          vapidPublicKey: vapidPublicKey,
+          message:
+              'GET $baseUrl/v1/health reported an invalid VAPID subject "$vapidSubject" '
+              '(Apple Web Push rejects .local/.localhost/private subjects with 403 BadJwtToken).',
+        );
+      }
+
       // 2. Verify /manifest.webmanifest
       final manifestResp = await _request(
         client,

@@ -64,7 +64,7 @@ class CompanionPwaAssets {
   }
 
   static const String serviceWorkerJs = r'''
-const SHELL_CACHE = 'watsafe-shell-2026.11.16-v2';
+const SHELL_CACHE = 'watsafe-shell-2026.11.16-v3';
 const SHELL_URLS = [
   '/companion',
   '/manifest.webmanifest',
@@ -355,24 +355,39 @@ self.addEventListener('pushsubscriptionchange', (event) => {
       const auth = arrayBufferToBase64UrlSw(sub.getKey('auth'));
       if (!p256dh || !auth) return;
       try {
-        const res = await fetch('/v1/companion/push-subscription', {
+        const postSub = async (targetSub, vapidKey) => fetch('/v1/companion/push-subscription', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer ' + saved.companionToken
           },
           body: JSON.stringify({
-            endpoint: sub.endpoint,
-            p256dh: p256dh,
-            auth: auth,
+            endpoint: targetSub.endpoint,
+            p256dh: arrayBufferToBase64UrlSw(targetSub.getKey('p256dh')),
+            auth: arrayBufferToBase64UrlSw(targetSub.getKey('auth')),
+            subscribedVapidPublicKey: vapidKey || undefined,
             httpsReady: true,
             homeScreenInstalled: true,
             notificationPermission: 'granted'
           })
         });
+        let res = await postSub(sub, saved.vapidPublicKey);
+        if (res && res.status === 409 && res.headers && res.headers.get('x-watsafe-companion') === '1') {
+          const mismatchBody = await res.json().catch(() => null);
+          if (mismatchBody && mismatchBody.vapidPublicKey && self.registration && self.registration.pushManager) {
+            saved.vapidPublicKey = mismatchBody.vapidPublicKey;
+            try { await sub.unsubscribe(); } catch (_) {}
+            sub = await self.registration.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8ArraySw(saved.vapidPublicKey)
+            });
+            res = await postSub(sub, saved.vapidPublicKey);
+          }
+        }
         if (isAuthenticWatSafeResponse(res)) {
           saved.pushEndpoint = sub.endpoint;
           saved.backendRegisteredEndpoint = sub.endpoint;
+          saved.subscribedVapidPublicKey = saved.vapidPublicKey || null;
           saved.backendPushRegistered = true;
           await writeIdbStateSw(saved);
           const windowClients = await self.clients.matchAll({
@@ -429,6 +444,22 @@ self.addEventListener('push', (event) => {
           isTest: payload.isTest
         }
       }),
+      (async () => {
+        if (!payload.incidentId) return;
+        try {
+          const saved = await readIdbStateSw();
+          if (saved && saved.companionToken) {
+            await fetch('/v1/companion/events/' + encodeURIComponent(payload.incidentId) + '/ack', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + saved.companionToken
+              },
+              body: JSON.stringify({ source: 'push_sw' })
+            });
+          }
+        } catch (_) {}
+      })(),
       self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
         for (const client of windowClients) {
           client.postMessage({
@@ -869,6 +900,11 @@ self.addEventListener('notificationclick', (event) => {
       return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     }
 
+    function getSubscriptionApplicationServerKey(sub) {
+      if (!sub || !sub.options || !sub.options.applicationServerKey) return '';
+      return arrayBufferToBase64Url(sub.options.applicationServerKey);
+    }
+
     let state = {
       companionToken: null,
       pairingSessionId: null,
@@ -877,11 +913,15 @@ self.addEventListener('notificationclick', (event) => {
       hostDisplayName: 'My Laptop',
       phoneDisplayName: detectPhoneName(),
       vapidPublicKey: null,
+      subscribedVapidPublicKey: null,
       httpsPublicOrigin: null,
       permanentHttpsOrigin: null,
       pushEndpoint: null,
       backendRegisteredEndpoint: null,
       backendPushRegistered: false,
+      pushSubscriptionNeedsRenewal: false,
+      pushRepairNeeded: false,
+      lastPushErrorCode: null,
       handoffCode: null,
       handoffExpiresAtUtc: null,
       tokenRefreshedAtIso: null,
@@ -1065,6 +1105,7 @@ self.addEventListener('notificationclick', (event) => {
     let activeLookupCode = '';
     let activeTab = 'Home';
     let selectedIncidentId = pendingEventId || null;
+    let pendingTestIncidentId = null;
     let swRegistration = null;
     let activePushSubscription = null;
     let connState = 'connecting'; // 'connecting' | 'connected' | 'laptop_offline' | 'service_unavailable'
@@ -1159,17 +1200,31 @@ self.addEventListener('notificationclick', (event) => {
         permission = Notification.permission; // 'default' | 'granted' | 'denied'
       }
 
+      const subAppKey = getSubscriptionApplicationServerKey(activePushSubscription) || state.subscribedVapidPublicKey || '';
+      const vapidKeyMismatch = Boolean(
+        subAppKey &&
+        state.vapidPublicKey &&
+        subAppKey !== state.vapidPublicKey
+      );
+      const needsPushRenewal = Boolean(
+        vapidKeyMismatch ||
+        state.pushSubscriptionNeedsRenewal ||
+        state.pushRepairNeeded
+      );
+
       const subscribedOk = Boolean(
         hasPushApis &&
         permission === 'granted' &&
         activePushSubscription &&
-        state.pushEndpoint
+        state.pushEndpoint &&
+        !vapidKeyMismatch
       );
 
       const backendOk = Boolean(
         subscribedOk &&
         state.backendPushRegistered &&
-        state.backendRegisteredEndpoint === state.pushEndpoint
+        state.backendRegisteredEndpoint === state.pushEndpoint &&
+        !needsPushRenewal
       );
 
       return {
@@ -1182,6 +1237,8 @@ self.addEventListener('notificationclick', (event) => {
         notificationPermission: permission,
         pushSubscribed: subscribedOk,
         backendPushRegistered: backendOk,
+        vapidKeyMismatch: vapidKeyMismatch,
+        needsPushRenewal: needsPushRenewal,
         notificationsEnabled: httpsOk && homeScreenOk && permission === 'granted' && subscribedOk && backendOk
       };
     }
@@ -1228,11 +1285,48 @@ self.addEventListener('notificationclick', (event) => {
       } catch (_) {}
     }
 
+    async function acknowledgeEventReceipt(incidentId, source) {
+      if (!incidentId || !state.companionToken) return;
+      try {
+        const res = await fetch('/v1/companion/events/' + encodeURIComponent(incidentId) + '/ack', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + state.companionToken
+          },
+          body: JSON.stringify({ source: source || 'companion_poll' })
+        });
+        if (isAuthenticWatSafeHeader(res) && res.ok) {
+          const ackBody = await res.json();
+          const idx = state.events.findIndex(e => e.incidentId === incidentId);
+          if (idx >= 0) {
+            state.events[idx].receiptConfirmed = true;
+            state.events[idx].receiptConfirmedAtUtc = ackBody.receiptConfirmedAtUtc || new Date().toISOString();
+            state.events[idx].receiptSource = ackBody.receiptSource || source || 'companion_poll';
+            saveState();
+          }
+          if (pendingTestIncidentId && pendingTestIncidentId === incidentId) {
+            pendingTestIncidentId = null;
+            showInfo('Phone receipt confirmed — test notification arrived on this phone.');
+          }
+        }
+      } catch (_) {}
+    }
+
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', async (ev) => {
         if (!ev.data) return;
         if (ev.data.type === 'PUSH_RECEIVED' && ev.data.incidentId) {
           state.seenIds[ev.data.incidentId] = true;
+          const idx = state.events.findIndex(e => e.incidentId === ev.data.incidentId);
+          if (idx >= 0) {
+            state.events[idx].receiptConfirmed = true;
+            state.events[idx].receiptSource = 'push_sw';
+          }
+          if (pendingTestIncidentId && pendingTestIncidentId === ev.data.incidentId) {
+            pendingTestIncidentId = null;
+            showInfo('Phone receipt confirmed — test notification arrived on this phone.');
+          }
           saveState();
           triggerImmediateReconnect();
         }
@@ -1245,6 +1339,8 @@ self.addEventListener('notificationclick', (event) => {
           state.pushEndpoint = ev.data.endpoint;
           state.backendRegisteredEndpoint = ev.data.endpoint;
           state.backendPushRegistered = true;
+          state.pushSubscriptionNeedsRenewal = false;
+          state.pushRepairNeeded = false;
           saveState();
           await ensureServiceWorkerAndInspectSubscription();
           renderConnectedUi();
@@ -1294,30 +1390,45 @@ self.addEventListener('notificationclick', (event) => {
       await ensureServiceWorkerAndInspectSubscription();
       let r = evaluateReadiness();
 
-      // Automatic push subscription renewal when permission is already granted!
+      // Automatic push subscription renewal & VAPID key mismatch recovery while keeping pairing intact!
       if (r.httpsReady && r.homeScreenInstalled && r.notificationPermission === 'granted') {
-        if (!activePushSubscription && swRegistration && swRegistration.pushManager) {
-          if (!state.vapidPublicKey) {
-            await fetchServerRuntimeHealth();
-          }
-          if (state.vapidPublicKey) {
-            try {
-              activePushSubscription = await swRegistration.pushManager.subscribe({
-                userVisibleOnly: true,
-                applicationServerKey: urlBase64ToUint8Array(state.vapidPublicKey)
-              });
-              state.pushEndpoint = activePushSubscription ? activePushSubscription.endpoint : null;
-              saveState();
-              r = evaluateReadiness();
-            } catch (_) {}
+        if (!state.vapidPublicKey) {
+          await fetchServerRuntimeHealth();
+          r = evaluateReadiness();
+        }
+        if (activePushSubscription && (r.vapidKeyMismatch || state.pushSubscriptionNeedsRenewal)) {
+          try { await activePushSubscription.unsubscribe(); } catch (_) {}
+          activePushSubscription = null;
+          state.pushEndpoint = null;
+          state.backendRegisteredEndpoint = null;
+          state.backendPushRegistered = false;
+          state.subscribedVapidPublicKey = null;
+          state.pushSubscriptionNeedsRenewal = false;
+          saveState();
+          r = evaluateReadiness();
+        }
+        if (!activePushSubscription && swRegistration && swRegistration.pushManager && state.vapidPublicKey) {
+          try {
+            activePushSubscription = await swRegistration.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8Array(state.vapidPublicKey)
+            });
+            state.pushEndpoint = activePushSubscription ? activePushSubscription.endpoint : null;
+            state.pushRepairNeeded = false;
+            saveState();
+            r = evaluateReadiness();
+          } catch (_) {
+            state.pushRepairNeeded = true;
+            saveState();
+            r = evaluateReadiness();
           }
         }
         if (activePushSubscription) {
           const p256dh = arrayBufferToBase64Url(activePushSubscription.getKey('p256dh'));
           const auth = arrayBufferToBase64Url(activePushSubscription.getKey('auth'));
-          if (p256dh && auth && (!state.backendPushRegistered || state.backendRegisteredEndpoint !== activePushSubscription.endpoint)) {
+          if (p256dh && auth && (!state.backendPushRegistered || state.backendRegisteredEndpoint !== activePushSubscription.endpoint || r.needsPushRenewal)) {
             try {
-              await registerPushSubscriptionWithBackend(activePushSubscription, p256dh, auth);
+              await registerPushSubscriptionWithBackend(activePushSubscription, p256dh, auth, true);
               return;
             } catch (_) {}
           }
@@ -1326,7 +1437,13 @@ self.addEventListener('notificationclick', (event) => {
 
       const channel = r.notificationsEnabled
         ? 'web_push'
-        : (!r.httpsReady ? 'needs_https' : (!r.homeScreenInstalled ? 'needs_home_screen' : (r.notificationPermission === 'denied' ? 'denied' : 'foreground_only')));
+        : (!r.httpsReady
+            ? 'needs_https'
+            : (!r.homeScreenInstalled
+                ? 'needs_home_screen'
+                : (r.notificationPermission === 'denied'
+                    ? 'denied'
+                    : (r.needsPushRenewal ? 'needs_push_renewal' : 'foreground_only'))));
 
       try {
         const res = await fetch('/v1/companion/status', {
@@ -1341,6 +1458,7 @@ self.addEventListener('notificationclick', (event) => {
             homeScreenInstalled: r.homeScreenInstalled,
             notificationPermission: r.notificationPermission,
             pushSubscribed: r.pushSubscribed,
+            subscribedVapidPublicKey: getSubscriptionApplicationServerKey(activePushSubscription) || state.subscribedVapidPublicKey || undefined,
             notificationsEnabled: r.notificationsEnabled,
             notificationChannel: channel
           })
@@ -1352,6 +1470,8 @@ self.addEventListener('notificationclick', (event) => {
         if (isAuthenticWatSafeHeader(res) && res.ok) {
           const updated = await res.json();
           state.backendPushRegistered = Boolean(updated.backendPushRegistered);
+          state.pushSubscriptionNeedsRenewal = Boolean(updated.pushSubscriptionNeedsRenewal);
+          state.lastPushErrorCode = updated.lastPushErrorCode || null;
           if (updated.vapidPublicKey) state.vapidPublicKey = updated.vapidPublicKey;
           updateHostPresenceFromPayload(updated);
           consecutiveFailures = 0;
@@ -1361,8 +1481,9 @@ self.addEventListener('notificationclick', (event) => {
       renderConnectedUi();
     }
 
-    async function registerPushSubscriptionWithBackend(sub, p256dh, auth) {
+    async function registerPushSubscriptionWithBackend(sub, p256dh, auth, allowMismatchRetry) {
       const r = evaluateReadiness();
+      const subAppKey = getSubscriptionApplicationServerKey(sub) || state.vapidPublicKey || '';
       const res = await fetch('/v1/companion/push-subscription', {
         method: 'POST',
         headers: {
@@ -1373,6 +1494,7 @@ self.addEventListener('notificationclick', (event) => {
           endpoint: sub.endpoint,
           p256dh: p256dh,
           auth: auth,
+          subscribedVapidPublicKey: subAppKey || undefined,
           platform: detectPlatformLabel(),
           httpsReady: r.httpsReady,
           homeScreenInstalled: r.homeScreenInstalled,
@@ -1387,12 +1509,33 @@ self.addEventListener('notificationclick', (event) => {
         throw new Error('WATSafe service is temporarily unavailable. Retry in a moment.');
       }
       const body = await res.json();
+      if (res.status === 409 && body && body.error === 'VAPID_KEY_MISMATCH' && body.vapidPublicKey && allowMismatchRetry !== false) {
+        state.vapidPublicKey = body.vapidPublicKey;
+        try { await sub.unsubscribe(); } catch (_) {}
+        activePushSubscription = null;
+        if (swRegistration && swRegistration.pushManager) {
+          const renewed = await swRegistration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(state.vapidPublicKey)
+          });
+          activePushSubscription = renewed;
+          const nextP256dh = arrayBufferToBase64Url(renewed.getKey('p256dh'));
+          const nextAuth = arrayBufferToBase64Url(renewed.getKey('auth'));
+          if (nextP256dh && nextAuth) {
+            return await registerPushSubscriptionWithBackend(renewed, nextP256dh, nextAuth, false);
+          }
+        }
+      }
       if (!res.ok) {
         throw new Error(body.message || 'Server rejected push subscription registration.');
       }
       state.pushEndpoint = sub.endpoint;
       state.backendRegisteredEndpoint = sub.endpoint;
+      state.subscribedVapidPublicKey = subAppKey || state.vapidPublicKey || null;
       state.backendPushRegistered = Boolean(body.backendPushRegistered);
+      state.pushSubscriptionNeedsRenewal = false;
+      state.pushRepairNeeded = false;
+      state.lastPushErrorCode = null;
       state.lastConnectedAtIso = new Date().toISOString();
       saveState();
       renderConnectedUi();
@@ -1698,8 +1841,13 @@ self.addEventListener('notificationclick', (event) => {
         });
         const readyReg = await navigator.serviceWorker.ready;
 
-        // 3. Create or reuse Web Push subscription
+        // 3. Create or refresh Web Push subscription (replace stale/mismatched subscription cleanly)
         let sub = await readyReg.pushManager.getSubscription();
+        const existingKey = getSubscriptionApplicationServerKey(sub);
+        if (sub && (state.pushSubscriptionNeedsRenewal || state.pushRepairNeeded || (existingKey && existingKey !== state.vapidPublicKey))) {
+          try { await sub.unsubscribe(); } catch (_) {}
+          sub = null;
+        }
         if (!sub) {
           sub = await readyReg.pushManager.subscribe({
             userVisibleOnly: true,
@@ -1715,7 +1863,7 @@ self.addEventListener('notificationclick', (event) => {
         }
 
         // 4. Register subscription with backend for this paired device
-        await registerPushSubscriptionWithBackend(sub, p256dh, auth);
+        await registerPushSubscriptionWithBackend(sub, p256dh, auth, true);
         showInfo('Notifications enabled! Pairing and notifications are saved permanently — tap "Send test alert" to verify.');
       } catch (err) {
         showError((err && err.message) ? err.message : 'Could not finish notification setup. Please try again.');
@@ -1770,12 +1918,37 @@ self.addEventListener('notificationclick', (event) => {
           showError(body.message || 'Could not send test alert.');
           return;
         }
-        if (delaySeconds > 0) {
-          showInfo('Test alert delivered! Tap the notification or check Activity to view the event and laptop location.');
+        const pushAccepted = Boolean(
+          body.pushAccepted ||
+          Number(body.pushAcceptedCount ?? body.pushDispatchedCount ?? 0) > 0
+        );
+        if (body.receiptConfirmed) {
+          pendingTestIncidentId = null;
+          showInfo('Phone receipt confirmed — test notification arrived on this phone.');
+        } else if (pushAccepted) {
+          pendingTestIncidentId = body.incidentId || null;
+          showInfo(
+            'Push service accepted test alert — waiting for phone receipt (check your lock screen or notification banner).'
+          );
         } else {
-          showInfo(body.pushDispatchedCount > 0
-            ? 'Test alert sent via Web Push! Check your notification banner or open Activity.'
-            : 'Test alert recorded in Activity (complete notification setup to receive lock-screen banners).');
+          pendingTestIncidentId = null;
+          showInfo('');
+          const failedCount = Number(body.pushFailedCount || 0);
+          const reasons = Array.isArray(body.pushFailureReasons) && body.pushFailureReasons.length
+            ? (' (' + body.pushFailureReasons.join(', ') + ')')
+            : '';
+          if (failedCount > 0) {
+            showError(
+              'Push provider rejected the test alert' +
+                reasons +
+                '. Recorded in Activity only — tap Repair notifications below to refresh push delivery.'
+            );
+          } else {
+            showError(
+              'Notifications are not active on this phone yet — test alert was recorded in Activity only. Complete the notification step below.'
+            );
+          }
+          await syncCompanionReadinessToBackend();
         }
         await pollAlerts();
       } catch (_) {
@@ -2028,11 +2201,22 @@ self.addEventListener('notificationclick', (event) => {
           els.nextStepBox.classList.remove('hidden');
           els.enableNotifBtn.textContent = 'Enable notifications';
           els.enableNotifBtn.classList.remove('hidden');
-        } else if (!r.pushSubscribed || !r.backendPushRegistered) {
-          els.homeNotifStatusText.textContent =
-            'Notification permission is granted — tap below to finish registering push delivery with WATSafe.';
-          els.enableNotifBtn.textContent = 'Complete push registration';
-          els.enableNotifBtn.classList.remove('hidden');
+        } else if (r.needsPushRenewal || !r.pushSubscribed || !r.backendPushRegistered) {
+          if (r.needsPushRenewal || state.lastPushErrorCode) {
+            els.homeNotifStatusText.textContent =
+              'Your phone pairing is active, but lock-screen push delivery needs a one-tap refresh.';
+            els.nextStepBox.innerHTML =
+              '<strong>Refresh push notifications</strong>' +
+              '<p style="margin:6px 0 0 0;font-size:13.5px;">Tap <strong>Repair notifications</strong> once below to renew your push subscription. You do not need to reinstall WATSafe or scan a new QR code.</p>';
+            els.nextStepBox.classList.remove('hidden');
+            els.enableNotifBtn.textContent = 'Repair notifications';
+            els.enableNotifBtn.classList.remove('hidden');
+          } else {
+            els.homeNotifStatusText.textContent =
+              'Notification permission is granted — tap below to finish registering push delivery with WATSafe.';
+            els.enableNotifBtn.textContent = 'Complete push registration';
+            els.enableNotifBtn.classList.remove('hidden');
+          }
         } else {
           els.homeNotifStatusText.textContent =
             'Make sure your phone is running iOS 16.4+ or a modern Android browser to enable Web Push.';
@@ -2126,8 +2310,12 @@ self.addEventListener('notificationclick', (event) => {
               '<a class="btn btn-primary" target="_blank" rel="noopener" href="' + mapsHref + '">Open in Maps</a>' +
               '</div>';
           }
+          const receiptBadge = ev.receiptConfirmed
+            ? '<span class="pill pill-ok" style="margin-left:8px;">Phone receipt confirmed</span>'
+            : '<span class="pill pill-warn" style="margin-left:8px;">Awaiting phone push receipt</span>';
           els.eventDetailCard.innerHTML =
             '<span class="pill ' + (ev.isTest ? 'pill-warn' : 'pill-alert') + '">' + (ev.isTest ? 'Test alert' : 'Alarm triggered') + '</span>' +
+            receiptBadge +
             '<h2 style="margin-top:10px;">' + escapeHtml(ev.hostDisplayName || state.hostDisplayName) + '</h2>' +
             '<p style="margin-bottom:6px;">' + escapeHtml(formatTime(ev.triggeredAtUtc)) + '</p>' +
             '<p>' + escapeHtml(ev.triggerSummary || 'Alarm triggered') + '</p>' + locHtml;
@@ -2176,6 +2364,9 @@ self.addEventListener('notificationclick', (event) => {
           const item = await res.json();
           state.seenIds[item.incidentId] = true;
           state.events.unshift(item);
+          if (!item.receiptConfirmed) {
+            acknowledgeEventReceipt(item.incidentId, 'companion_poll');
+          }
           saveState();
           renderConnectedUi();
         }
@@ -2265,6 +2456,12 @@ self.addEventListener('notificationclick', (event) => {
         if (typeof data.backendPushRegistered === 'boolean') {
           state.backendPushRegistered = data.backendPushRegistered;
         }
+        const prevNeedsRenewal = state.pushSubscriptionNeedsRenewal;
+        state.pushSubscriptionNeedsRenewal = Boolean(data.pushSubscriptionNeedsRenewal);
+        state.lastPushErrorCode = data.lastPushErrorCode || null;
+        if (state.pushSubscriptionNeedsRenewal && !prevNeedsRenewal && activePushSubscription) {
+          syncCompanionReadinessToBackend();
+        }
         updateHostPresenceFromPayload(data);
 
         const incoming = Array.isArray(data.alerts) ? data.alerts : [];
@@ -2278,6 +2475,13 @@ self.addEventListener('notificationclick', (event) => {
             state.seenIds[item.incidentId] = true;
             state.events.unshift(item);
             triggerFallbackForegroundNotification(item);
+          }
+          // Only auto-acknowledge via foreground poll when no background push test is waiting on push_sw receipt
+          if (!item.receiptConfirmed && item.incidentId !== pendingTestIncidentId) {
+            acknowledgeEventReceipt(item.incidentId, 'companion_poll');
+          } else if (item.receiptConfirmed && pendingTestIncidentId && item.incidentId === pendingTestIncidentId) {
+            pendingTestIncidentId = null;
+            showInfo('Phone receipt confirmed — test notification arrived on this phone.');
           }
         }
         if ((data.latestSeq || 0) > state.lastSeq) state.lastSeq = data.latestSeq;

@@ -1600,10 +1600,41 @@ class AlarmController extends ChangeNotifier {
     try {
       _notificationStatus = await _notificationAdapter.getStatus();
       _pairedDevices = await _notificationAdapter.listPairedDevices();
+      await _reconcileConfirmedPhoneReceipts();
     } catch (_) {
       // Non-fatal
     }
     notifyListeners();
+  }
+
+  Future<void> _reconcileConfirmedPhoneReceipts() async {
+    for (final device in _pairedDevices) {
+      final receiptId = device.lastReceiptIncidentId;
+      if (receiptId == null || receiptId.isEmpty) {
+        continue;
+      }
+      final existing = _findIncidentById(receiptId);
+      if (existing == null) {
+        continue;
+      }
+      final prevStatus = existing.remoteNotificationStatus;
+      if (prevStatus.startsWith('Phone receipt confirmed')) {
+        continue;
+      }
+      final sourceNote = device.lastReceiptSource == 'push_sw'
+          ? ' (push notification received)'
+          : '';
+      final updated = existing.copyWith(
+        remoteNotificationAttempted: true,
+        remoteNotificationStatus:
+            'Phone receipt confirmed on "${device.displayName}"$sourceNote',
+      );
+      if (_activeIncident?.id == updated.id) {
+        _activeIncident = updated;
+      }
+      _replaceIncidentInMemory(updated);
+      await _updateIncidentSafely(updated);
+    }
   }
 
   /// Configures an optional custom backend relay endpoint URL (under Advanced).
@@ -2138,7 +2169,7 @@ class AlarmController extends ChangeNotifier {
       // a location update too so the relay event definitely has it attached.
       final postDispatch = _findIncidentById(incident.id);
       final mutable = _notificationAdapter;
-      if (dispatchResult.delivered &&
+      if ((dispatchResult.delivered || dispatchResult.relayRecorded) &&
           postDispatch != null &&
           postDispatch.location != null &&
           mutable is MutableRemoteNotificationAdapter) {
