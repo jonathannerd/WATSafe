@@ -1828,6 +1828,111 @@ class PostgresRelayStore implements RelayStore {
   final String _redactedSummary;
   final String _tablePrefix;
   Connection? _connection;
+  Timer? _idleDisconnectTimer;
+
+  static const Duration _idleConnectionTtl = Duration(seconds: 60);
+
+  // Write-through in-memory cache so steady-state presence heartbeats and idle
+  // companion polls keep the HTTP container warm without preventing serverless
+  // PostgreSQL (e.g. Neon) from scaling compute to zero when state is unchanged.
+  final Map<String, RelaySessionRecord> _sessionCacheById =
+      <String, RelaySessionRecord>{};
+  final Map<String, String> _sessionIdByHostToken = <String, String>{};
+  final Map<String, String> _sessionStructuralFingerprint = <String, String>{};
+  final Map<String, CompanionBondRecord> _bondCacheById =
+      <String, CompanionBondRecord>{};
+  final Map<String, List<CompanionBondRecord>> _bondsCacheBySessionId =
+      <String, List<CompanionBondRecord>>{};
+  final Map<String, String> _bondStructuralFingerprint = <String, String>{};
+  final Map<String, int> _latestSeqCacheBySessionId = <String, int>{};
+
+  static String _sessionSignature(RelaySessionRecord s) {
+    return jsonEncode(<Object?>[
+      s.pairingSessionId,
+      s.hostDisplayName,
+      s.hostToken,
+      s.hostDeviceId,
+      s.activePairingCode,
+      s.codeExpiresAtUtc?.toIso8601String(),
+      s.failedCodeAttempts,
+      s.hostDisconnectedAtUtc?.toIso8601String(),
+      s.hostProtectionState,
+    ]);
+  }
+
+  static String _bondSignature(CompanionBondRecord b) {
+    return jsonEncode(<Object?>[
+      b.bondId,
+      b.pairingSessionId,
+      b.deviceId,
+      b.displayName,
+      b.platform,
+      b.companionToken,
+      b.previousCompanionToken,
+      b.previousTokenGraceUntilUtc?.toIso8601String(),
+      b.tokenRefreshedAtUtcIso,
+      b.pairedAtUtcIso,
+      b.connected,
+      b.pushChannelReady,
+      b.notificationsEnabled,
+      b.notificationChannel,
+      b.httpsReady,
+      b.homeScreenInstalled,
+      b.notificationPermission,
+      b.pushSubscribed,
+      b.backendPushRegistered,
+      b.pushToken,
+      b.webPushEndpoint,
+      b.webPushP256dh,
+      b.webPushAuth,
+      b.activeHandoffCode,
+      b.handoffExpiresAtUtc?.toIso8601String(),
+      b.revokedAtUtcIso,
+    ]);
+  }
+
+  void _cacheLoadedSession(RelaySessionRecord s) {
+    _sessionCacheById[s.pairingSessionId] = s;
+    _sessionIdByHostToken[s.hostToken] = s.pairingSessionId;
+    _sessionStructuralFingerprint[s.pairingSessionId] = _sessionSignature(s);
+  }
+
+  void _cacheLoadedBond(CompanionBondRecord b) {
+    _bondCacheById[b.bondId] = b;
+    _bondStructuralFingerprint[b.bondId] = _bondSignature(b);
+    final list = _bondsCacheBySessionId[b.pairingSessionId];
+    if (list != null) {
+      final idx = list.indexWhere((item) => item.bondId == b.bondId);
+      if (b.isRevoked) {
+        if (idx >= 0) {
+          list.removeAt(idx);
+        }
+      } else if (idx >= 0) {
+        list[idx] = b;
+      } else {
+        list.add(b);
+      }
+    }
+  }
+
+  void _scheduleIdleDisconnect() {
+    _idleDisconnectTimer?.cancel();
+    _idleDisconnectTimer = Timer(_idleConnectionTtl, () {
+      unawaited(_closeConnectionOnly());
+    });
+  }
+
+  Future<void> _closeConnectionOnly() async {
+    _idleDisconnectTimer?.cancel();
+    _idleDisconnectTimer = null;
+    final conn = _connection;
+    _connection = null;
+    if (conn != null && conn.isOpen) {
+      try {
+        await conn.close();
+      } catch (_) {}
+    }
+  }
 
   String get _sessionsTable => '${_tablePrefix}pairing_sessions';
   String get _bondsTable => '${_tablePrefix}companion_bonds';
@@ -1841,6 +1946,7 @@ class PostgresRelayStore implements RelayStore {
   String get redactedDescription => _redactedSummary;
 
   Future<Connection> _conn() async {
+    _idleDisconnectTimer?.cancel();
     final existing = _connection;
     if (existing != null && existing.isOpen) {
       return existing;
@@ -1853,24 +1959,32 @@ class PostgresRelayStore implements RelayStore {
   Future<T> _withConn<T>(Future<T> Function(Connection conn) action) async {
     final first = await _conn();
     try {
-      return await action(first);
+      final result = await action(first);
+      _scheduleIdleDisconnect();
+      return result;
     } on SocketException {
-      await close();
+      await _closeConnectionOnly();
     } on ServerException catch (e) {
       // Postgres 57P01..57P03 / 08xxx indicate terminated or dropped connection.
       final code = e.code ?? '';
       if (!code.startsWith('57P') && !code.startsWith('08')) {
+        _scheduleIdleDisconnect();
         rethrow;
       }
-      await close();
+      await _closeConnectionOnly();
     } on PgException {
       if (first.isOpen) {
+        _scheduleIdleDisconnect();
         rethrow;
       }
-      await close();
+      await _closeConnectionOnly();
     }
     final reopened = await _conn();
-    return action(reopened);
+    try {
+      return await action(reopened);
+    } finally {
+      _scheduleIdleDisconnect();
+    }
   }
 
   Future<Result> _exec(Object query, {Object? parameters}) =>
@@ -2031,11 +2145,7 @@ class PostgresRelayStore implements RelayStore {
 
   @override
   Future<void> close() async {
-    final conn = _connection;
-    _connection = null;
-    if (conn != null && conn.isOpen) {
-      await conn.close();
-    }
+    await _closeConnectionOnly();
   }
 
   @override
@@ -2184,6 +2294,12 @@ class PostgresRelayStore implements RelayStore {
 
   @override
   Future<void> saveSession(RelaySessionRecord session) async {
+    _sessionCacheById[session.pairingSessionId] = session;
+    _sessionIdByHostToken[session.hostToken] = session.pairingSessionId;
+    final nextFp = _sessionSignature(session);
+    if (_sessionStructuralFingerprint[session.pairingSessionId] == nextFp) {
+      return;
+    }
     await _exec(
       Sql.named('''
         INSERT INTO $_sessionsTable (
@@ -2235,10 +2351,15 @@ class PostgresRelayStore implements RelayStore {
         'created': session.createdAtUtc,
       },
     );
+    _sessionStructuralFingerprint[session.pairingSessionId] = nextFp;
   }
 
   @override
   Future<RelaySessionRecord?> findSessionById(String pairingSessionId) async {
+    final cached = _sessionCacheById[pairingSessionId];
+    if (cached != null) {
+      return cached;
+    }
     final rows = await _exec(
       Sql.named(
         'SELECT * FROM $_sessionsTable WHERE pairing_session_id = @id LIMIT 1',
@@ -2248,11 +2369,20 @@ class PostgresRelayStore implements RelayStore {
     if (rows.isEmpty) {
       return null;
     }
-    return _rowToSession(rows.first.toColumnMap());
+    final loaded = _rowToSession(rows.first.toColumnMap());
+    _cacheLoadedSession(loaded);
+    return loaded;
   }
 
   @override
   Future<RelaySessionRecord?> findSessionByHostToken(String hostToken) async {
+    final cachedId = _sessionIdByHostToken[hostToken];
+    if (cachedId != null) {
+      final cached = _sessionCacheById[cachedId];
+      if (cached != null && cached.hostToken == hostToken) {
+        return cached;
+      }
+    }
     final rows = await _exec(
       Sql.named(
         'SELECT * FROM $_sessionsTable WHERE host_token = @token LIMIT 1',
@@ -2262,13 +2392,20 @@ class PostgresRelayStore implements RelayStore {
     if (rows.isEmpty) {
       return null;
     }
-    return _rowToSession(rows.first.toColumnMap());
+    final loaded = _rowToSession(rows.first.toColumnMap());
+    _cacheLoadedSession(loaded);
+    return loaded;
   }
 
   @override
   Future<RelaySessionRecord?> findSessionByPairingCode(
     String normalizedCode,
   ) async {
+    for (final s in _sessionCacheById.values) {
+      if (s.activePairingCode == normalizedCode) {
+        return s;
+      }
+    }
     final rows = await _exec(
       Sql.named(
         'SELECT * FROM $_sessionsTable WHERE active_pairing_code = @code LIMIT 1',
@@ -2278,11 +2415,31 @@ class PostgresRelayStore implements RelayStore {
     if (rows.isEmpty) {
       return null;
     }
-    return _rowToSession(rows.first.toColumnMap());
+    final loaded = _rowToSession(rows.first.toColumnMap());
+    _cacheLoadedSession(loaded);
+    return loaded;
   }
 
   @override
   Future<void> saveCompanionBond(CompanionBondRecord bond) async {
+    _bondCacheById[bond.bondId] = bond;
+    final cachedList = _bondsCacheBySessionId[bond.pairingSessionId];
+    if (cachedList != null) {
+      final idx = cachedList.indexWhere((b) => b.bondId == bond.bondId);
+      if (bond.isRevoked) {
+        if (idx >= 0) {
+          cachedList.removeAt(idx);
+        }
+      } else if (idx >= 0) {
+        cachedList[idx] = bond;
+      } else {
+        cachedList.add(bond);
+      }
+    }
+    final nextFp = _bondSignature(bond);
+    if (_bondStructuralFingerprint[bond.bondId] == nextFp) {
+      return;
+    }
     await _exec(
       Sql.named('''
         INSERT INTO $_bondsTable (
@@ -2396,6 +2553,7 @@ class PostgresRelayStore implements RelayStore {
         'lastSeen': bond.lastSeenAtUtcIso,
       },
     );
+    _bondStructuralFingerprint[bond.bondId] = nextFp;
   }
 
   @override
@@ -2403,6 +2561,11 @@ class PostgresRelayStore implements RelayStore {
     String companionToken,
   ) async {
     final nowUtc = DateTime.now().toUtc();
+    for (final cached in _bondCacheById.values) {
+      if (cached.matchesCompanionToken(companionToken, nowUtc)) {
+        return cached;
+      }
+    }
     final rows = await _exec(
       Sql.named('''
         SELECT * FROM $_bondsTable
@@ -2422,13 +2585,21 @@ class PostgresRelayStore implements RelayStore {
     if (rows.isEmpty) {
       return null;
     }
-    return _rowToBond(rows.first.toColumnMap());
+    final loaded = _rowToBond(rows.first.toColumnMap());
+    _cacheLoadedBond(loaded);
+    return loaded;
   }
 
   @override
   Future<CompanionBondRecord?> findActiveBondByHandoffCode(
     String normalizedHandoffCode,
   ) async {
+    for (final cached in _bondCacheById.values) {
+      if (!cached.isRevoked &&
+          cached.activeHandoffCode == normalizedHandoffCode) {
+        return cached;
+      }
+    }
     final rows = await _exec(
       Sql.named('''
         SELECT * FROM $_bondsTable
@@ -2440,13 +2611,21 @@ class PostgresRelayStore implements RelayStore {
     if (rows.isEmpty) {
       return null;
     }
-    return _rowToBond(rows.first.toColumnMap());
+    final loaded = _rowToBond(rows.first.toColumnMap());
+    _cacheLoadedBond(loaded);
+    return loaded;
   }
 
   @override
   Future<List<CompanionBondRecord>> listActiveBondsForSession(
     String pairingSessionId,
   ) async {
+    final cached = _bondsCacheBySessionId[pairingSessionId];
+    if (cached != null) {
+      return cached
+          .where((b) => !b.isRevoked && b.pairingSessionId == pairingSessionId)
+          .toList(growable: false);
+    }
     final rows = await _exec(
       Sql.named('''
         SELECT * FROM $_bondsTable
@@ -2455,7 +2634,13 @@ class PostgresRelayStore implements RelayStore {
       '''),
       parameters: <String, Object?>{'sessionId': pairingSessionId},
     );
-    return rows.map((r) => _rowToBond(r.toColumnMap())).toList(growable: false);
+    final loaded = rows.map((r) => _rowToBond(r.toColumnMap())).toList();
+    _bondsCacheBySessionId[pairingSessionId] = loaded;
+    for (final bond in loaded) {
+      _bondCacheById[bond.bondId] = bond;
+      _bondStructuralFingerprint[bond.bondId] = _bondSignature(bond);
+    }
+    return List<CompanionBondRecord>.unmodifiable(loaded);
   }
 
   @override
@@ -2491,6 +2676,20 @@ class PostgresRelayStore implements RelayStore {
         'deviceId': deviceId,
       },
     );
+    final toRemoveIds = _bondCacheById.values
+        .where(
+          (b) =>
+              b.pairingSessionId == pairingSessionId && b.deviceId == deviceId,
+        )
+        .map((b) => b.bondId)
+        .toList(growable: false);
+    for (final id in toRemoveIds) {
+      _bondCacheById.remove(id);
+      _bondStructuralFingerprint.remove(id);
+    }
+    _bondsCacheBySessionId[pairingSessionId]?.removeWhere(
+      (b) => b.deviceId == deviceId,
+    );
     return res.affectedRows > 0;
   }
 
@@ -2502,6 +2701,21 @@ class PostgresRelayStore implements RelayStore {
       ),
       parameters: <String, Object?>{'sessionId': pairingSessionId},
     );
+    final removedSession = _sessionCacheById.remove(pairingSessionId);
+    if (removedSession != null) {
+      _sessionIdByHostToken.remove(removedSession.hostToken);
+    }
+    _sessionStructuralFingerprint.remove(pairingSessionId);
+    _bondsCacheBySessionId.remove(pairingSessionId);
+    _latestSeqCacheBySessionId.remove(pairingSessionId);
+    final bondIds = _bondCacheById.values
+        .where((b) => b.pairingSessionId == pairingSessionId)
+        .map((b) => b.bondId)
+        .toList(growable: false);
+    for (final id in bondIds) {
+      _bondCacheById.remove(id);
+      _bondStructuralFingerprint.remove(id);
+    }
   }
 
   @override
@@ -2520,7 +2734,7 @@ class PostgresRelayStore implements RelayStore {
     AlertLocationData? location,
     String locationStatus = 'notRequested',
   }) async {
-    return _withConn(
+    final result = await _withConn(
       (conn) => conn.runTx((tx) async {
         final existing = await tx.execute(
           Sql.named('''
@@ -2629,6 +2843,11 @@ class PostgresRelayStore implements RelayStore {
         );
       }),
     );
+    final prevSeq = _latestSeqCacheBySessionId[pairingSessionId] ?? 0;
+    if (result.alert.effectiveSeq > prevSeq) {
+      _latestSeqCacheBySessionId[pairingSessionId] = result.alert.effectiveSeq;
+    }
+    return result;
   }
 
   @override
@@ -2638,7 +2857,7 @@ class PostgresRelayStore implements RelayStore {
     AlertLocationData? location,
     required String locationStatus,
   }) async {
-    return _withConn(
+    final updated = await _withConn(
       (conn) => conn.runTx((tx) async {
         final seqRows = await tx.execute(
           Sql.named('''
@@ -2675,6 +2894,13 @@ class PostgresRelayStore implements RelayStore {
         return _rowToAlert(updatedRows.first.toColumnMap());
       }),
     );
+    if (updated != null) {
+      final prevSeq = _latestSeqCacheBySessionId[pairingSessionId] ?? 0;
+      if (updated.effectiveSeq > prevSeq) {
+        _latestSeqCacheBySessionId[pairingSessionId] = updated.effectiveSeq;
+      }
+    }
+    return updated;
   }
 
   @override
@@ -2704,6 +2930,10 @@ class PostgresRelayStore implements RelayStore {
     required String pairingSessionId,
     required int afterSeq,
   }) async {
+    final cachedMax = _latestSeqCacheBySessionId[pairingSessionId];
+    if (cachedMax != null && afterSeq >= cachedMax) {
+      return const <SessionAlertRecord>[];
+    }
     final rows = await _exec(
       Sql.named('''
         SELECT * FROM $_alertsTable
@@ -2716,13 +2946,29 @@ class PostgresRelayStore implements RelayStore {
         'afterSeq': afterSeq,
       },
     );
-    return rows
+    final list = rows
         .map((r) => _rowToAlert(r.toColumnMap()))
         .toList(growable: false);
+    if (list.isEmpty && cachedMax == null) {
+      _latestSeqCacheBySessionId[pairingSessionId] = afterSeq;
+    } else {
+      var maxSeen = cachedMax ?? 0;
+      for (final item in list) {
+        if (item.effectiveSeq > maxSeen) {
+          maxSeen = item.effectiveSeq;
+        }
+      }
+      _latestSeqCacheBySessionId[pairingSessionId] = maxSeen;
+    }
+    return list;
   }
 
   @override
   Future<int> latestAlertSeq(String pairingSessionId) async {
+    final cached = _latestSeqCacheBySessionId[pairingSessionId];
+    if (cached != null) {
+      return cached;
+    }
     final rows = await _exec(
       Sql.named('''
         SELECT COALESCE(MAX(GREATEST(alert_seq, updated_seq)), 0) AS max_seq
@@ -2731,7 +2977,9 @@ class PostgresRelayStore implements RelayStore {
       '''),
       parameters: <String, Object?>{'sessionId': pairingSessionId},
     );
-    return (rows.first.toColumnMap()['max_seq'] as num?)?.toInt() ?? 0;
+    final seq = (rows.first.toColumnMap()['max_seq'] as num?)?.toInt() ?? 0;
+    _latestSeqCacheBySessionId[pairingSessionId] = seq;
+    return seq;
   }
 }
 

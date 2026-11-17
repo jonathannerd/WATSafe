@@ -765,6 +765,7 @@ class ConfigurableRemoteNotificationService
       pairingUrl: pairingUrl,
       hostDisplayName: resolvedHostName,
     );
+    _nextAllowedBackgroundHostSyncAt = null;
 
     await _persistState();
     _startHostSyncTimerIfNeeded();
@@ -905,7 +906,18 @@ class ConfigurableRemoteNotificationService
     }
 
     _consecutiveHostSyncFailures = 0;
-    _nextAllowedBackgroundHostSyncAt = null;
+    final hasActiveInvite =
+        _activePairingInvitation != null &&
+        !_activePairingInvitation!.isExpiredAt(_clock());
+    if (!hasActiveInvite &&
+        url.startsWith('https://') &&
+        pollInterval >= const Duration(seconds: 2)) {
+      _nextAllowedBackgroundHostSyncAt = _clock().add(
+        const Duration(seconds: 10),
+      );
+    } else {
+      _nextAllowedBackgroundHostSyncAt = null;
+    }
 
     try {
       final decoded = jsonDecode(response.body) as Map<String, Object?>;
@@ -1771,9 +1783,12 @@ class ConfigurableRemoteNotificationService
         body: payload,
         timeout: alertTimeout,
       );
-      if (!postResult.isSuccess &&
+      var retryCount = 0;
+      while (!postResult.isSuccess &&
           isRemoteHttps &&
+          retryCount < 2 &&
           (postResult.statusCode == 0 || postResult.statusCode >= 500)) {
+        retryCount += 1;
         await Future<void>.delayed(const Duration(seconds: 2));
         postResult = await sendRelayJsonRequest(
           method: 'POST',
