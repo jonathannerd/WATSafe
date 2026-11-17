@@ -2,6 +2,51 @@ import 'package:flutter/foundation.dart';
 
 import 'detector_models.dart';
 
+/// Simple user-facing sensitivity presets explaining the practical trade-off
+/// in plain language without exposing raw optical-flow thresholds.
+enum MotionSensitivityPreset {
+  fewerFalseAlarms(
+    id: 'fewer_false_alarms',
+    sensitivityValue: 0.38,
+    title: 'Fewer false alarms',
+    description: 'Fewer alerts from people walking or leaning nearby. Best for busy libraries, offices, and cafés.',
+  ),
+  balanced(
+    id: 'balanced',
+    sensitivityValue: 0.60,
+    title: 'Balanced',
+    description: 'Recommended. Detects lifting and carrying promptly while ignoring passersby and room lighting changes.',
+  ),
+  higherSensitivity(
+    id: 'higher_sensitivity',
+    sensitivityValue: 0.78,
+    title: 'Higher sensitivity',
+    description: 'Reacts faster to gentle or slow movement of your device. Best for quiet rooms.',
+  );
+
+  const MotionSensitivityPreset({
+    required this.id,
+    required this.sensitivityValue,
+    required this.title,
+    required this.description,
+  });
+
+  final String id;
+  final double sensitivityValue;
+  final String title;
+  final String description;
+
+  static MotionSensitivityPreset fromSensitivity(double sensitivity) {
+    if (sensitivity < 0.49) {
+      return MotionSensitivityPreset.fewerFalseAlarms;
+    }
+    if (sensitivity > 0.69) {
+      return MotionSensitivityPreset.higherSensitivity;
+    }
+    return MotionSensitivityPreset.balanced;
+  }
+}
+
 /// User-configurable protection settings persisted locally.
 @immutable
 class ProtectionSettings {
@@ -20,6 +65,10 @@ class ProtectionSettings {
 
   /// Motion sensitivity in `[0.20, 0.90]`.
   final double motionSensitivity;
+
+  /// Closest simple sensitivity preset for normal user flows.
+  MotionSensitivityPreset get sensitivityPreset =>
+      MotionSensitivityPreset.fromSensitivity(motionSensitivity);
 
   /// Arming countdown in seconds (`3`..`30`).
   final int armingCountdownSeconds;

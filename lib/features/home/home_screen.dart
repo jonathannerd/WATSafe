@@ -5,6 +5,7 @@ import '../../core/alarm/alarm_controller.dart';
 import '../../core/alarm/alarm_state.dart';
 import '../../core/models/detector_models.dart';
 import '../pairing/phone_pairing_sheet.dart';
+import '../testing/guided_protection_test_sheet.dart';
 import '../theme/watsafe_theme.dart';
 
 /// Primary Home screen focused on two things:
@@ -152,6 +153,48 @@ class _ProtectionHeroCard extends StatelessWidget {
                 height: 1.45,
               ),
             ),
+            if (state == ProtectionState.armed &&
+                controller.isConfirmingMovement) ...<Widget>[
+              const SizedBox(height: 16),
+              Container(
+                key: const Key('movement_confirmation_banner'),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: WatSafeTheme.amberAccent.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: WatSafeTheme.amberAccent.withValues(alpha: 0.65),
+                  ),
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: <Widget>[
+                    SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: WatSafeTheme.amberAccent,
+                      ),
+                    ),
+                    SizedBox(width: 10),
+                    Flexible(
+                      child: Text(
+                        'Movement detected — checking…',
+                        style: TextStyle(
+                          color: WatSafeTheme.amberAccent,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13.5,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             if (state == ProtectionState.arming) ...<Widget>[
               const SizedBox(height: 18),
               ClipRRect(
@@ -226,11 +269,26 @@ class _ProtectionHeroCard extends StatelessWidget {
   Widget _buildPrimaryAction(BuildContext context) {
     switch (state) {
       case ProtectionState.disarmed:
-        return FilledButton.icon(
-          key: const Key('arm_protection_button'),
-          onPressed: controller.startArming,
-          icon: const Icon(Icons.shield_rounded),
-          label: const Text('Arm protection'),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            FilledButton.icon(
+              key: const Key('arm_protection_button'),
+              onPressed: controller.startArming,
+              icon: const Icon(Icons.shield_rounded),
+              label: const Text('Arm protection'),
+            ),
+            const SizedBox(height: 8),
+            Center(
+              child: TextButton.icon(
+                key: const Key('home_guided_test_button'),
+                onPressed: () =>
+                    showGuidedProtectionTestSheet(context, controller),
+                icon: const Icon(Icons.verified_user_outlined, size: 17),
+                label: const Text('Guided protection test'),
+              ),
+            ),
+          ],
         );
 
       case ProtectionState.arming:

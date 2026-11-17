@@ -26,6 +26,7 @@ class UnconfiguredLocationService implements LocationServiceAdapter {
   Future<({DeviceLocationSnapshot? location, IncidentLocationStatus status})>
   captureCurrentLocation({
     Duration timeout = const Duration(seconds: 6),
+    bool highAccuracy = false,
   }) async {
     return (location: null, status: IncidentLocationStatus.unavailable);
   }
@@ -102,6 +103,7 @@ class PlatformLocationService implements LocationServiceAdapter {
   Future<({DeviceLocationSnapshot? location, IncidentLocationStatus status})>
   captureCurrentLocation({
     Duration timeout = const Duration(seconds: 6),
+    bool highAccuracy = false,
   }) async {
     if (kIsWeb || !_supported) {
       return (location: null, status: IncidentLocationStatus.unavailable);
@@ -109,8 +111,11 @@ class PlatformLocationService implements LocationServiceAdapter {
     try {
       final raw = await _channel
           .invokeMapMethod<String, Object?>(
-            'captureLocation',
-            <String, Object?>{'timeoutMs': timeout.inMilliseconds},
+            'captureCurrentLocation',
+            <String, Object?>{
+              'timeoutMs': timeout.inMilliseconds,
+              'highAccuracy': highAccuracy,
+            },
           )
           .timeout(
             timeout + const Duration(milliseconds: 500),
@@ -126,16 +131,23 @@ class PlatformLocationService implements LocationServiceAdapter {
           status: IncidentLocationStatus.permissionDenied,
         );
       }
+      if (statusRaw != 'attached') {
+        return (location: null, status: IncidentLocationStatus.unavailable);
+      }
       final lat = (raw['latitude'] as num?)?.toDouble();
       final lon = (raw['longitude'] as num?)?.toDouble();
-      if (lat == null || lon == null) {
+      final accuracy = (raw['accuracyMeters'] as num?)?.toDouble();
+      if (!DeviceLocationSnapshot.isValidCoordinates(
+        lat,
+        lon,
+        accuracyMeters: accuracy,
+      )) {
         return (location: null, status: IncidentLocationStatus.unavailable);
       }
       final capturedMs = (raw['capturedAtMs'] as num?)?.toInt();
       final capturedAt = capturedMs != null
           ? DateTime.fromMillisecondsSinceEpoch(capturedMs)
           : DateTime.now();
-      final accuracy = (raw['accuracyMeters'] as num?)?.toDouble();
       final isApproximate =
           (raw['isApproximate'] as bool? ?? false) ||
           (accuracy != null && accuracy > 100);
@@ -143,8 +155,8 @@ class PlatformLocationService implements LocationServiceAdapter {
 
       return (
         location: DeviceLocationSnapshot(
-          latitude: lat,
-          longitude: lon,
+          latitude: lat!,
+          longitude: lon!,
           accuracyMeters: accuracy,
           capturedAt: capturedAt,
           isApproximate: isApproximate,
@@ -168,14 +180,19 @@ class FakeLocationService implements LocationServiceAdapter {
     this.permission = PermissionStatus.granted,
     this.nextLocation,
     this.captureCompleter,
-  });
+    List<DeviceLocationSnapshot?>? queuedLocations,
+  }) : queuedLocations = List<DeviceLocationSnapshot?>.of(
+         queuedLocations ?? const <DeviceLocationSnapshot?>[],
+       );
 
   bool supported;
   PermissionStatus permission;
   DeviceLocationSnapshot? nextLocation;
   Completer<DeviceLocationSnapshot?>? captureCompleter;
+  final List<DeviceLocationSnapshot?> queuedLocations;
   int requestPermissionCount = 0;
   int captureCount = 0;
+  bool lastRequestedHighAccuracy = false;
 
   @override
   bool get isSupported => supported;
@@ -200,8 +217,10 @@ class FakeLocationService implements LocationServiceAdapter {
   Future<({DeviceLocationSnapshot? location, IncidentLocationStatus status})>
   captureCurrentLocation({
     Duration timeout = const Duration(seconds: 6),
+    bool highAccuracy = false,
   }) async {
     captureCount += 1;
+    lastRequestedHighAccuracy = highAccuracy;
     if (!supported) {
       return (location: null, status: IncidentLocationStatus.unavailable);
     }
@@ -212,12 +231,19 @@ class FakeLocationService implements LocationServiceAdapter {
     }
     if (captureCompleter != null) {
       final resolved = await captureCompleter!.future;
-      if (resolved == null) {
+      if (resolved == null || !resolved.isValid) {
         return (location: null, status: IncidentLocationStatus.unavailable);
       }
       return (location: resolved, status: IncidentLocationStatus.attached);
     }
-    if (nextLocation == null) {
+    if (queuedLocations.isNotEmpty) {
+      final item = queuedLocations.removeAt(0);
+      if (item == null || !item.isValid) {
+        return (location: null, status: IncidentLocationStatus.unavailable);
+      }
+      return (location: item, status: IncidentLocationStatus.attached);
+    }
+    if (nextLocation == null || !nextLocation!.isValid) {
       return (location: null, status: IncidentLocationStatus.unavailable);
     }
     return (location: nextLocation, status: IncidentLocationStatus.attached);

@@ -359,6 +359,10 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
       score: eval.motionScore,
       luminance: eval.normalizedLuminance,
       consecutive: eval.consecutiveAboveThreshold,
+      coherentBlocks: eval.coherentTranslatedBlocks,
+      anchoredBlocks: eval.anchoredTexturedBlocks,
+      slowDriftScore: eval.slowDriftScore,
+      loomingRejected: eval.loomingRejected,
     );
   }
 
@@ -368,6 +372,10 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
     double? score,
     double? luminance,
     int? consecutive,
+    int? coherentBlocks,
+    int? anchoredBlocks,
+    double? slowDriftScore,
+    bool? loomingRejected,
   }) {
     final config = _config;
     if (config == null) {
@@ -385,6 +393,10 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
         threshold: _analyzer?.motionThreshold ?? config.motionScoreThreshold,
         averageLuminance: luminance,
         consecutiveAboveThresholdFrames: consecutive,
+        coherentBlocks: coherentBlocks,
+        anchoredBlocks: anchoredBlocks,
+        slowDriftScore: slowDriftScore,
+        loomingRejected: loomingRejected,
       ),
     );
   }

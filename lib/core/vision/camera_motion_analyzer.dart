@@ -280,6 +280,10 @@ class CameraMotionFrameEvaluation {
     required this.anchoredTexturedBlocks,
     required this.activeQuadrants,
     required this.coherentTranslatedBlocks,
+    this.slowDriftScore = 0.0,
+    this.rigidCoherence = 0.0,
+    this.loomingRejected = false,
+    this.oscillationRejected = false,
   });
 
   final bool isCalibrating;
@@ -297,14 +301,54 @@ class CameraMotionFrameEvaluation {
   final int anchoredTexturedBlocks;
   final int activeQuadrants;
   final int coherentTranslatedBlocks;
+  final double slowDriftScore;
+  final double rigidCoherence;
+  final bool loomingRejected;
+  final bool oscillationRejected;
+}
+
+class _FlowCoherenceStats {
+  const _FlowCoherenceStats({
+    required this.coherentCount,
+    required this.panCoherence,
+    required this.rollCoherence,
+    required this.rigidCoherence,
+    required this.radialDivergence,
+    required this.meanDx,
+    required this.meanDy,
+    required this.isLooming,
+  });
+
+  static const empty = _FlowCoherenceStats(
+    coherentCount: 0,
+    panCoherence: 0.0,
+    rollCoherence: 0.0,
+    rigidCoherence: 0.0,
+    radialDivergence: 0.0,
+    meanDx: 0.0,
+    meanDy: 0.0,
+    isLooming: false,
+  );
+
+  final int coherentCount;
+  final double panCoherence;
+  final double rollCoherence;
+  final double rigidCoherence;
+  final double radialDivergence;
+  final double meanDx;
+  final double meanDy;
+  final bool isLooming;
 }
 
 /// Stateful camera ego-motion estimator using Lucas-Kanade 2x2 optical flow,
-/// coarse block displacement matching, static background landmark anchoring,
-/// and affine illumination normalization.
+/// coarse block displacement matching, static background/perimeter landmark
+/// anchoring, radial looming rejection, hinge-oscillation filtering, rolling
+/// multi-frame slow-drift consensus, and affine illumination normalization.
 ///
-/// Distinguishes physical laptop movement (pickup, tilt, pan, rotation) from
-/// people walking in front of a stationary laptop and brief lighting changes.
+/// Distinguishes physical laptop movement (lifting, tilting, carrying away,
+/// and slow sliding) from scene motion (people walking past, approaching or
+/// leaning toward the camera, brief hand passes, seated occupancy, lighting
+/// and auto-exposure shifts, and brief single desk bumps).
 class CameraMotionAnalyzer {
   CameraMotionAnalyzer({
     this.gridWidth = 64,
@@ -317,6 +361,7 @@ class CameraMotionAnalyzer {
   static const int _blocksX = 4;
   static const int _blocksY = 4;
   static const int _totalBlocks = _blocksX * _blocksY;
+  static const int _driftWindowFrames = 4;
 
   final int gridWidth;
   final int gridHeight;
@@ -326,7 +371,12 @@ class CameraMotionAnalyzer {
   double _motionThreshold;
   Float32List? _referenceGrid;
   Float32List? _previousGrid;
+  final List<Float32List> _recentGrids = <Float32List>[];
+  final Int32List _settledBlockStreak = Int32List(_totalBlocks);
   double _previousMean255 = 0.0;
+  double _prevMeanFlowDx = 0.0;
+  double _prevMeanFlowDy = 0.0;
+  bool _hasPrevMeanFlow = false;
   DateTime? _calibrationStart;
   bool _isCalibrationDone = false;
   bool _isInputDegraded = false;
@@ -347,7 +397,12 @@ class CameraMotionAnalyzer {
   void reset() {
     _referenceGrid = null;
     _previousGrid = null;
+    _recentGrids.clear();
+    _settledBlockStreak.fillRange(0, _totalBlocks, 0);
     _previousMean255 = 0.0;
+    _prevMeanFlowDx = 0.0;
+    _prevMeanFlowDy = 0.0;
+    _hasPrevMeanFlow = false;
     _calibrationStart = null;
     _isCalibrationDone = false;
     _isInputDegraded = false;
@@ -385,6 +440,8 @@ class CameraMotionAnalyzer {
     _processedFrames += 1;
 
     // 1. Check for pitch-black / covered lens degraded input.
+    //    Darkness or a covered lens is reported honestly as degraded input and
+    //    never silently equated with confirmed device theft.
     var poorInputJustChanged = false;
     if (normalizedLuminance < 0.025 || normalizedDeviation < 0.007) {
       _consecutivePoorInputFrames += 1;
@@ -437,6 +494,9 @@ class CameraMotionAnalyzer {
       final elapsed = timestamp.difference(_calibrationStart ?? timestamp);
       if (elapsed >= calibrationDuration && _processedFrames >= 4) {
         _isCalibrationDone = true;
+        _recentGrids
+          ..clear()
+          ..add(Float32List.fromList(reference));
         return CameraMotionFrameEvaluation(
           isCalibrating: false,
           calibrationJustCompleted: true,
@@ -474,12 +534,16 @@ class CameraMotionAnalyzer {
       );
     }
 
-    // 3. Per-block zero-mean & affine illumination normalization so foreground
-    //    objects (dark/bright clothing) never shift the baseline of unoccluded
-    //    stationary background blocks, while room lighting steps cancel cleanly.
+    final windowGrid = _recentGrids.isNotEmpty ? _recentGrids.first : previous;
+
+    // 3. Per-block zero-mean & affine illumination normalization against BOTH
+    //    the stationary reference AND the previous/window frames so foreground
+    //    clothing, webcam auto-exposure gain ramps, and screen reflections
+    //    cancel cleanly without corrupting unoccluded background anchors.
     final blockCurrSum = Float64List(_totalBlocks);
     final blockRefSum = Float64List(_totalBlocks);
     final blockPrevSum = Float64List(_totalBlocks);
+    final blockWinSum = Float64List(_totalBlocks);
     final blockPixelCount = Int32List(_totalBlocks);
 
     var rawDiffSum = 0.0;
@@ -492,6 +556,7 @@ class CameraMotionAnalyzer {
         blockCurrSum[bIdx] += currentGrid[i];
         blockRefSum[bIdx] += reference[i];
         blockPrevSum[bIdx] += previous[i];
+        blockWinSum[bIdx] += windowGrid[i];
         blockPixelCount[bIdx] += 1;
         rawDiffSum += (currentGrid[i] - reference[i]).abs();
       }
@@ -500,17 +565,20 @@ class CameraMotionAnalyzer {
     final blockCurrMean = Float64List(_totalBlocks);
     final blockRefMean = Float64List(_totalBlocks);
     final blockPrevMean = Float64List(_totalBlocks);
+    final blockWinMean = Float64List(_totalBlocks);
     for (var b = 0; b < _totalBlocks; b++) {
       final n = blockPixelCount[b];
       if (n > 0) {
         blockCurrMean[b] = blockCurrSum[b] / n;
         blockRefMean[b] = blockRefSum[b] / n;
         blockPrevMean[b] = blockPrevSum[b] / n;
+        blockWinMean[b] = blockWinSum[b] / n;
       }
     }
 
     final blockCurrDevSum = Float64List(_totalBlocks);
     final blockRefDevSum = Float64List(_totalBlocks);
+    final blockPrevDevSum = Float64List(_totalBlocks);
     for (var gy = 0; gy < gridHeight; gy++) {
       final by = math.min(_blocksY - 1, (gy * _blocksY) ~/ gridHeight);
       for (var gx = 0; gx < gridWidth; gx++) {
@@ -519,29 +587,39 @@ class CameraMotionAnalyzer {
         final i = gy * gridWidth + gx;
         blockCurrDevSum[bIdx] += (currentGrid[i] - blockCurrMean[bIdx]).abs();
         blockRefDevSum[bIdx] += (reference[i] - blockRefMean[bIdx]).abs();
+        blockPrevDevSum[bIdx] += (previous[i] - blockPrevMean[bIdx]).abs();
       }
     }
 
     final blockGainToRef = Float64List(_totalBlocks);
+    final blockGainToPrev = Float64List(_totalBlocks);
     for (var b = 0; b < _totalBlocks; b++) {
       final n = blockPixelCount[b];
       if (n <= 0) {
         blockGainToRef[b] = 1.0;
+        blockGainToPrev[b] = 1.0;
         continue;
       }
       final cMad = blockCurrDevSum[b] / n;
       final rMad = blockRefDevSum[b] / n;
-      blockGainToRef[b] = (cMad > 3.0 && rMad > 3.0)
-          ? (rMad / cMad).clamp(0.72, 1.38)
+      final pMad = blockPrevDevSum[b] / n;
+      blockGainToRef[b] = (cMad > 2.5 && rMad > 2.5)
+          ? (rMad / cMad).clamp(0.66, 1.50)
+          : 1.0;
+      blockGainToPrev[b] = (cMad > 2.5 && pMad > 2.5)
+          ? (pMad / cMad).clamp(0.74, 1.35)
           : 1.0;
     }
 
     final blockRefDiffSum = Float64List(_totalBlocks);
     final blockStepDiffSum = Float64List(_totalBlocks);
+    final blockWinDiffSum = Float64List(_totalBlocks);
     final blockRefGradSum = Float64List(_totalBlocks);
+    final blockCurrGradSum = Float64List(_totalBlocks);
     final blockGradCount = Int32List(_totalBlocks);
 
     var normRefDiffSum = 0.0;
+    var normStepDiffSum = 0.0;
 
     for (var gy = 0; gy < gridHeight; gy++) {
       final by = math.min(_blocksY - 1, (gy * _blocksY) ~/ gridHeight);
@@ -553,39 +631,51 @@ class CameraMotionAnalyzer {
         final currVal = currentGrid[i];
         final refVal = reference[i];
         final prevVal = previous[i];
+        final winVal = windowGrid[i];
 
-        // Block-local zero-mean + contrast-normalized structural residual vs reference.
-        final normCurrCentered =
+        final normCurrToRef =
             (currVal - blockCurrMean[bIdx]) * blockGainToRef[bIdx];
         final refCentered = refVal - blockRefMean[bIdx];
-        final refDelta = (normCurrCentered - refCentered).abs();
+        final refDelta = (normCurrToRef - refCentered).abs();
 
-        // Block-local zero-mean inter-frame residual vs previous frame.
-        final blockStepShift = blockCurrMean[bIdx] - blockPrevMean[bIdx];
-        final stepDelta = ((currVal - prevVal) - blockStepShift).abs();
+        final normCurrToPrev =
+            (currVal - blockCurrMean[bIdx]) * blockGainToPrev[bIdx];
+        final prevCentered = prevVal - blockPrevMean[bIdx];
+        final stepDelta = (normCurrToPrev - prevCentered).abs();
+
+        final winShift = blockCurrMean[bIdx] - blockWinMean[bIdx];
+        final winDelta = ((currVal - winVal) - winShift).abs();
 
         normRefDiffSum += refDelta;
+        normStepDiffSum += stepDelta;
         blockRefDiffSum[bIdx] += refDelta;
         blockStepDiffSum[bIdx] += stepDelta;
+        blockWinDiffSum[bIdx] += winDelta;
 
         if (gx + 1 < gridWidth && gy + 1 < gridHeight) {
           final gxDiff = (refVal - reference[i + 1]).abs();
           final gyDiff = (refVal - reference[i + gridWidth]).abs();
           blockRefGradSum[bIdx] += 0.5 * (gxDiff + gyDiff);
+
+          final cgxDiff = (currVal - currentGrid[i + 1]).abs();
+          final cgyDiff = (currVal - currentGrid[i + gridWidth]).abs();
+          blockCurrGradSum[bIdx] += 0.5 * (cgxDiff + cgyDiff);
           blockGradCount[bIdx] += 1;
         }
       }
     }
 
-    // 4. Estimate block-level displacement vectors (previous -> current) and
-    //    evaluate static background landmarks vs. multi-quadrant ego-motion.
+    // 4. Estimate block-level displacement vectors (previous -> current AND
+    //    rolling 4-frame window -> current for slow laptop movement) and check
+    //    stationary background / perimeter anchors.
     final staticBlockThreshold = math.max(0.020, _motionThreshold * 0.36);
     final activeBlockThreshold = math.max(0.024, _motionThreshold * 0.48);
 
     var texturedRefBlocks = 0;
     var anchoredTexturedBlocks = 0;
-    var changedBlocks = 0;
-    var translatedBlocks = 0;
+    var texturedPerimeterBlocks = 0;
+    var anchoredPerimeterBlocks = 0;
+    var activeMovingBlocks = 0;
     var texturedRefScoreSum = 0.0;
 
     final dxList = <double>[];
@@ -594,8 +684,15 @@ class CameraMotionAnalyzer {
     final byList = <int>[];
     final quadrantActivity = Int32List(4);
 
+    final winDxList = <double>[];
+    final winDyList = <double>[];
+    final winBxList = <int>[];
+    final winByList = <int>[];
+    final winQuadrantActivity = Int32List(4);
+
     final blockW = gridWidth ~/ _blocksX;
     final blockH = gridHeight ~/ _blocksY;
+    final hasWindowSpan = _recentGrids.length >= 3;
 
     for (var by = 0; by < _blocksY; by++) {
       for (var bx = 0; bx < _blocksX; bx++) {
@@ -606,22 +703,49 @@ class CameraMotionAnalyzer {
         }
         final refScore = blockRefDiffSum[b] / (pxCount * 255.0);
         final stepScore = blockStepDiffSum[b] / (pxCount * 255.0);
+        final winScore = blockWinDiffSum[b] / (pxCount * 255.0);
         final meanGrad = blockGradCount[b] > 0
             ? (blockRefGradSum[b] / blockGradCount[b])
             : 0.0;
+        final currGrad = blockGradCount[b] > 0
+            ? (blockCurrGradSum[b] / blockGradCount[b])
+            : 0.0;
         final isTextured = meanGrad >= 3.2;
+        final isPerimeter =
+            bx == 0 || bx == (_blocksX - 1) || by == 0 || by == (_blocksY - 1);
+
+        if (stepScore < 0.010) {
+          _settledBlockStreak[b] += 1;
+        } else {
+          _settledBlockStreak[b] = 0;
+        }
 
         if (isTextured) {
           texturedRefBlocks += 1;
           texturedRefScoreSum += refScore;
-          if (refScore < staticBlockThreshold && stepScore < 0.018) {
+          if (isPerimeter) {
+            texturedPerimeterBlocks += 1;
+          }
+          if (refScore < staticBlockThreshold && stepScore < 0.016) {
             anchoredTexturedBlocks += 1;
+            if (isPerimeter) {
+              anchoredPerimeterBlocks += 1;
+            }
           }
         }
 
         final blockStepShift = blockCurrMean[b] - blockPrevMean[b];
         var blockTranslated = false;
-        if (isTextured && stepScore >= 0.008 && blockW >= 6 && blockH >= 6) {
+        // Require current block to retain spatial detail too so a flat hand/palm
+        // wiping across the lens does not produce spurious aperture vectors,
+        // while allowing textured features that pan into a previously smooth
+        // wall block to contribute rigid optical flow.
+        final hasFlowTexture =
+            (isTextured || currGrad >= 3.2) && currGrad >= 1.8;
+        if (hasFlowTexture &&
+            stepScore >= 0.008 &&
+            blockW >= 6 &&
+            blockH >= 6) {
           final flow =
               _estimateLucasKanadeFlow(
                 previous: previous,
@@ -643,7 +767,6 @@ class CameraMotionAnalyzer {
               );
           if (flow != null) {
             blockTranslated = true;
-            translatedBlocks += 1;
             dxList.add(flow.$1);
             dyList.add(flow.$2);
             bxList.add(bx);
@@ -651,9 +774,46 @@ class CameraMotionAnalyzer {
           }
         }
 
-        if ((refScore >= activeBlockThreshold && stepScore >= 0.010) ||
+        if (hasWindowSpan &&
+            hasFlowTexture &&
+            winScore >= 0.010 &&
+            blockW >= 6 &&
+            blockH >= 6) {
+          final winShift = blockCurrMean[b] - blockWinMean[b];
+          final winFlow =
+              _estimateLucasKanadeFlow(
+                previous: windowGrid,
+                current: currentGrid,
+                stepMeanShift: winShift,
+                x0: bx * blockW,
+                y0: by * blockH,
+                w: blockW,
+                h: blockH,
+                minMagnitude: 0.36,
+              ) ??
+              _estimateBlockTranslation(
+                previous: windowGrid,
+                current: currentGrid,
+                stepMeanShift: winShift,
+                x0: bx * blockW,
+                y0: by * blockH,
+                w: blockW,
+                h: blockH,
+              );
+          if (winFlow != null) {
+            winDxList.add(winFlow.$1);
+            winDyList.add(winFlow.$2);
+            winBxList.add(bx);
+            winByList.add(by);
+            final qx = bx >= 2 ? 1 : 0;
+            final qy = by >= 2 ? 1 : 0;
+            winQuadrantActivity[qy * 2 + qx] += 1;
+          }
+        }
+
+        if ((refScore >= activeBlockThreshold && stepScore >= 0.012) ||
             blockTranslated) {
-          changedBlocks += 1;
+          activeMovingBlocks += 1;
           final qx = bx >= 2 ? 1 : 0;
           final qy = by >= 2 ? 1 : 0;
           quadrantActivity[qy * 2 + qx] += 1;
@@ -662,134 +822,215 @@ class CameraMotionAnalyzer {
     }
 
     var activeQuadrants = 0;
+    var winActiveQuadrants = 0;
     for (var q = 0; q < 4; q++) {
       if (quadrantActivity[q] >= 1) {
         activeQuadrants += 1;
       }
+      if (winQuadrantActivity[q] >= 1) {
+        winActiveQuadrants += 1;
+      }
     }
 
-    // Compute directional or rotational coherence among translated blocks.
-    var coherentTranslatedBlocks = 0;
-    if (translatedBlocks > 0) {
-      var sumDx = 0.0;
-      var sumDy = 0.0;
-      var rollPos = 0;
-      var rollNeg = 0;
-      for (var k = 0; k < translatedBlocks; k++) {
-        sumDx += dxList[k];
-        sumDy += dyList[k];
-        final rx = bxList[k] - 1.5;
-        final ry = byList[k] - 1.5;
-        final cross = (rx * dyList[k]) - (ry * dxList[k]);
-        if (cross > 0.25) {
-          rollPos += 1;
-        } else if (cross < -0.25) {
-          rollNeg += 1;
+    final stepFlowStats = _evaluateFlowCoherence(
+      dxList: dxList,
+      dyList: dyList,
+      bxList: bxList,
+      byList: byList,
+    );
+    final winFlowStats = _evaluateFlowCoherence(
+      dxList: winDxList,
+      dyList: winDyList,
+      bxList: winBxList,
+      byList: winByList,
+    );
+
+    final coherentTranslatedBlocks = stepFlowStats.coherentCount;
+    final loomingRejected =
+        stepFlowStats.isLooming ||
+        (coherentTranslatedBlocks < 5 && winFlowStats.isLooming);
+
+    // Check for immediate 180° flow reversal (mechanical desk bump / lid hinge
+    // bounce or a hand swiping in and immediately back out).
+    var oscillationRejected = false;
+    final currFlowMag = math.sqrt(
+      (stepFlowStats.meanDx * stepFlowStats.meanDx) +
+          (stepFlowStats.meanDy * stepFlowStats.meanDy),
+    );
+    if (dxList.length >= 3 && currFlowMag >= 0.30) {
+      if (_hasPrevMeanFlow) {
+        final prevMag = math.sqrt(
+          (_prevMeanFlowDx * _prevMeanFlowDx) +
+              (_prevMeanFlowDy * _prevMeanFlowDy),
+        );
+        if (prevMag >= 0.30) {
+          final cosTurn =
+              ((_prevMeanFlowDx * stepFlowStats.meanDx) +
+                  (_prevMeanFlowDy * stepFlowStats.meanDy)) /
+              (prevMag * currFlowMag);
+          if (cosTurn < -0.25) {
+            oscillationRejected = true;
+          }
         }
       }
-      var panAligned = 0;
-      for (var k = 0; k < translatedBlocks; k++) {
-        if ((dxList[k] * sumDx) + (dyList[k] * sumDy) > 0.0) {
-          panAligned += 1;
-        }
-      }
-      coherentTranslatedBlocks = math.max(
-        panAligned,
-        math.max(rollPos, rollNeg),
-      );
+      _prevMeanFlowDx = stepFlowStats.meanDx;
+      _prevMeanFlowDy = stepFlowStats.meanDy;
+      _hasPrevMeanFlow = true;
+    } else if (activeMovingBlocks == 0) {
+      _hasPrevMeanFlow = false;
     }
 
     final rawSceneScore = rawDiffSum / (count * 255.0);
     final fullSceneStructScore = normRefDiffSum / (count * 255.0);
+    final meanStepScore = normStepDiffSum / (count * 255.0);
     final texturedStructScore = texturedRefBlocks > 0
         ? (texturedRefScoreSum / texturedRefBlocks)
         : fullSceneStructScore;
-    // In minimalist rooms where most blocks are featureless smooth walls, avoid
-    // diluting real displacement of the available textured landmarks.
     final structSceneScore =
-        (texturedRefBlocks >= 2 &&
+        (texturedRefBlocks >= 1 &&
             texturedRefBlocks <= 6 &&
             anchoredTexturedBlocks == 0)
-        ? math.max(fullSceneStructScore, texturedStructScore * 0.80)
+        ? math.max(fullSceneStructScore, texturedStructScore * 0.85)
         : fullSceneStructScore;
 
     // 5. Abrupt global lighting transient check (e.g. room light switched on/off).
     final meanJump = (currMean - _previousMean255).abs();
     final isLightingTransient =
-        meanJump >= 20.0 && coherentTranslatedBlocks <= 2;
+        meanJump >= 18.0 && coherentTranslatedBlocks <= 2;
 
-    // 6. Compute ego-motion spatial weight to separate stationary-camera
-    //    foreground passersby from real laptop movement.
-    //    By rigid-body camera kinematics, a moving/rotating camera displaces
-    //    nearly all textured landmarks (at most 1-2 blocks near an optical axis
-    //    can stay quiet). If >= 28% (and >= 3) of textured reference blocks
-    //    remain completely stationary, the camera itself is stationary and any
-    //    coherent flow belongs to a foreground person/object passing by.
-    double egoWeight;
+    // 6. Separate camera ego-motion from stationary-camera scene motion:
+    //    - If >= 22% (min 3) of textured landmarks (such as the upper wall
+    //      corners behind a seated or leaning person) stay anchored, the
+    //      camera body did not translate or tilt.
+    //    - If radial looming dominates without rigid pan/roll coherence, a
+    //      person or hand is approaching the lens rather than moving the laptop.
+    //    - If inter-frame movement has ceased (static occupancy after someone
+    //      sits down in front of the laptop), do not score static difference
+    //      from t=0 as active movement.
+    final minAnchors = math.max(3, (texturedRefBlocks * 0.22).ceil());
     final hasStrongStaticAnchors =
-        texturedRefBlocks >= 4 &&
-        anchoredTexturedBlocks >=
-            math.max(3, (texturedRefBlocks * 0.28).ceil());
+        (texturedRefBlocks >= 4 && anchoredTexturedBlocks >= minAnchors) ||
+        (texturedPerimeterBlocks >= 4 &&
+            anchoredPerimeterBlocks >=
+                math.max(3, (texturedPerimeterBlocks * 0.34).ceil()));
+
+    final minSparseCoherent = texturedRefBlocks <= 2 ? 1 : 2;
     final sparseSceneCoherentEgoMotion =
-        texturedRefBlocks >= 2 &&
+        texturedRefBlocks >= 1 &&
         texturedRefBlocks <= 6 &&
         anchoredTexturedBlocks == 0 &&
-        coherentTranslatedBlocks >= math.min(3, texturedRefBlocks);
+        texturedStructScore >= activeBlockThreshold &&
+        coherentTranslatedBlocks >= minSparseCoherent &&
+        stepFlowStats.rigidCoherence >= 0.58 &&
+        !loomingRejected;
 
-    if (isLightingTransient) {
-      egoWeight = 0.12;
+    final sparseSceneSlowDrift =
+        hasWindowSpan &&
+        texturedRefBlocks >= 1 &&
+        texturedRefBlocks <= 6 &&
+        anchoredTexturedBlocks == 0 &&
+        texturedStructScore >= activeBlockThreshold &&
+        winFlowStats.coherentCount >= minSparseCoherent &&
+        winFlowStats.rigidCoherence >= 0.68 &&
+        !winFlowStats.isLooming;
+
+    final fullSceneSlowDrift =
+        hasWindowSpan &&
+        !hasStrongStaticAnchors &&
+        !isLightingTransient &&
+        !loomingRejected &&
+        winFlowStats.coherentCount >= 5 &&
+        winActiveQuadrants >= 3 &&
+        winFlowStats.rigidCoherence >= 0.70;
+
+    final isScenePresentlyStill =
+        coherentTranslatedBlocks == 0 &&
+        !fullSceneSlowDrift &&
+        !sparseSceneSlowDrift &&
+        (activeMovingBlocks <= 2 || meanStepScore < 0.009);
+
+    double egoWeight;
+    if (isLightingTransient || _isInputDegraded) {
+      egoWeight = 0.10;
     } else if (hasStrongStaticAnchors) {
-      // Stationary background landmarks remain unmoved -> foreground object/person passing.
-      egoWeight = 0.16;
+      egoWeight = 0.14;
+    } else if (loomingRejected) {
+      egoWeight = 0.18;
+    } else if (isScenePresentlyStill) {
+      egoWeight = 0.08;
     } else if (sparseSceneCoherentEgoMotion) {
-      // Minimalist wall scene where 100% of textured features moved coherently.
       egoWeight = 1.20;
-    } else if (activeQuadrants <= 2 && coherentTranslatedBlocks < 5) {
-      // Motion confined to one side/half of the image without global flow.
-      egoWeight = 0.28;
-    } else if (coherentTranslatedBlocks >= 5 && activeQuadrants >= 3) {
-      // Verified coherent translation/rotation across >= 3 quadrants!
+    } else if (coherentTranslatedBlocks >= 5 &&
+        activeQuadrants >= 3 &&
+        stepFlowStats.rigidCoherence >= 0.56) {
       egoWeight = 1.25;
+    } else if (activeQuadrants <= 2 && coherentTranslatedBlocks < 5) {
+      egoWeight = 0.24;
     } else if (texturedRefBlocks > 0 &&
-        anchoredTexturedBlocks <= (texturedRefBlocks * 0.20).floor() &&
-        changedBlocks >= 10 &&
-        activeQuadrants >= 3) {
-      // >= 80% of textured landmarks displaced across >= 3 quadrants (e.g. rapid pickup/blur).
-      egoWeight = 1.10;
+        anchoredPerimeterBlocks == 0 &&
+        anchoredTexturedBlocks == 0 &&
+        activeMovingBlocks >= 12 &&
+        activeQuadrants == 4 &&
+        normalizedDeviation >= 0.028 &&
+        dxList.length >= 3 &&
+        stepFlowStats.rigidCoherence >= 0.55) {
+      // Rapid full-frame carry with partial motion blur but verified rigid alignment.
+      egoWeight = 1.08;
     } else if (texturedRefBlocks == 0 &&
-        changedBlocks >= 12 &&
-        activeQuadrants == 4) {
-      // Low-texture scene experiencing full-frame movement.
-      egoWeight = 1.0;
+        activeMovingBlocks >= 13 &&
+        activeQuadrants == 4 &&
+        meanStepScore >= 0.025 &&
+        normalizedDeviation >= 0.015) {
+      egoWeight = 0.95;
     } else {
-      egoWeight = 0.45;
+      egoWeight = 0.32;
     }
 
-    // Boost score slightly when verified coherent displacement is present even
-    // on subtle camera tilts/rotations where pixel intensity delta is modest.
     final flowContribution =
         (!hasStrongStaticAnchors &&
+            !loomingRejected &&
             coherentTranslatedBlocks >= 5 &&
-            activeQuadrants >= 3)
-        ? (coherentTranslatedBlocks / _totalBlocks) * 0.11
+            activeQuadrants >= 3 &&
+            stepFlowStats.rigidCoherence >= 0.56)
+        ? (coherentTranslatedBlocks / _totalBlocks) *
+              0.11 *
+              stepFlowStats.rigidCoherence
         : (sparseSceneCoherentEgoMotion ? 0.045 : 0.0);
-    var motionScore = ((structSceneScore * egoWeight) + flowContribution).clamp(
-      0.0,
-      1.0,
-    );
 
-    // Ensure foreground motion in front of a stationary anchored background stays below threshold.
-    if (hasStrongStaticAnchors) {
-      motionScore = math.min(motionScore, _motionThreshold * 0.65);
+    final fastMotionScore = ((structSceneScore * egoWeight) + flowContribution)
+        .clamp(0.0, 1.0);
+
+    var slowDriftScore = 0.0;
+    if (fullSceneSlowDrift || sparseSceneSlowDrift) {
+      final driftFlowBonus =
+          (winFlowStats.coherentCount / _totalBlocks) *
+          0.11 *
+          winFlowStats.rigidCoherence;
+      slowDriftScore =
+          ((structSceneScore * 1.15 * winFlowStats.rigidCoherence) +
+                  driftFlowBonus)
+              .clamp(0.0, 1.0);
     }
 
-    // 7. Update reference and previous frame state while preventing foreground
-    //    occluders from "ghosting" into the stationary background reference.
-    final baseAdaptRate = isLightingTransient ? 0.30 : 0.08;
+    var motionScore = math.max(fastMotionScore, slowDriftScore);
+
+    if (hasStrongStaticAnchors || loomingRejected) {
+      motionScore = math.min(motionScore, _motionThreshold * 0.62);
+    }
+    if (oscillationRejected) {
+      motionScore = math.min(motionScore, _motionThreshold * 0.72);
+    }
+
+    // 7. Update reference, previous frame, and rolling 4-frame drift window.
+    //    - Passing foreground objects do not ghost into anchored backgrounds.
+    //    - Stationary changes that have settled for >= 4 frames gently adapt
+    //      so someone sitting down in front of the laptop becomes the new
+    //      clean stationary baseline instead of holding reference diff high.
+    final baseAdaptRate = isLightingTransient ? 0.30 : 0.06;
     if (motionScore >= _motionThreshold) {
       _consecutiveAboveThreshold += 1;
       for (var i = 0; i < count; i++) {
-        reference[i] = (0.97 * reference[i]) + (0.03 * currentGrid[i]);
+        reference[i] = (0.98 * reference[i]) + (0.02 * currentGrid[i]);
         previous[i] = currentGrid[i];
       }
     } else {
@@ -803,12 +1044,15 @@ class CameraMotionAnalyzer {
           final blockRefScore = pxCount > 0
               ? (blockRefDiffSum[bIdx] / (pxCount * 255.0))
               : 0.0;
-          // If the camera is anchored, adapt occluded foreground blocks very
-          // slowly (1%) so a passing person never corrupts the background model.
-          final alpha =
-              (hasStrongStaticAnchors && blockRefScore >= staticBlockThreshold)
-              ? 0.01
-              : baseAdaptRate;
+          final double alpha;
+          if (_settledBlockStreak[bIdx] >= 4 && isScenePresentlyStill) {
+            alpha = 0.16;
+          } else if (hasStrongStaticAnchors &&
+              blockRefScore >= staticBlockThreshold) {
+            alpha = 0.01;
+          } else {
+            alpha = baseAdaptRate;
+          }
           final i = gy * gridWidth + gx;
           reference[i] =
               ((1.0 - alpha) * reference[i]) + (alpha * currentGrid[i]);
@@ -817,6 +1061,11 @@ class CameraMotionAnalyzer {
       }
     }
     _previousMean255 = currMean;
+
+    _recentGrids.add(Float32List.fromList(currentGrid));
+    if (_recentGrids.length > _driftWindowFrames) {
+      _recentGrids.removeAt(0);
+    }
 
     final triggered = _consecutiveAboveThreshold >= persistenceFramesRequired;
 
@@ -834,8 +1083,128 @@ class CameraMotionAnalyzer {
       triggered: triggered,
       texturedReferenceBlocks: texturedRefBlocks,
       anchoredTexturedBlocks: anchoredTexturedBlocks,
-      activeQuadrants: activeQuadrants,
-      coherentTranslatedBlocks: coherentTranslatedBlocks,
+      activeQuadrants: math.max(activeQuadrants, winActiveQuadrants),
+      coherentTranslatedBlocks: math.max(
+        coherentTranslatedBlocks,
+        fullSceneSlowDrift || sparseSceneSlowDrift
+            ? winFlowStats.coherentCount
+            : 0,
+      ),
+      slowDriftScore: slowDriftScore,
+      rigidCoherence: math.max(
+        stepFlowStats.rigidCoherence,
+        winFlowStats.rigidCoherence,
+      ),
+      loomingRejected: loomingRejected,
+      oscillationRejected: oscillationRejected,
+    );
+  }
+
+  _FlowCoherenceStats _evaluateFlowCoherence({
+    required List<double> dxList,
+    required List<double> dyList,
+    required List<int> bxList,
+    required List<int> byList,
+  }) {
+    final n = dxList.length;
+    if (n == 0) {
+      return _FlowCoherenceStats.empty;
+    }
+
+    var sumDx = 0.0;
+    var sumDy = 0.0;
+    var sumMag = 0.0;
+    var cx = 0.0;
+    var cy = 0.0;
+    for (var k = 0; k < n; k++) {
+      sumDx += dxList[k];
+      sumDy += dyList[k];
+      sumMag += math.sqrt((dxList[k] * dxList[k]) + (dyList[k] * dyList[k]));
+      cx += bxList[k];
+      cy += byList[k];
+    }
+
+    final meanDx = sumDx / n;
+    final meanDy = sumDy / n;
+    final meanMag = sumMag / n;
+    cx /= n;
+    cy /= n;
+
+    final netMag = math.sqrt((meanDx * meanDx) + (meanDy * meanDy));
+    final panCoherence = meanMag > 1e-6
+        ? (netMag / meanMag).clamp(0.0, 1.0)
+        : 0.0;
+
+    var panAligned = 0;
+    var rollPos = 0;
+    var rollNeg = 0;
+    var tangentialCosSum = 0.0;
+    var radialCosSum = 0.0;
+    var radialSamples = 0;
+
+    for (var k = 0; k < n; k++) {
+      final ux = dxList[k];
+      final uy = dyList[k];
+      final mag = math.sqrt((ux * ux) + (uy * uy));
+      if (mag <= 1e-6) {
+        continue;
+      }
+
+      if (netMag > 1e-6) {
+        final cosPan = ((ux * meanDx) + (uy * meanDy)) / (mag * netMag);
+        if (cosPan >= 0.45) {
+          panAligned += 1;
+        }
+      }
+
+      // Roll is evaluated around the camera optical center (1.5, 1.5).
+      final ox = bxList[k] - 1.5;
+      final oy = byList[k] - 1.5;
+      final oRad = math.sqrt((ox * ox) + (oy * oy));
+      final cross = (ox * uy) - (oy * ux);
+      if (cross > 0.25) {
+        rollPos += 1;
+      } else if (cross < -0.25) {
+        rollNeg += 1;
+      }
+      if (oRad >= 0.45) {
+        final tx = -oy / oRad;
+        final ty = ox / oRad;
+        tangentialCosSum += ((ux * tx) + (uy * ty)) / mag;
+      }
+
+      // Looming (person/hand leaning toward camera) expands outward from the
+      // active foreground centroid (cx, cy) or optical center.
+      final rx = bxList[k] - cx;
+      final ry = byList[k] - cy;
+      final rRad = math.sqrt((rx * rx) + (ry * ry));
+      if (rRad >= 0.45) {
+        radialCosSum += ((ux * (rx / rRad)) + (uy * (ry / rRad))) / mag;
+        radialSamples += 1;
+      }
+    }
+
+    final rollCoherence = (tangentialCosSum.abs() / n).clamp(0.0, 1.0);
+    final rigidCoherence = math.max(panCoherence, rollCoherence);
+    final radialDivergence = radialSamples >= 3
+        ? (radialCosSum / radialSamples).clamp(-1.0, 1.0)
+        : 0.0;
+    final coherentCount = math.max(panAligned, math.max(rollPos, rollNeg));
+
+    // Radial expansion/contraction without rigid pan or roll consensus indicates
+    // an object/person leaning toward or away from a stationary webcam.
+    final isLooming =
+        n >= 3 && radialDivergence.abs() >= 0.44 && rigidCoherence < 0.64;
+
+    return _FlowCoherenceStats(
+      coherentCount: coherentCount,
+      panCoherence: panCoherence,
+      rollCoherence: rollCoherence,
+      rigidCoherence: rigidCoherence,
+      radialDivergence: radialDivergence,
+      meanDx: meanDx,
+      meanDy: meanDy,
+      isLooming: isLooming,
     );
   }
 
@@ -849,6 +1218,7 @@ class CameraMotionAnalyzer {
     required int y0,
     required int w,
     required int h,
+    double minMagnitude = 0.32,
   }) {
     final startX = math.max(1, x0);
     final endX = math.min(gridWidth - 1, x0 + w);
@@ -906,7 +1276,7 @@ class CameraMotionAnalyzer {
     final u = ((syy * bx) - (sxy * by)) / det;
     final v = ((-sxy * bx) + (sxx * by)) / det;
     final mag = math.sqrt((u * u) + (v * v));
-    if (mag < 0.32 || mag > 3.8) {
+    if (mag < minMagnitude || mag > 3.8) {
       return null;
     }
     return (u, v);

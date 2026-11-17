@@ -617,7 +617,7 @@ final class IOSLocationBridge: NSObject, CLLocationManagerDelegate {
       pendingAuthCallback = result
       locationManager.requestWhenInUseAuthorization()
 
-    case "captureCurrentLocation":
+    case "captureCurrentLocation", "captureLocation":
       guard CLLocationManager.locationServicesEnabled() else {
         result(["status": "unavailable"])
         return
@@ -629,6 +629,10 @@ final class IOSLocationBridge: NSObject, CLLocationManagerDelegate {
       }
       let args = call.arguments as? [String: Any]
       let timeoutMs = (args?["timeoutMs"] as? NSNumber)?.intValue ?? 6000
+      let highAccuracy = (args?["highAccuracy"] as? Bool) ?? false
+      locationManager.desiredAccuracy = highAccuracy
+        ? kCLLocationAccuracyNearestTenMeters
+        : kCLLocationAccuracyHundredMeters
       pendingLocationCallbacks.append(result)
       if pendingLocationCallbacks.count == 1 {
         let timeoutItem = DispatchWorkItem { [weak self] in
@@ -639,12 +643,34 @@ final class IOSLocationBridge: NSObject, CLLocationManagerDelegate {
           deadline: .now() + .milliseconds(max(1000, timeoutMs)),
           execute: timeoutItem
         )
-        locationManager.requestLocation()
+        if status == .notDetermined {
+          locationManager.requestWhenInUseAuthorization()
+        } else {
+          locationManager.requestLocation()
+        }
       }
 
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  private func isValidLocation(_ loc: CLLocation) -> Bool {
+    guard CLLocationCoordinate2DIsValid(loc.coordinate) else {
+      return false
+    }
+    guard loc.horizontalAccuracy >= 0.0, loc.horizontalAccuracy.isFinite else {
+      return false
+    }
+    let lat = loc.coordinate.latitude
+    let lon = loc.coordinate.longitude
+    guard lat.isFinite, lon.isFinite else {
+      return false
+    }
+    if abs(lat) < 1e-6 && abs(lon) < 1e-6 {
+      return false
+    }
+    return true
   }
 
   private func serializeLocation(_ loc: CLLocation, isLastKnown: Bool) -> [String: Any] {
@@ -658,7 +684,7 @@ final class IOSLocationBridge: NSObject, CLLocationManagerDelegate {
       "status": "attached",
       "latitude": loc.coordinate.latitude,
       "longitude": loc.coordinate.longitude,
-      "accuracyMeters": max(0.0, loc.horizontalAccuracy),
+      "accuracyMeters": loc.horizontalAccuracy,
       "capturedAtMs": Int64(loc.timestamp.timeIntervalSince1970 * 1000.0),
       "isApproximate": reducedAccuracy,
       "isLastKnown": isLastKnown,
@@ -676,7 +702,7 @@ final class IOSLocationBridge: NSObject, CLLocationManagerDelegate {
   }
 
   private func resolvePendingWithFallbackOrUnavailable() {
-    if let cached = locationManager.location {
+    if let cached = locationManager.location, isValidLocation(cached) {
       finishPendingLocations(with: serializeLocation(cached, isLastKnown: true))
     } else {
       finishPendingLocations(with: ["status": "unavailable"])
@@ -684,17 +710,22 @@ final class IOSLocationBridge: NSObject, CLLocationManagerDelegate {
   }
 
   func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-    if let cb = pendingAuthCallback {
-      let current = currentAuthStatus()
-      if current != .notDetermined {
-        pendingAuthCallback = nil
-        cb(mapAuthStatus(current))
+    let current = currentAuthStatus()
+    if let cb = pendingAuthCallback, current != .notDetermined {
+      pendingAuthCallback = nil
+      cb(mapAuthStatus(current))
+    }
+    if !pendingLocationCallbacks.isEmpty {
+      if current == .denied || current == .restricted {
+        finishPendingLocations(with: ["status": "permissionDenied"])
+      } else if current != .notDetermined {
+        locationManager.requestLocation()
       }
     }
   }
 
   func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-    guard let latest = locations.last else {
+    guard let latest = locations.last(where: { isValidLocation($0) }) else {
       resolvePendingWithFallbackOrUnavailable()
       return
     }

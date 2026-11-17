@@ -160,7 +160,7 @@ void main() {
           health['vapidSubject'],
           equals('https://watsafe-relay.onrender.com'),
         );
-        expect(health['swVersion'], equals('2026.11.16-v3'));
+        expect(health['swVersion'], equals('2026.11.17-v4'));
 
         final initiated = await _requestJson(
           client: client,

@@ -1582,11 +1582,116 @@ bool SampleMediaSampleToGrayscaleGrid(IMFSample* sample, const GUID& subtype,
   return sampled;
 }
 
+struct FlowCoherenceStats {
+  int32_t coherent_count = 0;
+  double rigid_coherence = 0.0;
+  double mean_dx = 0.0;
+  double mean_dy = 0.0;
+  bool is_looming = false;
+};
+
+FlowCoherenceStats EvaluateFlowCoherence(const std::vector<double>& dx_list,
+                                         const std::vector<double>& dy_list,
+                                         const std::vector<int32_t>& bx_list,
+                                         const std::vector<int32_t>& by_list) {
+  FlowCoherenceStats stats;
+  const size_t n = dx_list.size();
+  if (n == 0) {
+    return stats;
+  }
+  double sum_dx = 0.0;
+  double sum_dy = 0.0;
+  double sum_mag = 0.0;
+  double cx = 0.0;
+  double cy = 0.0;
+  for (size_t k = 0; k < n; ++k) {
+    sum_dx += dx_list[k];
+    sum_dy += dy_list[k];
+    sum_mag += std::sqrt((dx_list[k] * dx_list[k]) + (dy_list[k] * dy_list[k]));
+    cx += static_cast<double>(bx_list[k]);
+    cy += static_cast<double>(by_list[k]);
+  }
+  stats.mean_dx = sum_dx / static_cast<double>(n);
+  stats.mean_dy = sum_dy / static_cast<double>(n);
+  const double mean_mag = sum_mag / static_cast<double>(n);
+  cx /= static_cast<double>(n);
+  cy /= static_cast<double>(n);
+
+  const double net_mag =
+      std::sqrt((stats.mean_dx * stats.mean_dx) + (stats.mean_dy * stats.mean_dy));
+  const double pan_coherence =
+      mean_mag > 1e-6 ? std::clamp(net_mag / mean_mag, 0.0, 1.0) : 0.0;
+
+  int32_t pan_aligned = 0;
+  int32_t roll_pos = 0;
+  int32_t roll_neg = 0;
+  double tangential_cos_sum = 0.0;
+  double radial_cos_sum = 0.0;
+  int32_t radial_samples = 0;
+
+  for (size_t k = 0; k < n; ++k) {
+    const double ux = dx_list[k];
+    const double uy = dy_list[k];
+    const double mag = std::sqrt((ux * ux) + (uy * uy));
+    if (mag <= 1e-6) {
+      continue;
+    }
+    if (net_mag > 1e-6) {
+      const double cos_pan =
+          ((ux * stats.mean_dx) + (uy * stats.mean_dy)) / (mag * net_mag);
+      if (cos_pan >= 0.45) {
+        pan_aligned += 1;
+      }
+    }
+    const double ox = static_cast<double>(bx_list[k]) - 1.5;
+    const double oy = static_cast<double>(by_list[k]) - 1.5;
+    const double o_rad = std::sqrt((ox * ox) + (oy * oy));
+    const double cross = (ox * uy) - (oy * ux);
+    if (cross > 0.25) {
+      roll_pos += 1;
+    } else if (cross < -0.25) {
+      roll_neg += 1;
+    }
+    if (o_rad >= 0.45) {
+      tangential_cos_sum += ((ux * (-oy / o_rad)) + (uy * (ox / o_rad))) / mag;
+    }
+    const double rx = static_cast<double>(bx_list[k]) - cx;
+    const double ry = static_cast<double>(by_list[k]) - cy;
+    const double r_rad = std::sqrt((rx * rx) + (ry * ry));
+    if (r_rad >= 0.45) {
+      radial_cos_sum += ((ux * (rx / r_rad)) + (uy * (ry / r_rad))) / mag;
+      radial_samples += 1;
+    }
+  }
+
+  const double roll_coherence =
+      std::clamp(std::abs(tangential_cos_sum) / static_cast<double>(n), 0.0, 1.0);
+  stats.rigid_coherence = std::max(pan_coherence, roll_coherence);
+  const double radial_divergence =
+      radial_samples >= 3
+          ? std::clamp(radial_cos_sum / static_cast<double>(radial_samples), -1.0,
+                       1.0)
+          : 0.0;
+  stats.coherent_count = std::max(pan_aligned, std::max(roll_pos, roll_neg));
+  stats.is_looming =
+      n >= 3 && std::abs(radial_divergence) >= 0.44 && stats.rigid_coherence < 0.64;
+  return stats;
+}
+
+std::optional<bool> QueryWindowsAcPowerOnline() {
+  SYSTEM_POWER_STATUS pwr{};
+  if (::GetSystemPowerStatus(&pwr) && pwr.ACLineStatus != 255) {
+    return pwr.ACLineStatus == 1;
+  }
+  return std::nullopt;
+}
+
 bool EstimateLucasKanadeFlow(const std::vector<float>& previous,
                              const std::vector<float>& current, int32_t grid_w,
                              int32_t grid_h, double step_mean_shift,
                              int32_t x0, int32_t y0, int32_t w, int32_t h,
-                             double* out_u, double* out_v) {
+                             double* out_u, double* out_v,
+                             double min_magnitude = 0.32) {
   const int32_t start_x = std::max<int32_t>(1, x0);
   const int32_t end_x = std::min<int32_t>(grid_w - 1, x0 + w);
   const int32_t start_y = std::max<int32_t>(1, y0);
@@ -1647,7 +1752,7 @@ bool EstimateLucasKanadeFlow(const std::vector<float>& previous,
   const double u = ((syy * bx) - (sxy * by)) / det;
   const double v = ((-sxy * bx) + (sxx * by)) / det;
   const double mag = std::sqrt((u * u) + (v * v));
-  if (mag < 0.32 || mag > 3.8) {
+  if (mag < min_magnitude || mag > 3.8) {
     return false;
   }
   *out_u = u;
@@ -2067,8 +2172,15 @@ class WindowsCameraMotionBridge {
     bool is_calibration_done = false;
     std::vector<float> reference_grid;
     std::vector<float> previous_grid;
+    std::deque<std::vector<float>> recent_grids;
+    int32_t settled_block_streak[16] = {0};
     std::vector<float> current_grid;
     float previous_mean_255 = 0.0f;
+    double prev_mean_flow_dx = 0.0;
+    double prev_mean_flow_dy = 0.0;
+    bool has_prev_mean_flow = false;
+    std::optional<bool> was_on_ac_power = QueryWindowsAcPowerOnline();
+    int64_t last_ac_unplug_ms = 0;
     int32_t consecutive_above_threshold = 0;
     int32_t consecutive_poor_input = 0;
     bool is_input_degraded = false;
@@ -2282,6 +2394,8 @@ class WindowsCameraMotionBridge {
         previous_mean_255 = curr_mean;
         if (elapsed_ms >= calibration_ms && processed_frame_count >= 4) {
           is_calibration_done = true;
+          recent_grids.clear();
+          recent_grids.push_back(reference_grid);
           EmitEvent(flutter::EncodableMap{
               {flutter::EncodableValue("sessionId"),
                flutter::EncodableValue(session_id)},
@@ -2305,6 +2419,19 @@ class WindowsCameraMotionBridge {
         continue;
       }
 
+      if (const auto now_ac = QueryWindowsAcPowerOnline(); now_ac.has_value()) {
+        if (was_on_ac_power.has_value() && *was_on_ac_power && !(*now_ac)) {
+          last_ac_unplug_ms = now_ms;
+        }
+        was_on_ac_power = now_ac;
+      }
+      const bool ac_power_unplugged_recently =
+          last_ac_unplug_ms > 0 && (now_ms - last_ac_unplug_ms) <= 8000;
+
+      const std::vector<float>& window_grid =
+          !recent_grids.empty() ? recent_grids.front() : previous_grid;
+      const bool has_window_span = recent_grids.size() >= 3;
+
       // Per-block zero-mean & affine illumination normalization + 4x4 Lucas-Kanade ego-motion
       constexpr int32_t kBlocksX = 4;
       constexpr int32_t kBlocksY = 4;
@@ -2312,6 +2439,7 @@ class WindowsCameraMotionBridge {
       double block_curr_sum[kTotalBlocks] = {0.0};
       double block_ref_sum[kTotalBlocks] = {0.0};
       double block_prev_sum[kTotalBlocks] = {0.0};
+      double block_win_sum[kTotalBlocks] = {0.0};
       int32_t block_pixel_count[kTotalBlocks] = {0};
 
       for (int32_t gy = 0; gy < grid_h; ++gy) {
@@ -2327,6 +2455,7 @@ class WindowsCameraMotionBridge {
           block_curr_sum[b_idx] += static_cast<double>(current_grid[i]);
           block_ref_sum[b_idx] += static_cast<double>(reference_grid[i]);
           block_prev_sum[b_idx] += static_cast<double>(previous_grid[i]);
+          block_win_sum[b_idx] += static_cast<double>(window_grid[i]);
           block_pixel_count[b_idx] += 1;
         }
       }
@@ -2334,17 +2463,20 @@ class WindowsCameraMotionBridge {
       double block_curr_mean[kTotalBlocks] = {0.0};
       double block_ref_mean[kTotalBlocks] = {0.0};
       double block_prev_mean[kTotalBlocks] = {0.0};
+      double block_win_mean[kTotalBlocks] = {0.0};
       for (int32_t b = 0; b < kTotalBlocks; ++b) {
         if (block_pixel_count[b] > 0) {
           const double n = static_cast<double>(block_pixel_count[b]);
           block_curr_mean[b] = block_curr_sum[b] / n;
           block_ref_mean[b] = block_ref_sum[b] / n;
           block_prev_mean[b] = block_prev_sum[b] / n;
+          block_win_mean[b] = block_win_sum[b] / n;
         }
       }
 
       double block_curr_dev_sum[kTotalBlocks] = {0.0};
       double block_ref_dev_sum[kTotalBlocks] = {0.0};
+      double block_prev_dev_sum[kTotalBlocks] = {0.0};
       for (int32_t gy = 0; gy < grid_h; ++gy) {
         const int32_t by =
             std::min(kBlocksY - 1, (gy * kBlocksY) / std::max(1, grid_h));
@@ -2359,28 +2491,39 @@ class WindowsCameraMotionBridge {
               static_cast<double>(current_grid[i]) - block_curr_mean[b_idx]);
           block_ref_dev_sum[b_idx] += std::abs(
               static_cast<double>(reference_grid[i]) - block_ref_mean[b_idx]);
+          block_prev_dev_sum[b_idx] += std::abs(
+              static_cast<double>(previous_grid[i]) - block_prev_mean[b_idx]);
         }
       }
 
       double block_gain_to_ref[kTotalBlocks];
+      double block_gain_to_prev[kTotalBlocks];
       for (int32_t b = 0; b < kTotalBlocks; ++b) {
         block_gain_to_ref[b] = 1.0;
+        block_gain_to_prev[b] = 1.0;
         if (block_pixel_count[b] > 0) {
           const double n = static_cast<double>(block_pixel_count[b]);
           const double c_mad = block_curr_dev_sum[b] / n;
           const double r_mad = block_ref_dev_sum[b] / n;
-          if (c_mad > 3.0 && r_mad > 3.0) {
-            block_gain_to_ref[b] = std::clamp(r_mad / c_mad, 0.72, 1.38);
+          const double p_mad = block_prev_dev_sum[b] / n;
+          if (c_mad > 2.5 && r_mad > 2.5) {
+            block_gain_to_ref[b] = std::clamp(r_mad / c_mad, 0.66, 1.50);
+          }
+          if (c_mad > 2.5 && p_mad > 2.5) {
+            block_gain_to_prev[b] = std::clamp(p_mad / c_mad, 0.74, 1.35);
           }
         }
       }
 
       double block_ref_diff_sum[kTotalBlocks] = {0.0};
       double block_step_diff_sum[kTotalBlocks] = {0.0};
+      double block_win_diff_sum[kTotalBlocks] = {0.0};
       double block_ref_grad_sum[kTotalBlocks] = {0.0};
+      double block_curr_grad_sum[kTotalBlocks] = {0.0};
       int32_t block_grad_count[kTotalBlocks] = {0};
 
       double norm_ref_diff_sum = 0.0;
+      double norm_step_diff_sum = 0.0;
       for (int32_t gy = 0; gy < grid_h; ++gy) {
         const int32_t by =
             std::min(kBlocksY - 1, (gy * kBlocksY) / std::max(1, grid_h));
@@ -2395,19 +2538,27 @@ class WindowsCameraMotionBridge {
           const double curr_val = static_cast<double>(current_grid[i]);
           const double ref_val = static_cast<double>(reference_grid[i]);
           const double prev_val = static_cast<double>(previous_grid[i]);
+          const double win_val = static_cast<double>(window_grid[i]);
 
-          const double norm_curr_centered =
+          const double norm_curr_to_ref =
               (curr_val - block_curr_mean[b_idx]) * block_gain_to_ref[b_idx];
           const double ref_centered = ref_val - block_ref_mean[b_idx];
-          const double ref_delta = std::abs(norm_curr_centered - ref_centered);
-          const double block_step_shift =
-              block_curr_mean[b_idx] - block_prev_mean[b_idx];
-          const double step_delta =
-              std::abs((curr_val - prev_val) - block_step_shift);
+          const double ref_delta = std::abs(norm_curr_to_ref - ref_centered);
+
+          const double norm_curr_to_prev =
+              (curr_val - block_curr_mean[b_idx]) * block_gain_to_prev[b_idx];
+          const double prev_centered = prev_val - block_prev_mean[b_idx];
+          const double step_delta = std::abs(norm_curr_to_prev - prev_centered);
+
+          const double win_shift =
+              block_curr_mean[b_idx] - block_win_mean[b_idx];
+          const double win_delta = std::abs((curr_val - win_val) - win_shift);
 
           norm_ref_diff_sum += ref_delta;
+          norm_step_diff_sum += step_delta;
           block_ref_diff_sum[b_idx] += ref_delta;
           block_step_diff_sum[b_idx] += step_delta;
+          block_win_diff_sum[b_idx] += win_delta;
 
           if (gx + 1 < grid_w && gy + 1 < grid_h) {
             const double gx_diff = std::abs(
@@ -2416,6 +2567,13 @@ class WindowsCameraMotionBridge {
                 ref_val - static_cast<double>(
                               reference_grid[i + static_cast<size_t>(grid_w)]));
             block_ref_grad_sum[b_idx] += 0.5 * (gx_diff + gy_diff);
+
+            const double cgx_diff = std::abs(
+                curr_val - static_cast<double>(current_grid[i + 1u]));
+            const double cgy_diff = std::abs(
+                curr_val - static_cast<double>(
+                               current_grid[i + static_cast<size_t>(grid_w)]));
+            block_curr_grad_sum[b_idx] += 0.5 * (cgx_diff + cgy_diff);
             block_grad_count[b_idx] += 1;
           }
         }
@@ -2430,13 +2588,21 @@ class WindowsCameraMotionBridge {
 
       int32_t textured_ref_blocks = 0;
       int32_t anchored_textured_blocks = 0;
-      int32_t changed_blocks = 0;
+      int32_t textured_perimeter_blocks = 0;
+      int32_t anchored_perimeter_blocks = 0;
+      int32_t active_moving_blocks = 0;
       double textured_ref_score_sum = 0.0;
       std::vector<double> dx_list;
       std::vector<double> dy_list;
       std::vector<int32_t> bx_list;
       std::vector<int32_t> by_list;
       int32_t quadrant_activity[4] = {0, 0, 0, 0};
+
+      std::vector<double> win_dx_list;
+      std::vector<double> win_dy_list;
+      std::vector<int32_t> win_bx_list;
+      std::vector<int32_t> win_by_list;
+      int32_t win_quadrant_activity[4] = {0, 0, 0, 0};
 
       for (int32_t by = 0; by < kBlocksY; ++by) {
         for (int32_t bx = 0; bx < kBlocksX; ++bx) {
@@ -2449,32 +2615,53 @@ class WindowsCameraMotionBridge {
               block_ref_diff_sum[b] / static_cast<double>(px_count * 255);
           const double step_score =
               block_step_diff_sum[b] / static_cast<double>(px_count * 255);
+          const double win_score =
+              block_win_diff_sum[b] / static_cast<double>(px_count * 255);
           const double mean_grad =
               block_grad_count[b] > 0
                   ? (block_ref_grad_sum[b] /
                      static_cast<double>(block_grad_count[b]))
                   : 0.0;
+          const double curr_grad =
+              block_grad_count[b] > 0
+                  ? (block_curr_grad_sum[b] /
+                     static_cast<double>(block_grad_count[b]))
+                  : 0.0;
           const bool is_textured = mean_grad >= 3.2;
+          const bool is_perimeter =
+              bx == 0 || bx == (kBlocksX - 1) || by == 0 || by == (kBlocksY - 1);
+
+          if (step_score < 0.010) {
+            settled_block_streak[b] += 1;
+          } else {
+            settled_block_streak[b] = 0;
+          }
 
           if (is_textured) {
             textured_ref_blocks += 1;
             textured_ref_score_sum += ref_score;
-            if (ref_score < static_block_threshold && step_score < 0.018) {
+            if (is_perimeter) {
+              textured_perimeter_blocks += 1;
+            }
+            if (ref_score < static_block_threshold && step_score < 0.016) {
               anchored_textured_blocks += 1;
+              if (is_perimeter) {
+                anchored_perimeter_blocks += 1;
+              }
             }
           }
 
           const double block_step_shift =
               block_curr_mean[b] - block_prev_mean[b];
           bool block_translated = false;
-          if (is_textured && step_score >= 0.008 && block_w >= 6 &&
-              block_h >= 6) {
+          if (is_textured && curr_grad >= 2.4 && step_score >= 0.008 &&
+              block_w >= 6 && block_h >= 6) {
             double flow_u = 0.0;
             double flow_v = 0.0;
             if (EstimateLucasKanadeFlow(previous_grid, current_grid, grid_w,
                                         grid_h, block_step_shift, bx * block_w,
                                         by * block_h, block_w, block_h, &flow_u,
-                                        &flow_v) ||
+                                        &flow_v, 0.32) ||
                 EstimateBlockTranslation(previous_grid, current_grid, grid_w,
                                          grid_h, block_step_shift, bx * block_w,
                                          by * block_h, block_w, block_h,
@@ -2487,9 +2674,32 @@ class WindowsCameraMotionBridge {
             }
           }
 
-          if ((ref_score >= active_block_threshold && step_score >= 0.010) ||
+          if (has_window_span && is_textured && curr_grad >= 2.6 &&
+              win_score >= 0.010 && block_w >= 6 && block_h >= 6) {
+            const double win_shift = block_curr_mean[b] - block_win_mean[b];
+            double wflow_u = 0.0;
+            double wflow_v = 0.0;
+            if (EstimateLucasKanadeFlow(window_grid, current_grid, grid_w,
+                                        grid_h, win_shift, bx * block_w,
+                                        by * block_h, block_w, block_h,
+                                        &wflow_u, &wflow_v, 0.36) ||
+                EstimateBlockTranslation(window_grid, current_grid, grid_w,
+                                         grid_h, win_shift, bx * block_w,
+                                         by * block_h, block_w, block_h,
+                                         &wflow_u, &wflow_v)) {
+              win_dx_list.push_back(wflow_u);
+              win_dy_list.push_back(wflow_v);
+              win_bx_list.push_back(bx);
+              win_by_list.push_back(by);
+              const int32_t qx = bx >= 2 ? 1 : 0;
+              const int32_t qy = by >= 2 ? 1 : 0;
+              win_quadrant_activity[qy * 2 + qx] += 1;
+            }
+          }
+
+          if ((ref_score >= active_block_threshold && step_score >= 0.012) ||
               block_translated) {
-            changed_blocks += 1;
+            active_moving_blocks += 1;
             const int32_t qx = bx >= 2 ? 1 : 0;
             const int32_t qy = by >= 2 ? 1 : 0;
             quadrant_activity[qy * 2 + qx] += 1;
@@ -2498,42 +2708,55 @@ class WindowsCameraMotionBridge {
       }
 
       int32_t active_quadrants = 0;
+      int32_t win_active_quadrants = 0;
       for (int32_t q = 0; q < 4; ++q) {
         if (quadrant_activity[q] >= 1) {
           active_quadrants += 1;
         }
+        if (win_quadrant_activity[q] >= 1) {
+          win_active_quadrants += 1;
+        }
       }
 
-      int32_t coherent_translated_blocks = 0;
-      if (!dx_list.empty()) {
-        double sum_dx = 0.0;
-        double sum_dy = 0.0;
-        int32_t roll_pos = 0;
-        int32_t roll_neg = 0;
-        for (size_t k = 0; k < dx_list.size(); ++k) {
-          sum_dx += dx_list[k];
-          sum_dy += dy_list[k];
-          const double rx = static_cast<double>(bx_list[k]) - 1.5;
-          const double ry = static_cast<double>(by_list[k]) - 1.5;
-          const double cross = (rx * dy_list[k]) - (ry * dx_list[k]);
-          if (cross > 0.25) {
-            roll_pos += 1;
-          } else if (cross < -0.25) {
-            roll_neg += 1;
+      const FlowCoherenceStats step_flow =
+          EvaluateFlowCoherence(dx_list, dy_list, bx_list, by_list);
+      const FlowCoherenceStats win_flow = EvaluateFlowCoherence(
+          win_dx_list, win_dy_list, win_bx_list, win_by_list);
+      const int32_t coherent_translated_blocks = step_flow.coherent_count;
+      const bool looming_rejected =
+          step_flow.is_looming ||
+          (coherent_translated_blocks < 5 && win_flow.is_looming);
+
+      bool oscillation_rejected = false;
+      const double curr_flow_mag = std::sqrt(
+          (step_flow.mean_dx * step_flow.mean_dx) +
+          (step_flow.mean_dy * step_flow.mean_dy));
+      if (dx_list.size() >= 3 && curr_flow_mag >= 0.30) {
+        if (has_prev_mean_flow) {
+          const double prev_mag = std::sqrt(
+              (prev_mean_flow_dx * prev_mean_flow_dx) +
+              (prev_mean_flow_dy * prev_mean_flow_dy));
+          if (prev_mag >= 0.30) {
+            const double cos_turn =
+                ((prev_mean_flow_dx * step_flow.mean_dx) +
+                 (prev_mean_flow_dy * step_flow.mean_dy)) /
+                (prev_mag * curr_flow_mag);
+            if (cos_turn < -0.25) {
+              oscillation_rejected = true;
+            }
           }
         }
-        int32_t pan_aligned = 0;
-        for (size_t k = 0; k < dx_list.size(); ++k) {
-          if ((dx_list[k] * sum_dx) + (dy_list[k] * sum_dy) > 0.0) {
-            pan_aligned += 1;
-          }
-        }
-        coherent_translated_blocks =
-            std::max(pan_aligned, std::max(roll_pos, roll_neg));
+        prev_mean_flow_dx = step_flow.mean_dx;
+        prev_mean_flow_dy = step_flow.mean_dy;
+        has_prev_mean_flow = true;
+      } else if (active_moving_blocks == 0) {
+        has_prev_mean_flow = false;
       }
 
       const double full_scene_struct_score =
           norm_ref_diff_sum / static_cast<double>(count * 255u);
+      const double mean_step_score =
+          norm_step_diff_sum / static_cast<double>(count * 255u);
       const double textured_struct_score =
           textured_ref_blocks > 0
               ? (textured_ref_score_sum /
@@ -2548,59 +2771,107 @@ class WindowsCameraMotionBridge {
       const double mean_jump =
           static_cast<double>(std::abs(curr_mean - previous_mean_255));
       const bool is_lighting_transient =
-          mean_jump >= 20.0 && coherent_translated_blocks <= 2;
+          mean_jump >= 18.0 && coherent_translated_blocks <= 2;
       const int32_t min_anchors = std::max<int32_t>(
           3, static_cast<int32_t>(
-                 std::ceil(static_cast<double>(textured_ref_blocks) * 0.28)));
+                 std::ceil(static_cast<double>(textured_ref_blocks) * 0.22)));
+      const int32_t min_perim_anchors = std::max<int32_t>(
+          3, static_cast<int32_t>(std::ceil(
+                 static_cast<double>(textured_perimeter_blocks) * 0.34)));
       const bool has_strong_static_anchors =
-          textured_ref_blocks >= 4 && anchored_textured_blocks >= min_anchors;
+          (textured_ref_blocks >= 4 && anchored_textured_blocks >= min_anchors) ||
+          (textured_perimeter_blocks >= 4 &&
+           anchored_perimeter_blocks >= min_perim_anchors);
+
       const bool sparse_scene_coherent_ego_motion =
           textured_ref_blocks >= 2 && textured_ref_blocks <= 6 &&
           anchored_textured_blocks == 0 &&
           coherent_translated_blocks >=
-              std::min<int32_t>(3, textured_ref_blocks);
+              std::min<int32_t>(3, textured_ref_blocks) &&
+          step_flow.rigid_coherence >= 0.58 && !looming_rejected;
 
-      double ego_weight = 0.45;
-      if (is_lighting_transient) {
-        ego_weight = 0.12;
+      const bool sparse_scene_slow_drift =
+          has_window_span && textured_ref_blocks >= 2 &&
+          textured_ref_blocks <= 6 && anchored_textured_blocks == 0 &&
+          win_flow.coherent_count >=
+              std::min<int32_t>(3, textured_ref_blocks) &&
+          win_flow.rigid_coherence >= 0.68 && !win_flow.is_looming;
+
+      const bool full_scene_slow_drift =
+          has_window_span && !has_strong_static_anchors &&
+          !is_lighting_transient && !looming_rejected &&
+          win_flow.coherent_count >= 5 && win_active_quadrants >= 3 &&
+          win_flow.rigid_coherence >= 0.70;
+
+      const bool is_scene_presently_still =
+          coherent_translated_blocks == 0 && !full_scene_slow_drift &&
+          !sparse_scene_slow_drift &&
+          (active_moving_blocks <= 2 || mean_step_score < 0.009);
+
+      double ego_weight = 0.32;
+      if (is_lighting_transient || is_input_degraded) {
+        ego_weight = 0.10;
       } else if (has_strong_static_anchors) {
-        ego_weight = 0.16;
+        ego_weight = 0.14;
+      } else if (looming_rejected) {
+        ego_weight = 0.18;
+      } else if (is_scene_presently_still) {
+        ego_weight = 0.08;
       } else if (sparse_scene_coherent_ego_motion) {
         ego_weight = 1.20;
-      } else if (active_quadrants <= 2 && coherent_translated_blocks < 5) {
-        ego_weight = 0.28;
-      } else if (coherent_translated_blocks >= 5 && active_quadrants >= 3) {
+      } else if (coherent_translated_blocks >= 5 && active_quadrants >= 3 &&
+                 step_flow.rigid_coherence >= 0.56) {
         ego_weight = 1.25;
-      } else if (textured_ref_blocks > 0 &&
-                 anchored_textured_blocks <=
-                     static_cast<int32_t>(std::floor(
-                         static_cast<double>(textured_ref_blocks) * 0.20)) &&
-                 changed_blocks >= 10 && active_quadrants >= 3) {
-        ego_weight = 1.10;
-      } else if (textured_ref_blocks == 0 && changed_blocks >= 12 &&
-                 active_quadrants == 4) {
-        ego_weight = 1.0;
+      } else if (active_quadrants <= 2 && coherent_translated_blocks < 5) {
+        ego_weight = 0.24;
+      } else if (textured_ref_blocks > 0 && anchored_perimeter_blocks == 0 &&
+                 anchored_textured_blocks == 0 && active_moving_blocks >= 12 &&
+                 active_quadrants == 4 && normalized_deviation >= 0.028 &&
+                 dx_list.size() >= 3 && step_flow.rigid_coherence >= 0.55) {
+        ego_weight = 1.08;
+      } else if (textured_ref_blocks == 0 && active_moving_blocks >= 13 &&
+                 active_quadrants == 4 && mean_step_score >= 0.025 &&
+                 normalized_deviation >= 0.015) {
+        ego_weight = 0.95;
       }
 
       const double flow_contribution =
-          (!has_strong_static_anchors && coherent_translated_blocks >= 5 &&
-           active_quadrants >= 3)
+          (!has_strong_static_anchors && !looming_rejected &&
+           coherent_translated_blocks >= 5 && active_quadrants >= 3 &&
+           step_flow.rigid_coherence >= 0.56)
               ? (static_cast<double>(coherent_translated_blocks) /
                  static_cast<double>(kTotalBlocks)) *
-                    0.11
+                    0.11 * step_flow.rigid_coherence
               : (sparse_scene_coherent_ego_motion ? 0.045 : 0.0);
-      double motion_score = std::clamp(
+      const double fast_motion_score = std::clamp(
           (struct_motion_score * ego_weight) + flow_contribution, 0.0, 1.0);
-      if (has_strong_static_anchors) {
-        motion_score = std::min(motion_score, active_threshold * 0.65);
+
+      double slow_drift_score = 0.0;
+      if (full_scene_slow_drift || sparse_scene_slow_drift) {
+        const double drift_bonus =
+            (static_cast<double>(win_flow.coherent_count) /
+             static_cast<double>(kTotalBlocks)) *
+            0.11 * win_flow.rigid_coherence;
+        slow_drift_score = std::clamp(
+            (struct_motion_score * 1.15 * win_flow.rigid_coherence) +
+                drift_bonus,
+            0.0, 1.0);
       }
 
-      const float base_adapt_rate = is_lighting_transient ? 0.30f : 0.08f;
+      double motion_score = std::max(fast_motion_score, slow_drift_score);
+      if (has_strong_static_anchors || looming_rejected) {
+        motion_score = std::min(motion_score, active_threshold * 0.62);
+      }
+      if (oscillation_rejected) {
+        motion_score = std::min(motion_score, active_threshold * 0.72);
+      }
+
+      const float base_adapt_rate = is_lighting_transient ? 0.30f : 0.06f;
       if (motion_score >= active_threshold) {
         consecutive_above_threshold += 1;
         for (size_t i = 0; i < count; ++i) {
           reference_grid[i] =
-              (0.97f * reference_grid[i]) + (0.03f * current_grid[i]);
+              (0.98f * reference_grid[i]) + (0.02f * current_grid[i]);
           previous_grid[i] = current_grid[i];
         }
       } else {
@@ -2618,10 +2889,13 @@ class WindowsCameraMotionBridge {
                     ? (block_ref_diff_sum[b_idx] /
                        static_cast<double>(px_count * 255))
                     : 0.0;
-            const float alpha = (has_strong_static_anchors &&
-                                 block_ref_score >= static_block_threshold)
-                                    ? 0.01f
-                                    : base_adapt_rate;
+            float alpha = base_adapt_rate;
+            if (settled_block_streak[b_idx] >= 4 && is_scene_presently_still) {
+              alpha = 0.16f;
+            } else if (has_strong_static_anchors &&
+                       block_ref_score >= static_block_threshold) {
+              alpha = 0.01f;
+            }
             const size_t i =
                 static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
                 static_cast<size_t>(gx);
@@ -2632,12 +2906,22 @@ class WindowsCameraMotionBridge {
         }
       }
       previous_mean_255 = curr_mean;
+      recent_grids.push_back(current_grid);
+      if (recent_grids.size() > 4) {
+        recent_grids.pop_front();
+      }
+
+      const int32_t reported_coherent = std::max(
+          coherent_translated_blocks,
+          (full_scene_slow_drift || sparse_scene_slow_drift)
+              ? win_flow.coherent_count
+              : 0);
 
       if (consecutive_above_threshold >= persistence_frames) {
         char summary_buf[190];
         std::snprintf(
             summary_buf, sizeof(summary_buf),
-            "Sustained camera ego-motion detected (score %.3f >= threshold %.3f across %d frames)",
+            "Sustained camera movement detected (score %.3f >= threshold %.3f across %d frames)",
             motion_score, active_threshold, consecutive_above_threshold);
         EmitEvent(flutter::EncodableMap{
             {flutter::EncodableValue("sessionId"),
@@ -2654,6 +2938,16 @@ class WindowsCameraMotionBridge {
              flutter::EncodableValue(normalized_luminance)},
             {flutter::EncodableValue("consecutiveFrames"),
              flutter::EncodableValue(consecutive_above_threshold)},
+            {flutter::EncodableValue("coherentBlocks"),
+             flutter::EncodableValue(reported_coherent)},
+            {flutter::EncodableValue("anchoredBlocks"),
+             flutter::EncodableValue(anchored_textured_blocks)},
+            {flutter::EncodableValue("slowDriftScore"),
+             flutter::EncodableValue(slow_drift_score)},
+            {flutter::EncodableValue("loomingRejected"),
+             flutter::EncodableValue(looming_rejected)},
+            {flutter::EncodableValue("acPowerUnplugged"),
+             flutter::EncodableValue(ac_power_unplugged_recently)},
             {flutter::EncodableValue("timestampMs"),
              flutter::EncodableValue(now_ms)},
         });
@@ -2677,6 +2971,16 @@ class WindowsCameraMotionBridge {
              flutter::EncodableValue(normalized_luminance)},
             {flutter::EncodableValue("consecutiveFrames"),
              flutter::EncodableValue(consecutive_above_threshold)},
+            {flutter::EncodableValue("coherentBlocks"),
+             flutter::EncodableValue(reported_coherent)},
+            {flutter::EncodableValue("anchoredBlocks"),
+             flutter::EncodableValue(anchored_textured_blocks)},
+            {flutter::EncodableValue("slowDriftScore"),
+             flutter::EncodableValue(slow_drift_score)},
+            {flutter::EncodableValue("loomingRejected"),
+             flutter::EncodableValue(looming_rejected)},
+            {flutter::EncodableValue("acPowerUnplugged"),
+             flutter::EncodableValue(ac_power_unplugged_recently)},
             {flutter::EncodableValue("timestampMs"),
              flutter::EncodableValue(now_ms)},
         });

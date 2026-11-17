@@ -1182,7 +1182,7 @@ class AndroidLocationBridge(
         result.success("denied")
       }
 
-      "captureCurrentLocation" -> {
+      "captureCurrentLocation", "captureLocation" -> {
         if (!hasFineLocation() && !hasCoarseLocation()) {
           result.success(mapOf("status" to "permissionDenied"))
           return
@@ -1193,18 +1193,21 @@ class AndroidLocationBridge(
           return
         }
         val timeoutMs = ((call.argument<Number>("timeoutMs"))?.toLong() ?: 6000L).coerceAtLeast(1000L)
+        val highAccuracy = call.argument<Boolean>("highAccuracy") ?: false
         val fineGranted = hasFineLocation()
         val provider = when {
-          fineGranted && locManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
+          highAccuracy && fineGranted && locManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
             LocationManager.GPS_PROVIDER
           locManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) ->
             LocationManager.NETWORK_PROVIDER
+          fineGranted && locManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
+            LocationManager.GPS_PROVIDER
           else -> null
         }
 
         val lastKnown = getBestLastKnownLocation(locManager, fineGranted)
         if (provider == null) {
-          if (lastKnown != null) {
+          if (lastKnown != null && isValidLocation(lastKnown)) {
             result.success(serializeLocation(lastKnown, isLastKnown = true, coarseOnly = !fineGranted))
           } else {
             result.success(mapOf("status" to "unavailable"))
@@ -1217,6 +1220,7 @@ class AndroidLocationBridge(
         val listener = object : LocationListener {
           override fun onLocationChanged(location: Location) {
             if (completed) return
+            if (!isValidLocation(location)) return
             completed = true
             try {
               locManager.removeUpdates(this)
@@ -1236,7 +1240,7 @@ class AndroidLocationBridge(
           try {
             locManager.removeUpdates(listener)
           } catch (_: Exception) {}
-          if (lastKnown != null) {
+          if (lastKnown != null && isValidLocation(lastKnown)) {
             result.success(serializeLocation(lastKnown, isLastKnown = true, coarseOnly = !fineGranted))
           } else {
             result.success(mapOf("status" to "unavailable"))
@@ -1256,7 +1260,7 @@ class AndroidLocationBridge(
           mainHandler.removeCallbacks(timeoutRunnable)
           if (!completed) {
             completed = true
-            if (lastKnown != null) {
+            if (lastKnown != null && isValidLocation(lastKnown)) {
               result.success(serializeLocation(lastKnown, isLastKnown = true, coarseOnly = !fineGranted))
             } else {
               result.success(mapOf("status" to "unavailable"))
@@ -1269,14 +1273,24 @@ class AndroidLocationBridge(
     }
   }
 
+  private fun isValidLocation(loc: Location): Boolean {
+    val lat = loc.latitude
+    val lon = loc.longitude
+    if (!lat.isFinite() || !lon.isFinite()) return false
+    if (lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) return false
+    if (kotlin.math.abs(lat) < 1e-6 && kotlin.math.abs(lon) < 1e-6) return false
+    if (loc.hasAccuracy() && (!loc.accuracy.isFinite() || loc.accuracy < 0f)) return false
+    return true
+  }
+
   private fun getBestLastKnownLocation(locManager: LocationManager, fineGranted: Boolean): Location? {
     val candidates = mutableListOf<Location>()
     try {
       if (fineGranted) {
-        locManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { candidates.add(it) }
+        locManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { if (isValidLocation(it)) candidates.add(it) }
       }
-      locManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)?.let { candidates.add(it) }
-      locManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)?.let { candidates.add(it) }
+      locManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)?.let { if (isValidLocation(it)) candidates.add(it) }
+      locManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)?.let { if (isValidLocation(it)) candidates.add(it) }
     } catch (_: SecurityException) {}
     return candidates.maxByOrNull { it.time }
   }

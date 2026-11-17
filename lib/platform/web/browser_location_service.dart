@@ -54,6 +54,7 @@ class BrowserLocationService implements LocationServiceAdapter {
   Future<({DeviceLocationSnapshot? location, IncidentLocationStatus status})>
   captureCurrentLocation({
     Duration timeout = const Duration(seconds: 6),
+    bool highAccuracy = false,
   }) async {
     final completer =
         Completer<
@@ -66,11 +67,24 @@ class BrowserLocationService implements LocationServiceAdapter {
           if (completer.isCompleted) return;
           _lastKnownPermission = PermissionStatus.granted;
           final coords = pos.coords;
+          final lat = coords.latitude;
+          final lon = coords.longitude;
           final acc = coords.accuracy;
+          if (!DeviceLocationSnapshot.isValidCoordinates(
+            lat,
+            lon,
+            accuracyMeters: acc,
+          )) {
+            completer.complete((
+              location: null,
+              status: IncidentLocationStatus.unavailable,
+            ));
+            return;
+          }
           completer.complete((
             location: DeviceLocationSnapshot(
-              latitude: coords.latitude,
-              longitude: coords.longitude,
+              latitude: lat,
+              longitude: lon,
               accuracyMeters: acc,
               capturedAt: DateTime.fromMillisecondsSinceEpoch(pos.timestamp),
               isApproximate: acc > 100,
@@ -95,9 +109,9 @@ class BrowserLocationService implements LocationServiceAdapter {
           }
         }).toJS,
         web.PositionOptions(
-          enableHighAccuracy: true,
+          enableHighAccuracy: highAccuracy,
           timeout: timeout.inMilliseconds,
-          maximumAge: 60000,
+          maximumAge: highAccuracy ? 10000 : 90000,
         ),
       );
     } catch (_) {

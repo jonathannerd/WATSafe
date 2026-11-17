@@ -64,7 +64,7 @@ class CompanionPwaAssets {
   }
 
   static const String serviceWorkerJs = r'''
-const SHELL_CACHE = 'watsafe-shell-2026.11.16-v3';
+const SHELL_CACHE = 'watsafe-shell-2026.11.17-v4';
 const SHELL_URLS = [
   '/companion',
   '/manifest.webmanifest',
@@ -512,6 +512,8 @@ self.addEventListener('notificationclick', (event) => {
   <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="anonymous">
+  <script defer src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin="anonymous"></script>
   <title>WATSafe Phone Companion</title>
   <style>
     :root {
@@ -693,9 +695,90 @@ self.addEventListener('notificationclick', (event) => {
     }
     .nav-btn {
       background: none; border: none; color: var(--muted);
-      font-size: 13px; font-weight: 700; padding: 8px 18px; border-radius: 999px; cursor: pointer;
+      font-size: 13px; font-weight: 700; padding: 8px 13px; border-radius: 999px; cursor: pointer;
     }
     .nav-btn.active { background: rgba(229,142,38,0.2); color: var(--amber); }
+    .map-stage {
+      position: relative;
+      width: 100%;
+      height: 236px;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #16202B;
+      touch-action: none;
+    }
+    .map-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .map-vector-host {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+    .map-overlay-top {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      right: 52px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      z-index: 4;
+      pointer-events: none;
+    }
+    .map-controls {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 5;
+    }
+    .map-ctrl-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: rgba(20,22,25,0.9);
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .map-attrib {
+      position: absolute;
+      bottom: 6px;
+      right: 8px;
+      z-index: 4;
+      background: rgba(20,22,25,0.84);
+      color: var(--muted);
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 5px;
+      pointer-events: none;
+    }
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .btn-row .btn {
+      flex: 1 1 140px;
+      margin-top: 0;
+      padding: 12px 14px;
+      font-size: 14px;
+    }
     .hidden { display: none !important; }
   </style>
 </head>
@@ -762,6 +845,19 @@ self.addEventListener('notificationclick', (event) => {
       </div>
     </section>
 
+    <!-- Connected Devices Map Tab -->
+    <section id="tabDevices" class="hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h1 style="margin:0;">Devices</h1>
+        <button id="refreshDevicesBtn" class="btn btn-secondary" style="width:auto;margin:0;padding:8px 14px;font-size:13.5px;">Refresh</button>
+      </div>
+      <div id="devicesMapWrap" class="card" style="padding:14px;">
+        <div id="devicesMapStage" class="map-stage"></div>
+      </div>
+      <div id="selectedDeviceCard" class="card"></div>
+      <div id="devicesRosterList"></div>
+    </section>
+
     <!-- Connected Activity Tab -->
     <section id="tabActivity" class="hidden">
       <h1 style="margin-bottom:14px;">Activity</h1>
@@ -778,11 +874,17 @@ self.addEventListener('notificationclick', (event) => {
         <button id="settingsRecheckBtn" class="btn btn-secondary">Refresh notification status</button>
         <button id="disconnectPhoneBtn" class="btn btn-danger">Disconnect phone</button>
       </div>
+      <div class="card">
+        <h2>Location privacy &amp; history</h2>
+        <p style="font-size:13.5px;">Only your protected laptop reports coordinates while armed and for up to 15 minutes after an alarm. This phone companion does not collect background phone location. Stored location history is automatically deleted after 7 days.</p>
+        <button id="deleteLocationHistoryBtn" class="btn btn-secondary">Delete stored location history</button>
+      </div>
     </section>
   </main>
 
   <nav id="bottomNav" class="nav-bar hidden">
     <button class="nav-btn active" data-tab="Home">Home</button>
+    <button class="nav-btn" data-tab="Devices">Devices</button>
     <button class="nav-btn" data-tab="Activity">Activity</button>
     <button class="nav-btn" data-tab="Settings">Settings</button>
   </nav>
@@ -932,7 +1034,8 @@ self.addEventListener('notificationclick', (event) => {
       hostProtectionState: 'off',
       lastSeq: 0,
       seenIds: {},
-      events: []
+      events: [],
+      authorizedDevices: []
     };
 
     try {
@@ -1076,9 +1179,13 @@ self.addEventListener('notificationclick', (event) => {
       stepConfirmPair: document.getElementById('stepConfirmPair'),
       confirmPlatformHint: document.getElementById('confirmPlatformHint'),
       tabHome: document.getElementById('tabHome'),
+      tabDevices: document.getElementById('tabDevices'),
       tabActivity: document.getElementById('tabActivity'),
       tabSettings: document.getElementById('tabSettings'),
       bottomNav: document.getElementById('bottomNav'),
+      devicesMapStage: document.getElementById('devicesMapStage'),
+      selectedDeviceCard: document.getElementById('selectedDeviceCard'),
+      devicesRosterList: document.getElementById('devicesRosterList'),
       manualCodeInput: document.getElementById('manualCodeInput'),
       phoneNameInput: document.getElementById('phoneNameInput'),
       confirmHeading: document.getElementById('confirmHeading'),
@@ -1105,12 +1212,14 @@ self.addEventListener('notificationclick', (event) => {
     let activeLookupCode = '';
     let activeTab = 'Home';
     let selectedIncidentId = pendingEventId || null;
+    let selectedDeviceId = null;
     let pendingTestIncidentId = null;
     let swRegistration = null;
     let activePushSubscription = null;
     let connState = 'connecting'; // 'connecting' | 'connected' | 'laptop_offline' | 'service_unavailable'
     let consecutiveFailures = 0;
     let pollTimerId = null;
+    const mapControllers = {};
 
     function showError(msg) {
       if (!msg) { els.errorBox.classList.add('hidden'); return; }
@@ -1125,7 +1234,7 @@ self.addEventListener('notificationclick', (event) => {
     }
 
     function hideAllSections() {
-      [els.stepCodeEntry, els.stepConfirmPair, els.tabHome, els.tabActivity, els.tabSettings]
+      [els.stepCodeEntry, els.stepConfirmPair, els.tabHome, els.tabDevices, els.tabActivity, els.tabSettings]
         .forEach(el => el.classList.add('hidden'));
     }
 
@@ -1330,8 +1439,9 @@ self.addEventListener('notificationclick', (event) => {
           saveState();
           triggerImmediateReconnect();
         }
-        if (ev.data.type === 'OPEN_INCIDENT' && ev.data.incidentId) {
+        if ((ev.data.type === 'OPEN_INCIDENT' || ev.data.type === 'OPEN_INCIDENT_MAP') && ev.data.incidentId) {
           selectedIncidentId = ev.data.incidentId;
+          try { window.history.replaceState({}, '', '/companion?event=' + encodeURIComponent(selectedIncidentId)); } catch (_) {}
           switchTab('Activity');
           fetchSingleIncidentIfMissing(selectedIncidentId);
         }
@@ -1970,6 +2080,42 @@ self.addEventListener('notificationclick', (event) => {
       triggerImmediateReconnect();
       showInfo('Connection and notification status refreshed.');
     });
+    document.getElementById('refreshDevicesBtn').addEventListener('click', () => {
+      fetchAuthorizedDevicesLocations(true);
+    });
+    document.getElementById('deleteLocationHistoryBtn').addEventListener('click', async () => {
+      if (!state.companionToken) return;
+      try {
+        const res = await fetch('/v1/location-history', {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + state.companionToken }
+        });
+        state.events = state.events.map(ev => Object.assign({}, ev, {
+          location: null,
+          alarmLocation: null,
+          locationTrail: [],
+          locationStatus: 'notRequested',
+          locationTrackingState: 'stopped'
+        }));
+        state.authorizedDevices = (state.authorizedDevices || []).map(d => Object.assign({}, d, {
+          latestLocation: null,
+          alarmLocation: null,
+          locationTrail: [],
+          locationStatus: 'notRequested',
+          trackingState: 'unavailable',
+          statusExplanation: 'Stored location history was deleted.'
+        }));
+        saveState();
+        renderConnectedUi();
+        if (isAuthenticWatSafeHeader(res) && res.ok) {
+          showInfo('Stored location history deleted from this phone and your WATSafe session.');
+        } else {
+          showInfo('Local location history cleared.');
+        }
+      } catch (_) {
+        showError('Could not reach relay right now — local cached location history cleared.');
+      }
+    });
     els.retryConnectionBtn.addEventListener('click', () => {
       showError('');
       connState = 'connecting';
@@ -2019,6 +2165,10 @@ self.addEventListener('notificationclick', (event) => {
       document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
       hideAllSections();
       if (tab === 'Home') els.tabHome.classList.remove('hidden');
+      if (tab === 'Devices') {
+        els.tabDevices.classList.remove('hidden');
+        fetchAuthorizedDevicesLocations(false);
+      }
       if (tab === 'Activity') els.tabActivity.classList.remove('hidden');
       if (tab === 'Settings') els.tabSettings.classList.remove('hidden');
       renderConnectedUi();
@@ -2275,7 +2425,438 @@ self.addEventListener('notificationclick', (event) => {
           : ' (permanent address)') +
         ' · Last connected: ' +
         formatTime(state.lastConnectedAtIso);
+      renderDevicesTab();
       renderActivityEvents();
+    }
+
+    function isValidCoord(loc) {
+      if (!loc || typeof loc !== 'object') return false;
+      const lat = Number(loc.latitude);
+      const lon = Number(loc.longitude);
+      if (!isFinite(lat) || !isFinite(lon)) return false;
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
+      if (Math.abs(lat) < 0.000001 && Math.abs(lon) < 0.000001) return false;
+      return true;
+    }
+
+    function haversineMeters(a, b) {
+      if (!isValidCoord(a) || !isValidCoord(b)) return 0;
+      const toRad = d => d * Math.PI / 180;
+      const dLat = toRad(Number(b.latitude) - Number(a.latitude));
+      const dLon = toRad(Number(b.longitude) - Number(a.longitude));
+      const lat1 = toRad(Number(a.latitude));
+      const lat2 = toRad(Number(b.latitude));
+      const s = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * (Math.sin(dLon / 2) ** 2);
+      return 6371000 * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(Math.max(0, 1 - s)));
+    }
+
+    function differsMeaningfully(a, b) {
+      if (!isValidCoord(a) || !isValidCoord(b)) return false;
+      const dist = haversineMeters(a, b);
+      const acc = Number(a.accuracyMeters || 35) + Number(b.accuracyMeters || 35);
+      return dist >= Math.max(25, acc * 0.65);
+    }
+
+    function formatRelativeAge(iso) {
+      if (!iso) return 'Update time unavailable';
+      const ts = new Date(iso).getTime();
+      if (isNaN(ts)) return 'Updated recently';
+      const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+      if (sec < 45) return 'Updated just now';
+      const min = Math.floor(sec / 60);
+      if (min === 1) return 'Updated 1 minute ago';
+      if (min < 60) return 'Updated ' + min + ' minutes ago';
+      const hr = Math.floor(min / 60);
+      if (hr === 1) return 'Updated 1 hour ago';
+      if (hr < 24) return 'Updated ' + hr + ' hours ago';
+      const days = Math.floor(hr / 24);
+      return 'Updated ' + days + (days === 1 ? ' day ago' : ' days ago');
+    }
+
+    function formatAccuracyLabel(loc) {
+      if (!loc) return 'Location unavailable';
+      const acc = Number(loc.accuracyMeters);
+      if (isFinite(acc) && acc > 0) {
+        if (loc.isApproximate || acc > 100) return 'Approximate (±' + Math.round(acc) + ' m)';
+        return '±' + Math.round(acc) + ' m';
+      }
+      return loc.isApproximate ? 'Approximate location' : 'Precise location';
+    }
+
+    function trackingBadgeMeta(rawTracking) {
+      if (connState === 'service_unavailable') {
+        return { label: 'Reconnecting', cls: 'pill-warn' };
+      }
+      if (connState === 'laptop_offline') {
+        return { label: 'Last known location', cls: 'pill-warn' };
+      }
+      if (rawTracking === 'live') {
+        return { label: 'Live', cls: 'pill-ok' };
+      }
+      if (rawTracking === 'reconnecting') {
+        return { label: 'Reconnecting', cls: 'pill-warn' };
+      }
+      return { label: 'Last known location', cls: 'pill-warn' };
+    }
+
+    function mercatorProject(lat, lon, worldSize) {
+      const clamped = Math.max(-85.0511, Math.min(85.0511, Number(lat)));
+      const sinLat = Math.sin(clamped * Math.PI / 180);
+      const x = ((Number(lon) + 180) / 360) * worldSize;
+      const y = (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * worldSize;
+      return { x: x, y: y };
+    }
+
+    function mercatorUnproject(wx, wy, worldSize) {
+      const lon = (wx / worldSize) * 360 - 180;
+      const n = Math.PI - (2 * Math.PI * wy) / worldSize;
+      const lat = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+      return { lat: Math.max(-85, Math.min(85, lat)), lon: (((lon + 180) % 360) + 360) % 360 - 180 };
+    }
+
+    function mountInteractiveMap(stageEl, mapKey, opts) {
+      if (!stageEl || !opts || !isValidCoord(opts.primary)) return null;
+      const prev = mapControllers[mapKey];
+      if (prev && prev.mlMap) {
+        try { prev.mlMap.remove(); } catch (_) {}
+      }
+
+      const acc = Number(opts.primary.accuracyMeters || (opts.primary.isApproximate ? 180 : 25));
+      let zoom = acc >= 600 ? 12.8 : (acc >= 180 ? 14.2 : 15.6);
+      let centerLat = Number(opts.primary.latitude);
+      let centerLon = Number(opts.primary.longitude);
+
+      stageEl.innerHTML =
+        '<canvas class="map-canvas"></canvas>' +
+        '<div class="map-vector-host"></div>' +
+        '<div class="map-overlay-top">' +
+        (opts.badge ? '<span class="pill ' + opts.badge.cls + '">' + escapeHtml(opts.badge.label) + '</span>' : '') +
+        (opts.alarmOrigin && differsMeaningfully(opts.primary, opts.alarmOrigin)
+          ? '<span class="pill pill-warn">Start → Latest</span>'
+          : '') +
+        '</div>' +
+        '<div class="map-controls">' +
+        '<button type="button" class="map-ctrl-btn" data-act="in" title="Zoom in">+</button>' +
+        '<button type="button" class="map-ctrl-btn" data-act="out" title="Zoom out">−</button>' +
+        '</div>' +
+        '<div class="map-attrib">OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors</div>';
+
+      const canvas = stageEl.querySelector('.map-canvas');
+      const vectorHost = stageEl.querySelector('.map-vector-host');
+
+      function drawCanvasFallback() {
+        const rect = stageEl.getBoundingClientRect();
+        const w = Math.max(220, rect.width || 320);
+        const h = Math.max(180, rect.height || 230);
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.fillStyle = '#16202B';
+        ctx.fillRect(0, 0, w, h);
+
+        const worldSize = 256 * Math.pow(2, zoom);
+        const cw = mercatorProject(centerLat, centerLon, worldSize);
+        const step = 46;
+        const sx = -(cw.x % step);
+        const sy = -(cw.y % step);
+        ctx.lineWidth = 1;
+        for (let x = sx, i = 0; x < w; x += step, i++) {
+          ctx.strokeStyle = i % 3 === 0 ? '#2C3F53' : '#223140';
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+        }
+        for (let y = sy, i = 0; y < h; y += step, i++) {
+          ctx.strokeStyle = i % 3 === 0 ? '#2C3F53' : '#223140';
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+        }
+
+        const toScr = loc => {
+          const p = mercatorProject(loc.latitude, loc.longitude, worldSize);
+          return { x: w / 2 + (p.x - cw.x), y: h / 2 + (p.y - cw.y) };
+        };
+
+        const trail = Array.isArray(opts.trail) ? opts.trail.filter(isValidCoord) : [];
+        if (trail.length >= 2) {
+          ctx.strokeStyle = 'rgba(229,142,38,0.9)';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          trail.forEach((pt, idx) => {
+            const sp = toScr(pt);
+            if (idx === 0) ctx.moveTo(sp.x, sp.y); else ctx.lineTo(sp.x, sp.y);
+          });
+          ctx.stroke();
+        }
+
+        if (opts.alarmOrigin && isValidCoord(opts.alarmOrigin) && differsMeaningfully(opts.primary, opts.alarmOrigin)) {
+          const ap = toScr(opts.alarmOrigin);
+          ctx.fillStyle = '#E58E26';
+          ctx.beginPath(); ctx.arc(ap.x, ap.y, 6.5, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = '#F5F2EB'; ctx.lineWidth = 2; ctx.stroke();
+        }
+
+        const pp = toScr(opts.primary);
+        const mpp = (156543.03 * Math.cos(centerLat * Math.PI / 180)) / Math.pow(2, zoom);
+        const rPx = Math.max(14, Math.min(92, acc / Math.max(0.05, mpp)));
+        ctx.fillStyle = opts.isAlarming ? 'rgba(214,69,58,0.18)' : 'rgba(46,155,104,0.18)';
+        ctx.beginPath(); ctx.arc(pp.x, pp.y, rPx, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = opts.isAlarming ? 'rgba(214,69,58,0.65)' : 'rgba(46,155,104,0.65)';
+        ctx.lineWidth = 1.5; ctx.stroke();
+
+        ctx.fillStyle = '#F5F2EB';
+        ctx.beginPath(); ctx.arc(pp.x, pp.y, 9, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = opts.isAlarming ? '#D6453A' : '#2E9B68';
+        ctx.beginPath(); ctx.arc(pp.x, pp.y, 6, 0, Math.PI * 2); ctx.fill();
+      }
+
+      drawCanvasFallback();
+
+      let dragLast = null;
+      stageEl.onpointerdown = e => {
+        if (e.target && e.target.closest('.map-ctrl-btn')) return;
+        dragLast = { x: e.clientX, y: e.clientY };
+      };
+      stageEl.onpointermove = e => {
+        if (!dragLast || (ctrl.mlMap && ctrl.mlReady)) return;
+        const dx = e.clientX - dragLast.x;
+        const dy = e.clientY - dragLast.y;
+        dragLast = { x: e.clientX, y: e.clientY };
+        const worldSize = 256 * Math.pow(2, zoom);
+        const cw = mercatorProject(centerLat, centerLon, worldSize);
+        const next = mercatorUnproject(cw.x - dx, Math.max(0, Math.min(worldSize, cw.y - dy)), worldSize);
+        centerLat = next.lat;
+        centerLon = next.lon;
+        drawCanvasFallback();
+      };
+      stageEl.onpointerup = () => { dragLast = null; };
+      stageEl.onpointercancel = () => { dragLast = null; };
+
+      const ctrl = {
+        mlMap: null,
+        mlReady: false,
+        centerOnDevice: () => {
+          centerLat = Number(opts.primary.latitude);
+          centerLon = Number(opts.primary.longitude);
+          if (ctrl.mlMap && ctrl.mlReady) {
+            ctrl.mlMap.flyTo({ center: [centerLon, centerLat], zoom: zoom, essential: true });
+          } else {
+            drawCanvasFallback();
+          }
+        }
+      };
+
+      stageEl.querySelector('[data-act="in"]').onclick = () => {
+        zoom = Math.min(18, zoom + 1);
+        if (ctrl.mlMap && ctrl.mlReady) ctrl.mlMap.zoomTo(zoom); else drawCanvasFallback();
+      };
+      stageEl.querySelector('[data-act="out"]').onclick = () => {
+        zoom = Math.max(3, zoom - 1);
+        if (ctrl.mlMap && ctrl.mlReady) ctrl.mlMap.zoomTo(zoom); else drawCanvasFallback();
+      };
+
+      if (window.maplibregl && navigator.onLine !== false) {
+        try {
+          const ml = new window.maplibregl.Map({
+            container: vectorHost,
+            style: 'https://tiles.openfreemap.org/styles/dark',
+            center: [centerLon, centerLat],
+            zoom: zoom,
+            attributionControl: false
+          });
+          ctrl.mlMap = ml;
+          ml.on('load', () => {
+            ctrl.mlReady = true;
+            const trail = Array.isArray(opts.trail) ? opts.trail.filter(isValidCoord) : [];
+            if (trail.length >= 2) {
+              ml.addSource('incident-trail', {
+                type: 'geojson',
+                data: {
+                  type: 'Feature',
+                  geometry: {
+                    type: 'LineString',
+                    coordinates: trail.map(p => [Number(p.longitude), Number(p.latitude)])
+                  }
+                }
+              });
+              ml.addLayer({
+                id: 'incident-trail-line',
+                type: 'line',
+                source: 'incident-trail',
+                paint: { 'line-color': '#E58E26', 'line-width': 3.5 }
+              });
+            }
+            if (opts.alarmOrigin && isValidCoord(opts.alarmOrigin) && differsMeaningfully(opts.primary, opts.alarmOrigin)) {
+              const originEl = document.createElement('div');
+              originEl.style.cssText = 'width:13px;height:13px;border-radius:50%;background:#E58E26;border:2px solid #F5F2EB;';
+              new window.maplibregl.Marker({ element: originEl })
+                .setLngLat([Number(opts.alarmOrigin.longitude), Number(opts.alarmOrigin.latitude)])
+                .addTo(ml);
+            }
+            const pinEl = document.createElement('div');
+            pinEl.style.cssText = 'width:18px;height:18px;border-radius:50%;background:' + (opts.isAlarming ? '#D6453A' : '#2E9B68') + ';border:3px solid #F5F2EB;box-shadow:0 0 0 8px ' + (opts.isAlarming ? 'rgba(214,69,58,0.22)' : 'rgba(46,155,104,0.22)') + ';';
+            new window.maplibregl.Marker({ element: pinEl })
+              .setLngLat([centerLon, centerLat])
+              .addTo(ml);
+          });
+          ml.on('error', () => {
+            if (!ctrl.mlReady) {
+              try { ml.remove(); } catch (_) {}
+              ctrl.mlMap = null;
+            }
+          });
+        } catch (_) {}
+      }
+
+      mapControllers[mapKey] = ctrl;
+      return ctrl;
+    }
+
+    async function fetchAuthorizedDevicesLocations(showFeedback) {
+      if (!state.companionToken) return;
+      try {
+        const res = await fetch('/v1/devices/locations', {
+          headers: { 'Authorization': 'Bearer ' + state.companionToken },
+          cache: 'no-store'
+        });
+        if (await isAuthenticUnauthorizedSession(res)) {
+          await handleServerRevokedSession();
+          return;
+        }
+        if (isAuthenticWatSafeHeader(res) && res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.devices)) {
+            state.authorizedDevices = data.devices;
+            saveState();
+          }
+          if (showFeedback) showInfo('Device locations refreshed.');
+          renderDevicesTab();
+        }
+      } catch (_) {
+        if (showFeedback) showError('Service temporarily unavailable — showing last saved device info.');
+      }
+    }
+
+    function buildEffectiveDevicesRoster() {
+      if (Array.isArray(state.authorizedDevices) && state.authorizedDevices.length > 0) {
+        return state.authorizedDevices;
+      }
+      const evWithLoc = state.events.find(e => isValidCoord(e.location));
+      const hostOnline = connState !== 'laptop_offline';
+      return [
+        {
+          deviceId: 'host_primary',
+          displayName: state.hostDisplayName || 'Protected Laptop',
+          role: 'protected_device',
+          platform: 'Protected laptop',
+          online: hostOnline,
+          protectionStatusLabel: formatProtectionLabel(state.hostProtectionState),
+          isAlarming: String(state.hostProtectionState || '').toLowerCase() === 'triggered',
+          trackingState: evWithLoc ? (evWithLoc.locationTrackingState || 'last_known') : 'unavailable',
+          latestLocation: evWithLoc ? evWithLoc.location : null,
+          alarmLocation: evWithLoc ? (evWithLoc.alarmLocation || evWithLoc.location) : null,
+          locationTrail: evWithLoc && Array.isArray(evWithLoc.locationTrail) ? evWithLoc.locationTrail : [],
+          locationStatus: evWithLoc ? 'attached' : 'notRequested',
+          statusExplanation: hostOnline
+            ? 'Arm protection or allow Location access on your laptop to report its position.'
+            : 'Laptop is currently offline or sleeping. New coordinates arrive when it reconnects.'
+        },
+        {
+          deviceId: state.deviceId || 'phone_self',
+          displayName: state.phoneDisplayName || 'This Phone',
+          role: 'companion_phone',
+          platform: detectPlatformLabel(),
+          online: true,
+          protectionStatusLabel: 'Receiving alerts',
+          isAlarming: false,
+          trackingState: 'unavailable',
+          latestLocation: null,
+          locationStatus: 'notRequested',
+          statusExplanation: 'Companion phones receive alerts and do not report background coordinates as your laptop.'
+        }
+      ];
+    }
+
+    function renderDevicesTab() {
+      if (!els.tabDevices || els.tabDevices.classList.contains('hidden')) return;
+      const devices = buildEffectiveDevicesRoster();
+      let selected = devices.find(d => d.deviceId === selectedDeviceId) ||
+        devices.find(d => d.role === 'protected_device') ||
+        devices[0];
+      if (!selected) return;
+      selectedDeviceId = selected.deviceId;
+
+      const hasValid = isValidCoord(selected.latestLocation);
+      if (hasValid) {
+        const badge = trackingBadgeMeta(selected.trackingState);
+        mountInteractiveMap(els.devicesMapStage, 'devices', {
+          primary: selected.latestLocation,
+          alarmOrigin: selected.alarmLocation,
+          trail: selected.locationTrail,
+          badge: badge,
+          isAlarming: Boolean(selected.isAlarming)
+        });
+        const loc = selected.latestLocation;
+        const mapsHref = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(loc.latitude + ',' + loc.longitude);
+        els.selectedDeviceCard.innerHTML =
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
+          '<div><h2 style="margin-bottom:4px;">' + escapeHtml(selected.displayName) + '</h2>' +
+          '<div style="font-size:13px;font-weight:700;color:' + (selected.online ? '#6ee7b7' : '#fcd34d') + ';">' +
+          (selected.online ? 'Online' : 'Offline') + ' · ' + escapeHtml(selected.protectionStatusLabel || 'Protected') +
+          '</div></div>' +
+          '<span class="pill pill-warn">' + escapeHtml(formatAccuracyLabel(loc)) + '</span>' +
+          '</div>' +
+          '<div style="margin-top:12px;font-size:14px;font-weight:700;">' +
+          Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) +
+          '</div>' +
+          '<div style="font-size:13px;color:var(--muted);margin-top:4px;">' +
+          escapeHtml(formatRelativeAge(loc.capturedAtUtc)) +
+          '</div>' +
+          '<div class="btn-row">' +
+          '<button type="button" id="centerSelectedDeviceBtn" class="btn btn-secondary">Center on device</button>' +
+          '<a class="btn btn-primary" target="_blank" rel="noopener" href="' + mapsHref + '">Open in Maps</a>' +
+          '</div>';
+        const centerBtn = document.getElementById('centerSelectedDeviceBtn');
+        if (centerBtn) {
+          centerBtn.onclick = () => {
+            if (mapControllers.devices) mapControllers.devices.centerOnDevice();
+          };
+        }
+      } else {
+        els.devicesMapStage.innerHTML =
+          '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center;">' +
+          '<div style="font-weight:800;font-size:16px;margin-bottom:6px;">Location unavailable</div>' +
+          '<div style="font-size:13px;color:var(--muted);line-height:1.45;">' +
+          escapeHtml(selected.statusExplanation || 'Allow Location access on your protected laptop so its coordinates can appear here.') +
+          '</div></div>';
+        els.selectedDeviceCard.innerHTML =
+          '<h2 style="margin-bottom:4px;">' + escapeHtml(selected.displayName) + '</h2>' +
+          '<p style="margin-bottom:8px;font-size:13px;font-weight:700;color:' + (selected.online ? '#6ee7b7' : '#fcd34d') + ';">' +
+          (selected.online ? 'Online' : 'Offline') + ' · ' + escapeHtml(selected.protectionStatusLabel || '') + '</p>' +
+          '<p style="margin:0;font-size:13.5px;">Location unavailable — ' +
+          escapeHtml(selected.statusExplanation || 'No valid position has been reported for this device yet.') +
+          '</p>';
+      }
+
+      els.devicesRosterList.innerHTML = '';
+      devices.forEach(dev => {
+        const item = document.createElement('div');
+        item.className = 'event-item' + (dev.deviceId === selected.deviceId ? ' selected' : '');
+        const sub = isValidCoord(dev.latestLocation)
+          ? ((dev.online ? 'Online' : 'Offline') + ' · ' + formatRelativeAge(dev.latestLocation.capturedAtUtc))
+          : ((dev.online ? 'Online' : 'Offline') + ' · ' + (dev.role === 'protected_device' ? 'Location unavailable' : (dev.protectionStatusLabel || 'Paired')));
+        item.innerHTML =
+          '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+          '<strong>' + escapeHtml(dev.displayName) + '</strong>' +
+          '<span class="pill ' + (dev.online ? 'pill-ok' : 'pill-warn') + '">' + (dev.online ? 'Online' : 'Offline') + '</span>' +
+          '</div>' +
+          '<div style="font-size:13px;color:var(--muted);margin-top:4px;">' + escapeHtml(sub) + '</div>';
+        item.onclick = () => {
+          selectedDeviceId = dev.deviceId;
+          renderDevicesTab();
+        };
+        els.devicesRosterList.appendChild(item);
+      });
     }
 
     function renderActivityEvents() {
@@ -2293,33 +2874,64 @@ self.addEventListener('notificationclick', (event) => {
       if (selectedIncidentId) {
         const ev = state.events.find(e => e.incidentId === selectedIncidentId);
         if (ev) {
-          let locHtml = '<p style="margin-top:8px;">Location unavailable — location access was off or unavailable on the protected device.</p>';
-          if (ev.locationStatus === 'pending') {
-            locHtml = '<p style="margin-top:8px;">Updating protected device location…</p>';
-          } else if (ev.locationStatus === 'notRequested') {
-            locHtml = '<p style="margin-top:8px;">Location sharing was turned off on the protected laptop when this event occurred.</p>';
-          } else if (ev.location) {
+          let locHtml = '<div class="guide-box"><strong>Location unavailable</strong><p style="margin:6px 0 0 0;font-size:13.5px;">Location permission was turned off or unavailable on the protected device when this alarm triggered.</p></div>';
+          if (ev.locationStatus === 'pending' && !isValidCoord(ev.location)) {
+            locHtml = '<div class="guide-box" style="border-color:var(--amber);"><strong>Getting device location…</strong><p style="margin:6px 0 0 0;font-size:13.5px;">Waiting for your protected laptop to report coordinates. This view updates automatically.</p></div>';
+          } else if (ev.locationStatus === 'notRequested' && !isValidCoord(ev.location)) {
+            locHtml = '<div class="guide-box"><strong>Location unavailable</strong><p style="margin:6px 0 0 0;font-size:13.5px;">Location sharing on alarm was turned off in Settings on the protected device.</p></div>';
+          } else if (isValidCoord(ev.location)) {
             const loc = ev.location;
-            const kindLabel = loc.isLastKnown
-              ? 'Last known location'
-              : ((loc.isApproximate || (loc.accuracyMeters && loc.accuracyMeters > 100)) ? 'Approximate location' : 'Precise location');
+            const alarmOrigin = isValidCoord(ev.alarmLocation) ? ev.alarmLocation : loc;
+            const hasDistinct = differsMeaningfully(loc, alarmOrigin);
+            const trail = Array.isArray(ev.locationTrail) ? ev.locationTrail.filter(isValidCoord) : [];
             const mapsHref = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(loc.latitude + ',' + loc.longitude);
-            locHtml = '<div style="margin-top:12px;padding:12px;border-radius:10px;background:var(--bg);border:1px solid var(--border);">' +
-              '<div style="font-weight:700;margin-bottom:4px;">' + escapeHtml(kindLabel) + '</div>' +
-              '<div style="font-size:13px;color:var(--muted);margin-bottom:10px;">Recorded ' + escapeHtml(formatTime(loc.capturedAtUtc)) + ' (' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + ')</div>' +
+            const comparisonHtml = hasDistinct
+              ? ('<div class="guide-box" style="margin:10px 0;">' +
+                 '<div style="font-size:12.5px;color:var(--muted);">Alarm-time location: <strong style="color:var(--text);">' + Number(alarmOrigin.latitude).toFixed(5) + ', ' + Number(alarmOrigin.longitude).toFixed(5) + '</strong> (' + escapeHtml(formatTime(alarmOrigin.capturedAtUtc)) + ')</div>' +
+                 '<div style="font-size:12.5px;color:var(--muted);margin-top:6px;">Latest known location: <strong style="color:var(--text);">' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + '</strong> · ' + escapeHtml(formatAccuracyLabel(loc)) + '</div>' +
+                 '</div>')
+              : ('<div style="font-size:13.5px;font-weight:700;margin-top:10px;">' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + ' · ' + escapeHtml(formatAccuracyLabel(loc)) + '</div>');
+            const trailNote = trail.length >= 2
+              ? ('<div style="font-size:12.5px;color:var(--amber);font-weight:700;margin-top:4px;">' + trail.length + ' verified movement updates recorded</div>')
+              : '';
+            locHtml = '<div style="margin-top:12px;">' +
+              '<div id="incidentMapStage" class="map-stage" style="height:220px;"></div>' +
+              comparisonHtml +
+              trailNote +
+              '<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">' + escapeHtml(formatRelativeAge(loc.capturedAtUtc)) + ' (' + escapeHtml(formatTime(loc.capturedAtUtc)) + ')</div>' +
+              '<div class="btn-row">' +
+              '<button type="button" id="incidentCenterBtn" class="btn btn-secondary">Center on device</button>' +
               '<a class="btn btn-primary" target="_blank" rel="noopener" href="' + mapsHref + '">Open in Maps</a>' +
-              '</div>';
+              '</div></div>';
           }
           const receiptBadge = ev.receiptConfirmed
             ? '<span class="pill pill-ok" style="margin-left:8px;">Phone receipt confirmed</span>'
             : '<span class="pill pill-warn" style="margin-left:8px;">Awaiting phone push receipt</span>';
           els.eventDetailCard.innerHTML =
+            '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">' +
             '<span class="pill ' + (ev.isTest ? 'pill-warn' : 'pill-alert') + '">' + (ev.isTest ? 'Test alert' : 'Alarm triggered') + '</span>' +
             receiptBadge +
+            '</div>' +
             '<h2 style="margin-top:10px;">' + escapeHtml(ev.hostDisplayName || state.hostDisplayName) + '</h2>' +
             '<p style="margin-bottom:6px;">' + escapeHtml(formatTime(ev.triggeredAtUtc)) + '</p>' +
-            '<p>' + escapeHtml(ev.triggerSummary || 'Alarm triggered') + '</p>' + locHtml;
+            '<p style="margin-bottom:8px;">' + escapeHtml(ev.triggerSummary || 'Alarm triggered') + '</p>' + locHtml;
           els.eventDetailCard.classList.remove('hidden');
+
+          if (isValidCoord(ev.location) && !els.tabActivity.classList.contains('hidden')) {
+            const stage = document.getElementById('incidentMapStage');
+            const badge = trackingBadgeMeta(ev.locationTrackingState);
+            const ctrl = mountInteractiveMap(stage, 'incident', {
+              primary: ev.location,
+              alarmOrigin: isValidCoord(ev.alarmLocation) ? ev.alarmLocation : ev.location,
+              trail: Array.isArray(ev.locationTrail) ? ev.locationTrail : [],
+              badge: badge,
+              isAlarming: !ev.isTest
+            });
+            const centerBtn = document.getElementById('incidentCenterBtn');
+            if (centerBtn && ctrl) {
+              centerBtn.onclick = () => ctrl.centerOnDevice();
+            }
+          }
         }
       } else {
         els.eventDetailCard.classList.add('hidden');
@@ -2328,7 +2940,7 @@ self.addEventListener('notificationclick', (event) => {
       state.events.forEach(ev => {
         const div = document.createElement('div');
         div.className = 'event-item' + (ev.incidentId === selectedIncidentId ? ' selected' : '');
-        const hasLoc = Boolean(ev.location);
+        const hasLoc = isValidCoord(ev.location);
         div.innerHTML =
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;">' +
           '<strong>' + (ev.isTest ? 'Test alert' : 'Alarm triggered') + ' · ' + escapeHtml(ev.hostDisplayName || state.hostDisplayName) + '</strong>' +
@@ -2336,8 +2948,8 @@ self.addEventListener('notificationclick', (event) => {
           '</div>' +
           '<div style="font-size:13.5px;color:var(--muted);">' + escapeHtml(ev.triggerSummary || '') + '</div>' +
           (hasLoc
-            ? '<div style="margin-top:8px;color:var(--amber);font-size:13px;font-weight:700;">View location →</div>'
-            : '<div style="margin-top:6px;color:var(--subtle);font-size:12px;">Location ' + escapeHtml(ev.locationStatus === 'pending' ? 'updating…' : 'unavailable') + '</div>');
+            ? '<div style="margin-top:8px;color:var(--amber);font-size:13px;font-weight:700;">View map &amp; location →</div>'
+            : '<div style="margin-top:6px;color:var(--subtle);font-size:12px;">' + escapeHtml(ev.locationStatus === 'pending' ? 'Getting device location…' : 'Location unavailable') + '</div>');
         div.addEventListener('click', () => {
           selectedIncidentId = ev.incidentId;
           renderConnectedUi();
@@ -2485,6 +3097,9 @@ self.addEventListener('notificationclick', (event) => {
           }
         }
         if ((data.latestSeq || 0) > state.lastSeq) state.lastSeq = data.latestSeq;
+        if (activeTab === 'Devices') {
+          fetchAuthorizedDevicesLocations(false);
+        }
         saveState();
         renderConnectedUi();
       } catch (_) {

@@ -3,11 +3,13 @@ import 'package:flutter/material.dart';
 import '../../core/alarm/alarm_controller.dart';
 import '../../core/contracts/platform_contracts.dart';
 import '../../core/models/incident_models.dart';
+import '../devices/device_geographic_map.dart';
 import '../theme/watsafe_theme.dart';
 
 /// Unified chronological Activity feed showing alarm and test events across
-/// both this device and any paired laptop, with protected device location
-/// details and one-tap **Open in Maps**.
+/// both this device and any paired laptop, with an interactive incident map,
+/// alarm-time vs latest location comparison, filtered movement trail,
+/// **Center on device**, and **Open in Maps**.
 class ActivityScreen extends StatelessWidget {
   const ActivityScreen({super.key, required this.controller});
 
@@ -25,12 +27,29 @@ class ActivityScreen extends StatelessWidget {
 
     for (final alert in controller.receivedCompanionAlerts) {
       final existing = byId[alert.incidentId];
+      final fromAlert = _ActivityEntry.fromCompanionAlert(alert);
       if (existing == null) {
-        byId[alert.incidentId] = _ActivityEntry.fromCompanionAlert(alert);
-      } else if (existing.location == null && alert.location != null) {
-        byId[alert.incidentId] = existing.copyWithLocation(
-          alert.location,
-          alert.locationStatus,
+        byId[alert.incidentId] = fromAlert;
+      } else {
+        final nextLocation = fromAlert.location ?? existing.location;
+        final nextAlarmLocation =
+            existing.alarmTimeLocation ?? fromAlert.alarmTimeLocation;
+        final nextTrail =
+            fromAlert.locationTrail.length > existing.locationTrail.length
+            ? fromAlert.locationTrail
+            : existing.locationTrail;
+        final nextStatus = nextLocation != null
+            ? IncidentLocationStatus.attached
+            : (existing.locationStatus == IncidentLocationStatus.pending &&
+                      fromAlert.locationStatus != IncidentLocationStatus.pending
+                  ? fromAlert.locationStatus
+                  : existing.locationStatus);
+        byId[alert.incidentId] = existing.copyWithLocationData(
+          nextLocation: nextLocation,
+          nextAlarmLocation: nextAlarmLocation,
+          nextTrail: nextTrail,
+          nextStatus: nextStatus,
+          nextTrackingState: fromAlert.locationTrackingState,
         );
       }
     }
@@ -107,7 +126,10 @@ class _ActivityEntry {
     required this.isTest,
     required this.isFailure,
     required this.location,
+    required this.alarmTimeLocation,
+    required this.locationTrail,
     required this.locationStatus,
+    required this.locationTrackingState,
     this.resolutionSummary,
   });
 
@@ -119,8 +141,16 @@ class _ActivityEntry {
   final bool isTest;
   final bool isFailure;
   final DeviceLocationSnapshot? location;
+  final DeviceLocationSnapshot? alarmTimeLocation;
+  final List<DeviceLocationSnapshot> locationTrail;
   final IncidentLocationStatus locationStatus;
+  final String locationTrackingState;
   final String? resolutionSummary;
+
+  bool get hasDistinctLatestLocation =>
+      location != null &&
+      alarmTimeLocation != null &&
+      location!.differsMeaningfullyFrom(alarmTimeLocation!);
 
   factory _ActivityEntry.fromIncident(
     IncidentRecord inc, {
@@ -142,7 +172,10 @@ class _ActivityEntry {
       isTest: inc.kind == IncidentKind.manualTestAlarm,
       isFailure: inc.kind == IncidentKind.detectorFailureDuringMonitoring,
       location: inc.location,
+      alarmTimeLocation: inc.effectiveAlarmLocation,
+      locationTrail: inc.locationTrail,
       locationStatus: inc.locationStatus,
+      locationTrackingState: inc.locationTrackingState,
       resolutionSummary: inc.resolutionSummary,
     );
   }
@@ -165,14 +198,20 @@ class _ActivityEntry {
       isTest: alert.isTest,
       isFailure: isFailure,
       location: alert.location,
+      alarmTimeLocation: alert.effectiveAlarmLocation,
+      locationTrail: alert.locationTrail,
       locationStatus: alert.locationStatus,
+      locationTrackingState: alert.locationTrackingState,
     );
   }
 
-  _ActivityEntry copyWithLocation(
-    DeviceLocationSnapshot? nextLocation,
-    IncidentLocationStatus nextStatus,
-  ) {
+  _ActivityEntry copyWithLocationData({
+    required DeviceLocationSnapshot? nextLocation,
+    required DeviceLocationSnapshot? nextAlarmLocation,
+    required List<DeviceLocationSnapshot> nextTrail,
+    required IncidentLocationStatus nextStatus,
+    required String nextTrackingState,
+  }) {
     return _ActivityEntry(
       id: id,
       deviceName: deviceName,
@@ -182,7 +221,10 @@ class _ActivityEntry {
       isTest: isTest,
       isFailure: isFailure,
       location: nextLocation,
+      alarmTimeLocation: nextAlarmLocation,
+      locationTrail: nextTrail,
       locationStatus: nextStatus,
+      locationTrackingState: nextTrackingState,
       resolutionSummary: resolutionSummary,
     );
   }
@@ -265,7 +307,7 @@ class _ActivityEventRow extends StatelessWidget {
                         IncidentLocationStatus.pending) ...<Widget>[
                       const SizedBox(height: 4),
                       const Text(
-                        'Locating device…',
+                        'Getting device location…',
                         style: TextStyle(
                           fontSize: 12,
                           color: WatSafeTheme.amberAccent,
@@ -383,10 +425,10 @@ class _SelectedEventDetailCard extends StatelessWidget {
             const SizedBox(height: 18),
             const Divider(height: 1),
             const SizedBox(height: 16),
-            if (loc != null)
+            if (loc != null && loc.isValid)
               _LocationPreviewSection(
+                entry: entry,
                 location: loc,
-                deviceName: entry.deviceName,
                 onOpenMaps: () async {
                   final opened = await controller.openExternalUrl(loc.mapsUrl);
                   if (!opened && context.mounted) {
@@ -405,24 +447,43 @@ class _SelectedEventDetailCard extends StatelessWidget {
   }
 }
 
-class _LocationPreviewSection extends StatelessWidget {
+class _LocationPreviewSection extends StatefulWidget {
   const _LocationPreviewSection({
+    required this.entry,
     required this.location,
-    required this.deviceName,
     required this.onOpenMaps,
   });
 
+  final _ActivityEntry entry;
   final DeviceLocationSnapshot location;
-  final String deviceName;
   final VoidCallback onOpenMaps;
 
   @override
+  State<_LocationPreviewSection> createState() =>
+      _LocationPreviewSectionState();
+}
+
+class _LocationPreviewSectionState extends State<_LocationPreviewSection> {
+  final GlobalKey<DeviceGeographicMapState> _mapKey =
+      GlobalKey<DeviceGeographicMapState>();
+
+  (String, Color) _trackingBadge() {
+    final state = widget.entry.locationTrackingState;
+    if (state == 'live') {
+      return ('Live', WatSafeTheme.readyEmerald);
+    }
+    if (state == 'reconnecting') {
+      return ('Reconnecting', WatSafeTheme.amberAccent);
+    }
+    return ('Last known location', WatSafeTheme.infoSteel);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final coordText =
-        '${location.latitude.toStringAsFixed(5)}, ${location.longitude.toStringAsFixed(5)}';
-    final accuracyText = location.accuracyMeters != null
-        ? '±${location.accuracyMeters!.round()} m'
-        : null;
+    final location = widget.location;
+    final entry = widget.entry;
+    final badge = _trackingBadge();
+    final now = DateTime.now();
 
     return Column(
       key: const Key('event_location_card'),
@@ -438,7 +499,7 @@ class _LocationPreviewSection extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                '$deviceName location',
+                '${entry.deviceName} location',
                 style: const TextStyle(
                   fontWeight: FontWeight.w700,
                   fontSize: 15,
@@ -458,7 +519,9 @@ class _LocationPreviewSection extends StatelessWidget {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: (location.isApproximate || location.isLastKnown)
+                  color:
+                      (location.isEffectivelyApproximate ||
+                          location.isLastKnown)
                       ? WatSafeTheme.amberAccent
                       : WatSafeTheme.readyEmerald,
                 ),
@@ -467,118 +530,149 @@ class _LocationPreviewSection extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: SizedBox(
-            height: 136,
-            child: CustomPaint(
-              painter: _MapGridPreviewPainter(
-                isApproximate: location.isApproximate,
-              ),
-              child: Align(
-                alignment: Alignment.bottomLeft,
-                child: Container(
-                  margin: const EdgeInsets.all(10),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: WatSafeTheme.charcoalDeep.withValues(alpha: 0.88),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: WatSafeTheme.charcoalBorder),
-                  ),
-                  child: Text(
-                    accuracyText != null
-                        ? '$coordText ($accuracyText)'
-                        : coordText,
-                    style: const TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
-                      color: WatSafeTheme.warmOffWhite,
-                    ),
-                  ),
+        DeviceGeographicMap(
+          key: _mapKey,
+          height: 210,
+          primaryLocation: location,
+          alarmTimeLocation: entry.alarmTimeLocation,
+          trail: entry.locationTrail,
+          trackingStateLabel: badge.$1,
+          trackingStateTone: badge.$2,
+          showCenterButtonOverlay: false,
+        ),
+        const SizedBox(height: 12),
+        if (entry.hasDistinctLatestLocation &&
+            entry.alarmTimeLocation != null) ...<Widget>[
+          Container(
+            key: const Key('alarm_vs_latest_location_card'),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: WatSafeTheme.charcoalElevated,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: WatSafeTheme.charcoalBorder),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                _CoordinateComparisonRow(
+                  dotColor: WatSafeTheme.amberAccent,
+                  label: 'Alarm-time location',
+                  value:
+                      '${entry.alarmTimeLocation!.formattedCoordinates} (${_formatShortTime(entry.alarmTimeLocation!.capturedAt)})',
                 ),
-              ),
+                const SizedBox(height: 8),
+                _CoordinateComparisonRow(
+                  dotColor: WatSafeTheme.alarmCrimson,
+                  label: 'Latest known location',
+                  value:
+                      '${location.formattedCoordinates} • ${location.accuracyDescription}',
+                ),
+              ],
             ),
           ),
-        ),
-        const SizedBox(height: 10),
+          const SizedBox(height: 10),
+        ] else ...<Widget>[
+          Text(
+            '${location.formattedCoordinates} • ${location.accuracyDescription}',
+            style: const TextStyle(
+              fontSize: 13.5,
+              fontWeight: FontWeight.w600,
+              color: WatSafeTheme.warmOffWhite,
+            ),
+          ),
+          const SizedBox(height: 4),
+        ],
+        if (entry.locationTrail.length >= 2) ...<Widget>[
+          Text(
+            '${entry.locationTrail.length} verified location updates (${_formatShortTime(entry.locationTrail.first.capturedAt)} → ${_formatShortTime(entry.locationTrail.last.capturedAt)})',
+            key: const Key('incident_trail_summary'),
+            style: const TextStyle(
+              fontSize: 12.5,
+              color: WatSafeTheme.amberAccent,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+        ],
         Text(
-          'Recorded ${_formatEventTime(location.capturedAt)}',
+          'Recorded ${_formatEventTime(location.capturedAt)} • ${location.relativeAgeLabel(now)}',
           key: const Key('location_recorded_time_label'),
           style: const TextStyle(fontSize: 12.5, color: WatSafeTheme.warmMuted),
         ),
         const SizedBox(height: 14),
-        FilledButton.icon(
-          key: const Key('open_in_maps_button'),
-          onPressed: onOpenMaps,
-          icon: const Icon(Icons.map_rounded),
-          label: const Text('Open in Maps'),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: <Widget>[
+            OutlinedButton.icon(
+              key: const Key('incident_center_on_device_button'),
+              onPressed: () => _mapKey.currentState?.centerOnDevice(),
+              icon: const Icon(Icons.my_location_rounded, size: 18),
+              label: const Text('Center on device'),
+            ),
+            FilledButton.icon(
+              key: const Key('open_in_maps_button'),
+              onPressed: widget.onOpenMaps,
+              icon: const Icon(Icons.map_rounded),
+              label: const Text('Open in Maps'),
+            ),
+          ],
         ),
       ],
     );
   }
 }
 
-class _MapGridPreviewPainter extends CustomPainter {
-  const _MapGridPreviewPainter({required this.isApproximate});
+class _CoordinateComparisonRow extends StatelessWidget {
+  const _CoordinateComparisonRow({
+    required this.dotColor,
+    required this.label,
+    required this.value,
+  });
 
-  final bool isApproximate;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final bg = Paint()..color = const Color(0xFF19222C);
-    canvas.drawRect(Offset.zero & size, bg);
-
-    final gridPaint = Paint()
-      ..color = const Color(0xFF283646)
-      ..strokeWidth = 1;
-    const step = 24.0;
-    for (var x = step; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
-    }
-    for (var y = step; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
-    }
-
-    final roadPaint = Paint()
-      ..color = const Color(0xFF33465A)
-      ..strokeWidth = 5
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(
-      Offset(0, size.height * 0.62),
-      Offset(size.width, size.height * 0.34),
-      roadPaint,
-    );
-    canvas.drawLine(
-      Offset(size.width * 0.38, 0),
-      Offset(size.width * 0.58, size.height),
-      roadPaint,
-    );
-
-    final center = Offset(size.width * 0.52, size.height * 0.46);
-    final haloRadius = isApproximate ? 38.0 : 20.0;
-    canvas.drawCircle(
-      center,
-      haloRadius,
-      Paint()..color = WatSafeTheme.amberAccent.withValues(alpha: 0.22),
-    );
-    canvas.drawCircle(
-      center,
-      haloRadius,
-      Paint()
-        ..color = WatSafeTheme.amberAccent.withValues(alpha: 0.6)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5,
-    );
-    canvas.drawCircle(center, 7, Paint()..color = WatSafeTheme.warmOffWhite);
-    canvas.drawCircle(center, 5, Paint()..color = WatSafeTheme.alarmCrimson);
-  }
+  final Color dotColor;
+  final String label;
+  final String value;
 
   @override
-  bool shouldRepaint(covariant _MapGridPreviewPainter oldDelegate) {
-    return oldDelegate.isApproximate != isApproximate;
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.only(top: 5),
+          child: Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+          ),
+        ),
+        const SizedBox(width: 9),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: WatSafeTheme.warmMuted,
+                ),
+              ),
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: WatSafeTheme.warmOffWhite,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -590,7 +684,7 @@ class _UnavailableLocationNotice extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final String message = switch (status) {
-      IncidentLocationStatus.pending => 'Checking protected device location… It will appear here automatically if available.',
+      IncidentLocationStatus.pending => 'Getting device location… This map will update automatically as soon as coordinates arrive.',
       IncidentLocationStatus.permissionDenied => 'Location unavailable — location permission was turned off on the protected device when this alarm triggered.',
       IncidentLocationStatus.notRequested => 'Location unavailable — location sharing on alarm was turned off in Settings.',
       IncidentLocationStatus.unavailable || IncidentLocationStatus.attached => 'Location unavailable — the protected device could not determine its location when this alarm triggered.',
@@ -607,13 +701,24 @@ class _UnavailableLocationNotice extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Icon(
-            status == IncidentLocationStatus.pending
-                ? Icons.my_location_rounded
-                : Icons.location_off_outlined,
-            color: WatSafeTheme.warmMuted,
-            size: 20,
-          ),
+          if (status == IncidentLocationStatus.pending)
+            const Padding(
+              padding: EdgeInsets.only(top: 2),
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: WatSafeTheme.amberAccent,
+                ),
+              ),
+            )
+          else
+            const Icon(
+              Icons.location_off_outlined,
+              color: WatSafeTheme.warmMuted,
+              size: 20,
+            ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
@@ -674,4 +779,12 @@ String _formatEventTime(DateTime dt) {
   final mm = local.minute.toString().padLeft(2, '0');
   final ss = local.second.toString().padLeft(2, '0');
   return '$y-$m-$d $hh:$mm:$ss';
+}
+
+String _formatShortTime(DateTime dt) {
+  final local = dt.toLocal();
+  final hh = local.hour.toString().padLeft(2, '0');
+  final mm = local.minute.toString().padLeft(2, '0');
+  final ss = local.second.toString().padLeft(2, '0');
+  return '$hh:$mm:$ss';
 }

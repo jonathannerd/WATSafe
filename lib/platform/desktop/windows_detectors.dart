@@ -701,6 +701,11 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
     final threshold = (map['threshold'] as num?)?.toDouble();
     final averageLuminance = (map['averageLuminance'] as num?)?.toDouble();
     final consecutive = (map['consecutiveFrames'] as num?)?.toInt();
+    final coherentBlocks = (map['coherentBlocks'] as num?)?.toInt();
+    final anchoredBlocks = (map['anchoredBlocks'] as num?)?.toInt();
+    final slowDriftScore = (map['slowDriftScore'] as num?)?.toDouble();
+    final loomingRejected = map['loomingRejected'] as bool?;
+    final acPowerUnplugged = map['acPowerUnplugged'] as bool?;
     final errorCode = map['errorCode'] as String?;
     final timestampMs = (map['timestampMs'] as num?)?.toInt();
 
@@ -718,6 +723,11 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
         threshold: threshold,
         averageLuminance: averageLuminance,
         consecutiveAboveThresholdFrames: consecutive,
+        coherentBlocks: coherentBlocks,
+        anchoredBlocks: anchoredBlocks,
+        slowDriftScore: slowDriftScore,
+        loomingRejected: loomingRejected,
+        acPowerUnplugged: acPowerUnplugged,
         errorCode: errorCode,
       ),
     );
