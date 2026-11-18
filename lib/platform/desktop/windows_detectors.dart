@@ -50,7 +50,7 @@ class WindowsAccelerometerDetectorAdapter implements MotionDetectorAdapter {
   DetectorType get detectorType => DetectorType.windowsAccelerometer;
 
   @override
-  bool get supportsBackgroundMonitoring => false;
+  bool get supportsBackgroundMonitoring => _isWindows;
 
   @override
   Stream<DetectorEvent> get events => _eventsController.stream;
@@ -390,7 +390,7 @@ class WindowsCameraSceneMotionDetectorAdapter implements MotionDetectorAdapter {
   DetectorType get detectorType => DetectorType.windowsCameraSceneMotion;
 
   @override
-  bool get supportsBackgroundMonitoring => false;
+  bool get supportsBackgroundMonitoring => _isWindows;
 
   @override
   Stream<DetectorEvent> get events => _eventsController.stream;

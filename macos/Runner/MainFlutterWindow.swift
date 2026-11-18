@@ -1,17 +1,21 @@
 import AVFoundation
 import Cocoa
+import CoreGraphics
 import CoreLocation
 import FlutterMacOS
+import IOKit
 import IOKit.ps
+import IOKit.pwr_mgt
 import Security
 import UserNotifications
 
-class MainFlutterWindow: NSWindow {
+class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var cameraBridge: MacOSCameraMotionBridge?
   private var audioBridge: MacOSAudioAlarmBridge?
   private var secureStorageBridge: MacOSSecureStorageBridge?
   private var locationBridge: MacOSLocationBridge?
   private var notificationBridge: MacOSLocalNotificationBridge?
+  private var systemLifecycleBridge: MacOSSystemLifecycleBridge?
 
   override func awakeFromNib() {
     let flutterViewController = FlutterViewController()
@@ -20,6 +24,7 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
     self.minSize = NSSize(width: 420, height: 640)
     self.title = "WATSafe"
+    self.delegate = self
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
@@ -29,8 +34,18 @@ class MainFlutterWindow: NSWindow {
     secureStorageBridge = MacOSSecureStorageBridge(messenger: messenger)
     locationBridge = MacOSLocationBridge(messenger: messenger)
     notificationBridge = MacOSLocalNotificationBridge(messenger: messenger)
+    systemLifecycleBridge = MacOSSystemLifecycleBridge(messenger: messenger)
 
     super.awakeFromNib()
+  }
+
+  func windowShouldClose(_ sender: NSWindow) -> Bool {
+    if let bridge = systemLifecycleBridge, bridge.isProtectionArmed {
+      // Minimize to Dock instead of silently destroying the armed Flutter session.
+      sender.miniaturize(nil)
+      return false
+    }
+    return true
   }
 }
 
@@ -424,13 +439,19 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       self.processingQueue.async { [weak self] in
         guard let self = self, let sessionId = self.activeSessionId else { return }
         self.pausedSessionId = sessionId
+        // Release the hardware camera cleanly for OS sleep without emitting
+        // `lifecyclePaused` while armed — `MacOSSystemLifecycleBridge` emits
+        // the explicit `lidClosed` / `systemWillSleep` protection-interruption
+        // signal so closing the lid never silently pauses protection.
         self.stopCaptureOnQueue()
-        self.emitEvent([
-          "sessionId": sessionId,
-          "eventType": "lifecyclePaused",
-          "summary": "macOS system entering sleep; webcam capture paused.",
-          "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
-        ])
+        if !(MacOSSystemLifecycleBridge.shared?.isProtectionArmed ?? false) {
+          self.emitEvent([
+            "sessionId": sessionId,
+            "eventType": "lifecyclePaused",
+            "summary": "macOS system entering sleep; webcam capture paused.",
+            "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
+          ])
+        }
       }
     }
 
@@ -2000,5 +2021,503 @@ final class MacOSLocalNotificationBridge: NSObject, UNUserNotificationCenterDele
       }
     }
     completionHandler()
+  }
+}
+
+// MARK: - macOS System Lifecycle, Clamshell Lid, Power & Non-Invasive HID Bridge
+
+private let kWatSafeIOMessageCanSystemSleep: UInt32 = 0xE000_0270
+private let kWatSafeIOMessageSystemWillSleep: UInt32 = 0xE000_0280
+private let kWatSafeIOMessageSystemHasPoweredOn: UInt32 = 0xE000_0300
+
+private func watSafeSystemPowerCallback(
+  refCon: UnsafeMutableRawPointer?,
+  service: io_service_t,
+  messageType: natural_t,
+  messageArgument: UnsafeMutableRawPointer?
+) {
+  guard let refCon = refCon else { return }
+  let bridge = Unmanaged<MacOSSystemLifecycleBridge>.fromOpaque(refCon).takeUnretainedValue()
+  bridge.handleIOKitPowerMessage(messageType: UInt32(messageType), messageArgument: messageArgument)
+}
+
+private func watSafeRootDomainInterestCallback(
+  refCon: UnsafeMutableRawPointer?,
+  service: io_service_t,
+  messageType: natural_t,
+  messageArgument: UnsafeMutableRawPointer?
+) {
+  guard let refCon = refCon else { return }
+  let bridge = Unmanaged<MacOSSystemLifecycleBridge>.fromOpaque(refCon).takeUnretainedValue()
+  bridge.pollClamshellStateChange(source: "iokit_interest")
+}
+
+final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
+  static weak var shared: MacOSSystemLifecycleBridge?
+
+  private let methodChannel: FlutterMethodChannel
+  private let eventChannel: FlutterEventChannel
+  private var eventSink: FlutterEventSink?
+
+  private(set) var isProtectionArmed: Bool = false
+  private var monitorInputInteraction: Bool = false
+  private var armedSinceUptime: TimeInterval = 0
+  private var lastInputAlertUptime: TimeInterval = 0
+
+  private var rootPowerPort: io_connect_t = 0
+  private var powerNotifyPortRef: IONotificationPortRef?
+  private var powerNotifierObject: io_object_t = 0
+
+  private var clamshellNotifyPortRef: IONotificationPortRef?
+  private var clamshellInterestObject: io_object_t = 0
+  private var rootDomainService: io_service_t = 0
+  private var lastClamshellClosed: Bool?
+
+  private var pendingPowerAssertions: [String: Int] = [:]
+  private var pendingTerminationTokens: Set<String> = []
+  private var workspaceObservers: [NSObjectProtocol] = []
+  private var hidPollTimer: Timer?
+  private var lastSleepEmissionUptime: TimeInterval = 0
+
+  init(messenger: FlutterBinaryMessenger) {
+    methodChannel = FlutterMethodChannel(
+      name: "dev.watsafe/system_lifecycle",
+      binaryMessenger: messenger
+    )
+    eventChannel = FlutterEventChannel(
+      name: "dev.watsafe/system_lifecycle_events",
+      binaryMessenger: messenger
+    )
+    super.init()
+    MacOSSystemLifecycleBridge.shared = self
+    lastClamshellClosed = Self.readAppleClamshellClosed()
+
+    methodChannel.setMethodCallHandler { [weak self] call, result in
+      self?.handleMethodCall(call: call, result: result)
+    }
+    eventChannel.setStreamHandler(self)
+
+    registerIOKitPowerAndClamshellNotifications()
+    registerWorkspaceNotifications()
+  }
+
+  deinit {
+    teardownNotifications()
+  }
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    eventSink = events
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    eventSink = nil
+    return nil
+  }
+
+  static func readAppleClamshellClosed() -> Bool? {
+    let service = IOServiceGetMatchingService(0, IOServiceMatching("IOPMrootDomain"))
+    guard service != 0 else { return nil }
+    defer { IOObjectRelease(service) }
+    guard let prop = IORegistryEntryCreateCFProperty(
+      service,
+      "AppleClamshellState" as CFString,
+      kCFAllocatorDefault,
+      0
+    )?.takeRetainedValue() else {
+      return nil
+    }
+    if let boolVal = prop as? Bool {
+      return boolVal
+    }
+    return (prop as? NSNumber)?.boolValue
+  }
+
+  private func handleMethodCall(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let args = call.arguments as? [String: Any]
+    switch call.method {
+    case "getCapabilities":
+      let clamshellAvailable = Self.readAppleClamshellClosed() != nil
+      result([
+        "isSupported": true,
+        "supportsClamshellDetection": clamshellAvailable,
+        "supportsSleepWakeNotifications": true,
+        "supportsShutdownLogoutNotifications": true,
+        "supportsQuitInterception": true,
+        "supportsInputInteractionDetection": true,
+        "platformLabel": "macOS",
+      ])
+
+    case "syncProtectionState":
+      let nextArmed = (args?["armed"] as? Bool) ?? false
+      let nextMonitorInput = (args?["monitorInputInteraction"] as? Bool) ?? false
+      if nextArmed && !isProtectionArmed {
+        armedSinceUptime = ProcessInfo.processInfo.systemUptime
+        lastClamshellClosed = Self.readAppleClamshellClosed()
+      }
+      isProtectionArmed = nextArmed
+      monitorInputInteraction = nextArmed && nextMonitorInput
+      configureHidIdleTimer()
+      result(nil)
+
+    case "completeUrgentFlush":
+      if let token = args?["flushToken"] as? String {
+        resolveUrgentFlush(token: token)
+      }
+      result(nil)
+
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func registerIOKitPowerAndClamshellNotifications() {
+    let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+
+    // 1. Register for system sleep/wake notifications so WATSafe gets a bounded
+    //    pre-sleep window before IOAllowPowerChange to dispatch an urgent alert.
+    rootPowerPort = IORegisterForSystemPower(
+      selfPtr,
+      &powerNotifyPortRef,
+      watSafeSystemPowerCallback,
+      &powerNotifierObject
+    )
+    if rootPowerPort != 0, let notifyPort = powerNotifyPortRef {
+      IONotificationPortSetDispatchQueue(notifyPort, DispatchQueue.main)
+    }
+
+    // 2. Observe IOPMrootDomain general interest notifications to catch physical
+    //    MacBook clamshell lid closure immediately (even with external displays).
+    rootDomainService = IOServiceGetMatchingService(0, IOServiceMatching("IOPMrootDomain"))
+    if rootDomainService != 0 {
+      clamshellNotifyPortRef = IONotificationPortCreate(0)
+      if let clamshellPort = clamshellNotifyPortRef {
+        IONotificationPortSetDispatchQueue(clamshellPort, DispatchQueue.main)
+        IOServiceAddInterestNotification(
+          clamshellPort,
+          rootDomainService,
+          kIOGeneralInterest,
+          watSafeRootDomainInterestCallback,
+          selfPtr,
+          &clamshellInterestObject
+        )
+      }
+    }
+  }
+
+  private func registerWorkspaceNotifications() {
+    let center = NSWorkspace.shared.notificationCenter
+
+    workspaceObservers.append(
+      center.addObserver(
+        forName: NSWorkspace.screensDidSleepNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        guard let self = self else { return }
+        self.pollClamshellStateChange(source: "screens_did_sleep")
+        if self.isProtectionArmed && (self.lastClamshellClosed != true) {
+          self.emitLifecycleEvent(
+            type: "screensDidSleep",
+            summary: "Display turned off while protection remains armed.",
+            clamshellClosed: self.lastClamshellClosed,
+            flushToken: nil
+          )
+        }
+      }
+    )
+
+    workspaceObservers.append(
+      center.addObserver(
+        forName: NSWorkspace.willSleepNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        guard let self = self, self.isProtectionArmed else { return }
+        let nowUptime = ProcessInfo.processInfo.systemUptime
+        if nowUptime - self.lastSleepEmissionUptime < 2.0 {
+          return
+        }
+        self.lastSleepEmissionUptime = nowUptime
+        let clamshell = Self.readAppleClamshellClosed()
+        self.lastClamshellClosed = clamshell
+        let eventType = (clamshell == true) ? "lidClosed" : "systemWillSleep"
+        let summary = (clamshell == true)
+          ? "Protection interrupted — MacBook lid closed while armed."
+          : "Protection interrupted — Mac is entering sleep while armed."
+        self.emitLifecycleEvent(
+          type: eventType,
+          summary: summary,
+          clamshellClosed: clamshell,
+          flushToken: nil
+        )
+      }
+    )
+
+    workspaceObservers.append(
+      center.addObserver(
+        forName: NSWorkspace.didWakeNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        guard let self = self else { return }
+        let clamshell = Self.readAppleClamshellClosed()
+        self.lastClamshellClosed = clamshell
+        self.emitLifecycleEvent(
+          type: "systemDidWake",
+          summary: "Mac woke from sleep.",
+          clamshellClosed: clamshell,
+          flushToken: nil
+        )
+      }
+    )
+
+    workspaceObservers.append(
+      center.addObserver(
+        forName: NSWorkspace.willPowerOffNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        guard let self = self, self.isProtectionArmed else { return }
+        self.emitLifecycleEvent(
+          type: "systemWillPowerOff",
+          summary: "Protection interrupted — Mac shutdown or restart initiated while armed.",
+          clamshellClosed: Self.readAppleClamshellClosed(),
+          flushToken: nil
+        )
+      }
+    )
+
+    workspaceObservers.append(
+      center.addObserver(
+        forName: NSWorkspace.sessionDidResignActiveNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        guard let self = self, self.isProtectionArmed else { return }
+        self.emitLifecycleEvent(
+          type: "sessionResignedActive",
+          summary: "Protection interrupted — macOS user session logged out or switched while armed.",
+          clamshellClosed: Self.readAppleClamshellClosed(),
+          flushToken: nil
+        )
+      }
+    )
+  }
+
+  fileprivate func pollClamshellStateChange(source: String) {
+    guard let closed = Self.readAppleClamshellClosed() else { return }
+    let previous = lastClamshellClosed
+    lastClamshellClosed = closed
+    guard previous != closed else { return }
+
+    if closed {
+      if isProtectionArmed {
+        lastSleepEmissionUptime = ProcessInfo.processInfo.systemUptime
+      }
+      emitLifecycleEvent(
+        type: "lidClosed",
+        summary: "Protection interrupted — MacBook lid closed while armed.",
+        clamshellClosed: true,
+        flushToken: nil
+      )
+    } else {
+      emitLifecycleEvent(
+        type: "lidOpened",
+        summary: "MacBook lid opened.",
+        clamshellClosed: false,
+        flushToken: nil
+      )
+    }
+  }
+
+  fileprivate func handleIOKitPowerMessage(
+    messageType: UInt32,
+    messageArgument: UnsafeMutableRawPointer?
+  ) {
+    let notificationId = Int(bitPattern: messageArgument)
+    switch messageType {
+    case kWatSafeIOMessageCanSystemSleep:
+      if rootPowerPort != 0 {
+        IOAllowPowerChange(rootPowerPort, notificationId)
+      }
+
+    case kWatSafeIOMessageSystemWillSleep:
+      let clamshell = Self.readAppleClamshellClosed()
+      lastClamshellClosed = clamshell
+      guard isProtectionArmed else {
+        if rootPowerPort != 0 {
+          IOAllowPowerChange(rootPowerPort, notificationId)
+        }
+        return
+      }
+
+      let token = "sleep_\(UUID().uuidString)"
+      pendingPowerAssertions[token] = notificationId
+      lastSleepEmissionUptime = ProcessInfo.processInfo.systemUptime
+
+      let eventType = (clamshell == true) ? "lidClosed" : "systemWillSleep"
+      let summary = (clamshell == true)
+        ? "Protection interrupted — MacBook lid closed while armed."
+        : "Protection interrupted — Mac is going to sleep while armed."
+      emitLifecycleEvent(
+        type: eventType,
+        summary: summary,
+        clamshellClosed: clamshell,
+        flushToken: token
+      )
+
+      // Bounded 1.6s failsafe so WATSafe never stalls macOS power management.
+      DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1600)) { [weak self] in
+        self?.resolveUrgentFlush(token: token)
+      }
+
+    case kWatSafeIOMessageSystemHasPoweredOn:
+      let clamshell = Self.readAppleClamshellClosed()
+      lastClamshellClosed = clamshell
+      emitLifecycleEvent(
+        type: "systemDidWake",
+        summary: "Mac powered on from sleep.",
+        clamshellClosed: clamshell,
+        flushToken: nil
+      )
+
+    default:
+      break
+    }
+  }
+
+  func handleApplicationShouldTerminate() -> NSApplication.TerminateReply {
+    guard isProtectionArmed else {
+      return .terminateNow
+    }
+    let token = "term_\(UUID().uuidString)"
+    pendingTerminationTokens.insert(token)
+    emitLifecycleEvent(
+      type: "appWillTerminate",
+      summary: "Protection interrupted — WATSafe quit requested while armed.",
+      clamshellClosed: Self.readAppleClamshellClosed(),
+      flushToken: token
+    )
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1500)) { [weak self] in
+      self?.resolveUrgentFlush(token: token)
+    }
+    return .terminateLater
+  }
+
+  private func resolveUrgentFlush(token: String) {
+    if let notificationId = pendingPowerAssertions.removeValue(forKey: token) {
+      if rootPowerPort != 0 {
+        IOAllowPowerChange(rootPowerPort, notificationId)
+      }
+    }
+    if pendingTerminationTokens.remove(token) != nil {
+      NSApp.reply(toApplicationShouldTerminate: true)
+    }
+  }
+
+  private func configureHidIdleTimer() {
+    hidPollTimer?.invalidate()
+    hidPollTimer = nil
+    guard isProtectionArmed && monitorInputInteraction else { return }
+
+    // Non-invasive HID idle check using CoreGraphics CGEventSource — reads ONLY
+    // elapsed idle seconds, never keystrokes, cursor coordinates, or window contents,
+    // and requires zero Accessibility / Input Monitoring permissions.
+    hidPollTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+      guard let self = self, self.isProtectionArmed, self.monitorInputInteraction else { return }
+      let nowUptime = ProcessInfo.processInfo.systemUptime
+      if nowUptime - self.armedSinceUptime < 1.6 {
+        return
+      }
+      if nowUptime - self.lastInputAlertUptime < 4.0 {
+        return
+      }
+      let trackedEvents: [CGEventType] = [
+        .keyDown,
+        .flagsChanged,
+        .leftMouseDown,
+        .rightMouseDown,
+        .mouseMoved,
+        .scrollWheel,
+      ]
+      var minIdle: CFTimeInterval = 9999.0
+      for evType in trackedEvents {
+        let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: evType)
+        if idle >= 0 && idle < minIdle {
+          minIdle = idle
+        }
+      }
+      if minIdle < 0.65 {
+        self.lastInputAlertUptime = nowUptime
+        self.emitLifecycleEvent(
+          type: "userInputDetected",
+          summary: "Keyboard or trackpad interaction detected while armed.",
+          clamshellClosed: self.lastClamshellClosed,
+          flushToken: nil
+        )
+      }
+    }
+  }
+
+  private func emitLifecycleEvent(
+    type: String,
+    summary: String,
+    clamshellClosed: Bool?,
+    flushToken: String?
+  ) {
+    var payload: [String: Any] = [
+      "type": type,
+      "summary": summary,
+      "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
+    ]
+    if let clamshell = clamshellClosed {
+      payload["clamshellClosed"] = clamshell
+    }
+    if let token = flushToken {
+      payload["flushToken"] = token
+    }
+    if Thread.isMainThread {
+      eventSink?(payload)
+    } else {
+      DispatchQueue.main.async { [weak self] in
+        self?.eventSink?(payload)
+      }
+    }
+  }
+
+  private func teardownNotifications() {
+    hidPollTimer?.invalidate()
+    hidPollTimer = nil
+    let center = NSWorkspace.shared.notificationCenter
+    for obs in workspaceObservers {
+      center.removeObserver(obs)
+    }
+    workspaceObservers.removeAll()
+
+    if clamshellInterestObject != 0 {
+      IOObjectRelease(clamshellInterestObject)
+      clamshellInterestObject = 0
+    }
+    if let clamshellPort = clamshellNotifyPortRef {
+      IONotificationPortDestroy(clamshellPort)
+      clamshellNotifyPortRef = nil
+    }
+    if rootDomainService != 0 {
+      IOObjectRelease(rootDomainService)
+      rootDomainService = 0
+    }
+    if powerNotifierObject != 0 {
+      IODeregisterForSystemPower(&powerNotifierObject)
+      powerNotifierObject = 0
+    }
+    if let powerPort = powerNotifyPortRef {
+      IONotificationPortDestroy(powerPort)
+      powerNotifyPortRef = nil
+    }
+    if rootPowerPort != 0 {
+      IOServiceClose(rootPowerPort)
+      rootPowerPort = 0
+    }
   }
 }

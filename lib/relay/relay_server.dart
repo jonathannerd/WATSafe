@@ -23,6 +23,12 @@ class RelaySessionRecord {
     this.hostLastSeenAtUtc,
     this.hostDisconnectedAtUtc,
     this.hostProtectionState = 'off',
+    this.hostArmed = false,
+    this.hostArmedSessionId,
+    this.hostArmedAtUtc,
+    this.watchdogAlertSentForSession,
+    this.watchdogAlertSentAtUtc,
+    this.hostReconnectedAtUtc,
     this.hostLatestLocation,
     this.hostLocationStatus = 'notRequested',
     this.hostLocationUpdatedAtUtc,
@@ -41,6 +47,12 @@ class RelaySessionRecord {
   DateTime? hostLastSeenAtUtc;
   DateTime? hostDisconnectedAtUtc;
   String hostProtectionState;
+  bool hostArmed;
+  String? hostArmedSessionId;
+  DateTime? hostArmedAtUtc;
+  String? watchdogAlertSentForSession;
+  DateTime? watchdogAlertSentAtUtc;
+  DateTime? hostReconnectedAtUtc;
   AlertLocationData? hostLatestLocation;
   String hostLocationStatus;
   DateTime? hostLocationUpdatedAtUtc;
@@ -111,6 +123,12 @@ class RelaySessionRecord {
       'hostLastSeenAtUtc': ?hostLastSeenAtUtc?.toIso8601String(),
       'hostDisconnectedAtUtc': ?hostDisconnectedAtUtc?.toIso8601String(),
       'hostProtectionState': hostProtectionState,
+      'hostArmed': hostArmed,
+      'hostArmedSessionId': ?hostArmedSessionId,
+      'hostArmedAtUtc': ?hostArmedAtUtc?.toIso8601String(),
+      'watchdogAlertSentForSession': ?watchdogAlertSentForSession,
+      'watchdogAlertSentAtUtc': ?watchdogAlertSentAtUtc?.toIso8601String(),
+      'hostReconnectedAtUtc': ?hostReconnectedAtUtc?.toIso8601String(),
       if (hostLatestLocation != null)
         'hostLatestLocation': hostLatestLocation!.toJson(),
       'hostLocationStatus': hostLocationStatus,
@@ -125,12 +143,16 @@ class RelaySessionRecord {
     final expiresRaw = json['codeExpiresAtUtc'] as String?;
     final lastSeenRaw = json['hostLastSeenAtUtc'] as String?;
     final disconnectedRaw = json['hostDisconnectedAtUtc'] as String?;
+    final armedAtRaw = json['hostArmedAtUtc'] as String?;
+    final watchdogSentRaw = json['watchdogAlertSentAtUtc'] as String?;
+    final reconnectedRaw = json['hostReconnectedAtUtc'] as String?;
     final locUpdatedRaw = json['hostLocationUpdatedAtUtc'] as String?;
     final trackingExpiresRaw = json['hostTrackingExpiresAtUtc'] as String?;
     final rawHostLoc = json['hostLatestLocation'];
     final parsedHostLoc = rawHostLoc is Map
         ? AlertLocationData.tryFromJson(Map<String, Object?>.from(rawHostLoc))
         : null;
+    final rawProtState = json['hostProtectionState'] as String? ?? 'off';
     return RelaySessionRecord(
       pairingSessionId: json['pairingSessionId'] as String? ?? '',
       hostDisplayName: json['hostDisplayName'] as String? ?? 'My Laptop',
@@ -149,7 +171,22 @@ class RelaySessionRecord {
       hostDisconnectedAtUtc: disconnectedRaw != null
           ? DateTime.tryParse(disconnectedRaw)?.toUtc()
           : null,
-      hostProtectionState: json['hostProtectionState'] as String? ?? 'off',
+      hostProtectionState: rawProtState,
+      hostArmed:
+          json['hostArmed'] as bool? ??
+          (rawProtState == 'armed' || rawProtState == 'protected'),
+      hostArmedSessionId: json['hostArmedSessionId'] as String?,
+      hostArmedAtUtc: armedAtRaw != null
+          ? DateTime.tryParse(armedAtRaw)?.toUtc()
+          : null,
+      watchdogAlertSentForSession:
+          json['watchdogAlertSentForSession'] as String?,
+      watchdogAlertSentAtUtc: watchdogSentRaw != null
+          ? DateTime.tryParse(watchdogSentRaw)?.toUtc()
+          : null,
+      hostReconnectedAtUtc: reconnectedRaw != null
+          ? DateTime.tryParse(reconnectedRaw)?.toUtc()
+          : null,
       hostLatestLocation: parsedHostLoc,
       hostLocationStatus:
           json['hostLocationStatus'] as String? ??
@@ -203,6 +240,10 @@ class CompanionBondRecord {
     this.handoffExpiresAtUtc,
     this.revokedAtUtcIso,
     this.lastSeenAtUtcIso,
+    this.locationSharingEnabled = false,
+    this.companionLatestLocation,
+    this.companionLocationStatus = 'notRequested',
+    this.companionLocationUpdatedAtUtc,
   });
 
   final String bondId;
@@ -240,6 +281,10 @@ class CompanionBondRecord {
   DateTime? handoffExpiresAtUtc;
   String? revokedAtUtcIso;
   String? lastSeenAtUtcIso;
+  bool locationSharingEnabled;
+  AlertLocationData? companionLatestLocation;
+  String companionLocationStatus;
+  DateTime? companionLocationUpdatedAtUtc;
 
   bool get isRevoked => revokedAtUtcIso != null;
 
@@ -324,6 +369,10 @@ class CompanionBondRecord {
       'lastReceiptIncidentId': ?lastReceiptIncidentId,
       'lastReceiptSource': ?lastReceiptSource,
       'lastSeenAtUtcIso': ?lastSeenAtUtcIso,
+      'locationSharingEnabled': locationSharingEnabled,
+      'companionLocationStatus': companionLocationStatus,
+      'companionLocationUpdatedAtUtc': ?companionLocationUpdatedAtUtc
+          ?.toIso8601String(),
     };
   }
 
@@ -365,12 +414,23 @@ class CompanionBondRecord {
       'handoffExpiresAtUtc': ?handoffExpiresAtUtc?.toIso8601String(),
       'revokedAtUtcIso': ?revokedAtUtcIso,
       'lastSeenAtUtcIso': ?lastSeenAtUtcIso,
+      'locationSharingEnabled': locationSharingEnabled,
+      if (companionLatestLocation != null)
+        'companionLatestLocation': companionLatestLocation!.toJson(),
+      'companionLocationStatus': companionLocationStatus,
+      'companionLocationUpdatedAtUtc': ?companionLocationUpdatedAtUtc
+          ?.toIso8601String(),
     };
   }
 
   factory CompanionBondRecord.fromStorageJson(Map<String, Object?> json) {
     final graceRaw = json['previousTokenGraceUntilUtc'] as String?;
     final handoffRaw = json['handoffExpiresAtUtc'] as String?;
+    final compLocUpdatedRaw = json['companionLocationUpdatedAtUtc'] as String?;
+    final rawCompLoc = json['companionLatestLocation'];
+    final parsedCompLoc = rawCompLoc is Map
+        ? AlertLocationData.tryFromJson(Map<String, Object?>.from(rawCompLoc))
+        : null;
     return CompanionBondRecord(
       bondId: json['bondId'] as String? ?? '',
       pairingSessionId: json['pairingSessionId'] as String? ?? '',
@@ -413,6 +473,14 @@ class CompanionBondRecord {
           : null,
       revokedAtUtcIso: json['revokedAtUtcIso'] as String?,
       lastSeenAtUtcIso: json['lastSeenAtUtcIso'] as String?,
+      locationSharingEnabled: json['locationSharingEnabled'] as bool? ?? false,
+      companionLatestLocation: parsedCompLoc,
+      companionLocationStatus:
+          json['companionLocationStatus'] as String? ??
+          (parsedCompLoc != null ? 'attached' : 'notRequested'),
+      companionLocationUpdatedAtUtc: compLocUpdatedRaw != null
+          ? DateTime.tryParse(compLocUpdatedRaw)?.toUtc()
+          : null,
     );
   }
 }
@@ -1152,7 +1220,9 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
         : hostDisplayName.trim();
     final body = alert.isTest
         ? 'Test alert from $title — tap to open in Activity.'
-        : 'Alarm triggered on $title — tap to view event.';
+        : (alert.kind == 'protectionInterrupted'
+              ? 'Protection interrupted on $title — tap to view status and last known location.'
+              : 'Alarm triggered on $title — tap to view event.');
     final nowIso = DateTime.now().toUtc().toIso8601String();
 
     for (final bond in bonds) {
@@ -1470,6 +1540,7 @@ abstract class RelayStore {
   Future<RelaySessionRecord?> findSessionById(String pairingSessionId);
   Future<RelaySessionRecord?> findSessionByHostToken(String hostToken);
   Future<RelaySessionRecord?> findSessionByPairingCode(String normalizedCode);
+  Future<List<RelaySessionRecord>> listArmedSessions();
 
   Future<void> saveCompanionBond(CompanionBondRecord bond);
   Future<CompanionBondRecord?> findActiveBondByCompanionToken(
@@ -1613,6 +1684,13 @@ class InMemoryRelayStore implements RelayStore {
       }
     }
     return null;
+  }
+
+  @override
+  Future<List<RelaySessionRecord>> listArmedSessions() async {
+    return _sessionsById.values
+        .where((s) => s.hostArmed)
+        .toList(growable: false);
   }
 
   @override
@@ -1807,6 +1885,19 @@ class InMemoryRelayStore implements RelayStore {
         prunedCount += 1;
       }
     }
+    for (final bond in _bondsById.values) {
+      final compLoc = bond.companionLatestLocation;
+      final compUpdated = bond.companionLocationUpdatedAtUtc;
+      final compExpired =
+          (compLoc != null && compLoc.isExpiredAt(nowUtc)) ||
+          (compUpdated != null && compUpdated.isBefore(cutoff));
+      if (compExpired && compLoc != null) {
+        bond.companionLatestLocation = null;
+        bond.companionLocationStatus = 'notRequested';
+        bond.companionLocationUpdatedAtUtc = null;
+        prunedCount += 1;
+      }
+    }
     for (final entry in _alertsBySession.entries) {
       final list = entry.value;
       for (var i = 0; i < list.length; i++) {
@@ -1847,6 +1938,17 @@ class InMemoryRelayStore implements RelayStore {
       session.hostLocationStatus = 'notRequested';
       session.hostLocationUpdatedAtUtc = null;
       session.hostTrackingExpiresAtUtc = null;
+    }
+    for (final bond in _bondsById.values) {
+      if (bond.pairingSessionId == pairingSessionId) {
+        if (bond.companionLatestLocation != null) {
+          cleared += 1;
+        }
+        bond.companionLatestLocation = null;
+        bond.companionLocationUpdatedAtUtc = null;
+        bond.companionLocationStatus = 'notRequested';
+        bond.locationSharingEnabled = false;
+      }
     }
     final list = _alertsBySession[pairingSessionId];
     if (list != null) {
@@ -2202,6 +2304,12 @@ class FileRelayStore implements RelayStore {
   }
 
   @override
+  Future<List<RelaySessionRecord>> listArmedSessions() async {
+    await initialize();
+    return _inner.listArmedSessions();
+  }
+
+  @override
   Future<void> saveCompanionBond(CompanionBondRecord bond) async {
     await initialize();
     await _inner.saveCompanionBond(bond);
@@ -2517,6 +2625,7 @@ class PostgresRelayStore implements RelayStore {
       <String, List<CompanionBondRecord>>{};
   final Map<String, String> _bondStructuralFingerprint = <String, String>{};
   final Map<String, int> _latestSeqCacheBySessionId = <String, int>{};
+  bool _armedSessionsLoadedFromDb = false;
 
   static String _sessionSignature(RelaySessionRecord s) {
     return jsonEncode(<Object?>[
@@ -2529,6 +2638,14 @@ class PostgresRelayStore implements RelayStore {
       s.failedCodeAttempts,
       s.hostDisconnectedAtUtc?.toIso8601String(),
       s.hostProtectionState,
+      s.hostArmed,
+      s.hostArmedSessionId,
+      s.hostArmedAtUtc?.toIso8601String(),
+      s.watchdogAlertSentForSession,
+      s.watchdogAlertSentAtUtc?.toIso8601String(),
+      s.hostReconnectedAtUtc?.toIso8601String(),
+      if (s.hostArmed && s.hostLastSeenAtUtc != null)
+        s.hostLastSeenAtUtc!.millisecondsSinceEpoch ~/ 12000,
       s.hostLatestLocation?.toJson(),
       s.hostLocationStatus,
       s.hostLocationUpdatedAtUtc?.toIso8601String(),
@@ -2573,6 +2690,10 @@ class PostgresRelayStore implements RelayStore {
       b.activeHandoffCode,
       b.handoffExpiresAtUtc?.toIso8601String(),
       b.revokedAtUtcIso,
+      b.locationSharingEnabled,
+      b.companionLatestLocation?.toJson(),
+      b.companionLocationStatus,
+      b.companionLocationUpdatedAtUtc?.toIso8601String(),
     ]);
   }
 
@@ -2730,6 +2851,24 @@ class PostgresRelayStore implements RelayStore {
     await _exec(
       'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_active_incident_id TEXT',
     );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_armed BOOLEAN NOT NULL DEFAULT FALSE',
+    );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_armed_session_id TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_armed_at_utc TIMESTAMPTZ',
+    );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS watchdog_alert_sent_for_session TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS watchdog_alert_sent_at_utc TIMESTAMPTZ',
+    );
+    await _exec(
+      'ALTER TABLE $_sessionsTable ADD COLUMN IF NOT EXISTS host_reconnected_at_utc TIMESTAMPTZ',
+    );
 
     await _exec('''
       CREATE TABLE IF NOT EXISTS $_bondsTable (
@@ -2833,6 +2972,18 @@ class PostgresRelayStore implements RelayStore {
     );
     await _exec(
       'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS last_receipt_source TEXT',
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS location_sharing_enabled BOOLEAN NOT NULL DEFAULT FALSE',
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS companion_location_json TEXT',
+    );
+    await _exec(
+      "ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS companion_location_status TEXT NOT NULL DEFAULT 'notRequested'",
+    );
+    await _exec(
+      'ALTER TABLE $_bondsTable ADD COLUMN IF NOT EXISTS companion_location_updated_at_utc TIMESTAMPTZ',
     );
 
     await _exec('''
@@ -2990,6 +3141,7 @@ class PostgresRelayStore implements RelayStore {
   RelaySessionRecord _rowToSession(Map<String, dynamic> map) {
     final createdRaw = map['created_at_utc'];
     final hostLoc = _decodeLocationJson(map['host_location_json'] as String?);
+    final rawProtState = map['host_protection_state'] as String? ?? 'off';
     return RelaySessionRecord(
       pairingSessionId: map['pairing_session_id'] as String,
       hostDisplayName: map['host_display_name'] as String,
@@ -3003,7 +3155,16 @@ class PostgresRelayStore implements RelayStore {
       failedCodeAttempts: (map['failed_code_attempts'] as num?)?.toInt() ?? 0,
       hostLastSeenAtUtc: _parseDbUtc(map['host_last_seen_at_utc']),
       hostDisconnectedAtUtc: _parseDbUtc(map['host_disconnected_at_utc']),
-      hostProtectionState: map['host_protection_state'] as String? ?? 'off',
+      hostProtectionState: rawProtState,
+      hostArmed:
+          map['host_armed'] as bool? ??
+          (rawProtState == 'armed' || rawProtState == 'protected'),
+      hostArmedSessionId: map['host_armed_session_id'] as String?,
+      hostArmedAtUtc: _parseDbUtc(map['host_armed_at_utc']),
+      watchdogAlertSentForSession:
+          map['watchdog_alert_sent_for_session'] as String?,
+      watchdogAlertSentAtUtc: _parseDbUtc(map['watchdog_alert_sent_at_utc']),
+      hostReconnectedAtUtc: _parseDbUtc(map['host_reconnected_at_utc']),
       hostLatestLocation: hostLoc,
       hostLocationStatus:
           map['host_location_status'] as String? ??
@@ -3019,6 +3180,9 @@ class PostgresRelayStore implements RelayStore {
   }
 
   CompanionBondRecord _rowToBond(Map<String, dynamic> map) {
+    final compLoc = _decodeLocationJson(
+      map['companion_location_json'] as String?,
+    );
     return CompanionBondRecord(
       bondId: map['bond_id'] as String,
       pairingSessionId: map['pairing_session_id'] as String,
@@ -3059,6 +3223,14 @@ class PostgresRelayStore implements RelayStore {
       handoffExpiresAtUtc: _parseDbUtc(map['handoff_expires_at_utc']),
       revokedAtUtcIso: map['revoked_at_utc_iso'] as String?,
       lastSeenAtUtcIso: map['last_seen_at_utc_iso'] as String?,
+      locationSharingEnabled: map['location_sharing_enabled'] as bool? ?? false,
+      companionLatestLocation: compLoc,
+      companionLocationStatus:
+          map['companion_location_status'] as String? ??
+          (compLoc != null ? 'attached' : 'notRequested'),
+      companionLocationUpdatedAtUtc: _parseDbUtc(
+        map['companion_location_updated_at_utc'],
+      ),
     );
   }
 
@@ -3125,6 +3297,12 @@ class PostgresRelayStore implements RelayStore {
           host_last_seen_at_utc,
           host_disconnected_at_utc,
           host_protection_state,
+          host_armed,
+          host_armed_session_id,
+          host_armed_at_utc,
+          watchdog_alert_sent_for_session,
+          watchdog_alert_sent_at_utc,
+          host_reconnected_at_utc,
           host_location_json,
           host_location_status,
           host_location_updated_at_utc,
@@ -3142,6 +3320,12 @@ class PostgresRelayStore implements RelayStore {
           @hostLastSeen,
           @hostDisconnected,
           @hostProtectionState,
+          @hostArmed,
+          @hostArmedSessionId,
+          @hostArmedAtUtc,
+          @watchdogAlertSentForSession,
+          @watchdogAlertSentAtUtc,
+          @hostReconnectedAtUtc,
           @hostLocationJson,
           @hostLocationStatus,
           @hostLocationUpdatedAtUtc,
@@ -3158,6 +3342,12 @@ class PostgresRelayStore implements RelayStore {
           host_last_seen_at_utc = EXCLUDED.host_last_seen_at_utc,
           host_disconnected_at_utc = EXCLUDED.host_disconnected_at_utc,
           host_protection_state = EXCLUDED.host_protection_state,
+          host_armed = EXCLUDED.host_armed,
+          host_armed_session_id = EXCLUDED.host_armed_session_id,
+          host_armed_at_utc = EXCLUDED.host_armed_at_utc,
+          watchdog_alert_sent_for_session = EXCLUDED.watchdog_alert_sent_for_session,
+          watchdog_alert_sent_at_utc = EXCLUDED.watchdog_alert_sent_at_utc,
+          host_reconnected_at_utc = EXCLUDED.host_reconnected_at_utc,
           host_location_json = EXCLUDED.host_location_json,
           host_location_status = EXCLUDED.host_location_status,
           host_location_updated_at_utc = EXCLUDED.host_location_updated_at_utc,
@@ -3175,6 +3365,12 @@ class PostgresRelayStore implements RelayStore {
         'hostLastSeen': session.hostLastSeenAtUtc,
         'hostDisconnected': session.hostDisconnectedAtUtc,
         'hostProtectionState': session.hostProtectionState,
+        'hostArmed': session.hostArmed,
+        'hostArmedSessionId': session.hostArmedSessionId,
+        'hostArmedAtUtc': session.hostArmedAtUtc,
+        'watchdogAlertSentForSession': session.watchdogAlertSentForSession,
+        'watchdogAlertSentAtUtc': session.watchdogAlertSentAtUtc,
+        'hostReconnectedAtUtc': session.hostReconnectedAtUtc,
         'hostLocationJson': hostLocJson,
         'hostLocationStatus': session.hostLocationStatus,
         'hostLocationUpdatedAtUtc': session.hostLocationUpdatedAtUtc,
@@ -3253,6 +3449,25 @@ class PostgresRelayStore implements RelayStore {
   }
 
   @override
+  Future<List<RelaySessionRecord>> listArmedSessions() async {
+    if (!_armedSessionsLoadedFromDb) {
+      final rows = await _exec(
+        'SELECT * FROM $_sessionsTable WHERE host_armed = TRUE',
+      );
+      for (final row in rows) {
+        final loaded = _rowToSession(row.toColumnMap());
+        if (!_sessionCacheById.containsKey(loaded.pairingSessionId)) {
+          _cacheLoadedSession(loaded);
+        }
+      }
+      _armedSessionsLoadedFromDb = true;
+    }
+    return _sessionCacheById.values
+        .where((s) => s.hostArmed)
+        .toList(growable: false);
+  }
+
+  @override
   Future<void> saveCompanionBond(CompanionBondRecord bond) async {
     _bondCacheById[bond.bondId] = bond;
     final cachedList = _bondsCacheBySessionId[bond.pairingSessionId];
@@ -3272,6 +3487,9 @@ class PostgresRelayStore implements RelayStore {
     if (_bondStructuralFingerprint[bond.bondId] == nextFp) {
       return;
     }
+    final compLocJson = bond.companionLatestLocation != null
+        ? jsonEncode(bond.companionLatestLocation!.toJson())
+        : null;
     await _exec(
       Sql.named('''
         INSERT INTO $_bondsTable (
@@ -3309,7 +3527,11 @@ class PostgresRelayStore implements RelayStore {
           active_handoff_code,
           handoff_expires_at_utc,
           revoked_at_utc_iso,
-          last_seen_at_utc_iso
+          last_seen_at_utc_iso,
+          location_sharing_enabled,
+          companion_location_json,
+          companion_location_status,
+          companion_location_updated_at_utc
         ) VALUES (
           @bondId,
           @sessionId,
@@ -3345,7 +3567,11 @@ class PostgresRelayStore implements RelayStore {
           @activeHandoffCode,
           @handoffExpiresAtUtc,
           @revokedAt,
-          @lastSeen
+          @lastSeen,
+          @locationSharingEnabled,
+          @companionLocationJson,
+          @companionLocationStatus,
+          @companionLocationUpdatedAtUtc
         )
         ON CONFLICT (bond_id) DO UPDATE SET
           platform = EXCLUDED.platform,
@@ -3377,7 +3603,11 @@ class PostgresRelayStore implements RelayStore {
           active_handoff_code = EXCLUDED.active_handoff_code,
           handoff_expires_at_utc = EXCLUDED.handoff_expires_at_utc,
           revoked_at_utc_iso = EXCLUDED.revoked_at_utc_iso,
-          last_seen_at_utc_iso = EXCLUDED.last_seen_at_utc_iso
+          last_seen_at_utc_iso = EXCLUDED.last_seen_at_utc_iso,
+          location_sharing_enabled = EXCLUDED.location_sharing_enabled,
+          companion_location_json = EXCLUDED.companion_location_json,
+          companion_location_status = EXCLUDED.companion_location_status,
+          companion_location_updated_at_utc = EXCLUDED.companion_location_updated_at_utc
       '''),
       parameters: <String, Object?>{
         'bondId': bond.bondId,
@@ -3415,6 +3645,10 @@ class PostgresRelayStore implements RelayStore {
         'handoffExpiresAtUtc': bond.handoffExpiresAtUtc,
         'revokedAt': bond.revokedAtUtcIso,
         'lastSeen': bond.lastSeenAtUtcIso,
+        'locationSharingEnabled': bond.locationSharingEnabled,
+        'companionLocationJson': compLocJson,
+        'companionLocationStatus': bond.companionLocationStatus,
+        'companionLocationUpdatedAtUtc': bond.companionLocationUpdatedAtUtc,
       },
     );
     _bondStructuralFingerprint[bond.bondId] = nextFp;
@@ -3861,6 +4095,18 @@ class PostgresRelayStore implements RelayStore {
       '''),
       parameters: <String, Object?>{'cutoffIso': cutoffIso},
     );
+    final bondRes = await _exec(
+      Sql.named('''
+        UPDATE $_bondsTable
+        SET companion_location_json = NULL,
+            companion_location_status = 'notRequested',
+            companion_location_updated_at_utc = NULL
+        WHERE companion_location_json IS NOT NULL
+          AND companion_location_updated_at_utc IS NOT NULL
+          AND companion_location_updated_at_utc < @cutoffUtc
+      '''),
+      parameters: <String, Object?>{'cutoffUtc': cutoffUtc},
+    );
     for (final session in _sessionCacheById.values) {
       final hostLoc = session.hostLatestLocation;
       final updatedAt = session.hostLocationUpdatedAtUtc;
@@ -3874,7 +4120,20 @@ class PostgresRelayStore implements RelayStore {
             _sessionSignature(session);
       }
     }
-    return sessionRes.affectedRows + alertRes.affectedRows;
+    for (final bond in _bondCacheById.values) {
+      final compLoc = bond.companionLatestLocation;
+      final compUpdated = bond.companionLocationUpdatedAtUtc;
+      if ((compLoc != null && compLoc.isExpiredAt(nowUtc)) ||
+          (compUpdated != null && compUpdated.isBefore(cutoffUtc))) {
+        bond.companionLatestLocation = null;
+        bond.companionLocationStatus = 'notRequested';
+        bond.companionLocationUpdatedAtUtc = null;
+        _bondStructuralFingerprint[bond.bondId] = _bondSignature(bond);
+      }
+    }
+    return sessionRes.affectedRows +
+        bondRes.affectedRows +
+        alertRes.affectedRows;
   }
 
   @override
@@ -3889,6 +4148,18 @@ class PostgresRelayStore implements RelayStore {
                 host_location_updated_at_utc = NULL,
                 host_tracking_expires_at_utc = NULL
             WHERE pairing_session_id = @sessionId
+          '''),
+          parameters: <String, Object?>{'sessionId': pairingSessionId},
+        );
+        final bRes = await tx.execute(
+          Sql.named('''
+            UPDATE $_bondsTable
+            SET companion_location_json = NULL,
+                companion_location_status = 'notRequested',
+                companion_location_updated_at_utc = NULL,
+                location_sharing_enabled = FALSE
+            WHERE pairing_session_id = @sessionId
+              AND (companion_location_json IS NOT NULL OR location_sharing_enabled = TRUE)
           '''),
           parameters: <String, Object?>{'sessionId': pairingSessionId},
         );
@@ -3927,7 +4198,7 @@ class PostgresRelayStore implements RelayStore {
         if (aRes.affectedRows > 0) {
           _latestSeqCacheBySessionId[pairingSessionId] = nextSeq;
         }
-        return sRes.affectedRows + aRes.affectedRows;
+        return sRes.affectedRows + bRes.affectedRows + aRes.affectedRows;
       }),
     );
     final cachedSession = _sessionCacheById[pairingSessionId];
@@ -3939,6 +4210,15 @@ class PostgresRelayStore implements RelayStore {
       _sessionStructuralFingerprint[pairingSessionId] = _sessionSignature(
         cachedSession,
       );
+    }
+    for (final bond in _bondCacheById.values) {
+      if (bond.pairingSessionId == pairingSessionId) {
+        bond.companionLatestLocation = null;
+        bond.companionLocationUpdatedAtUtc = null;
+        bond.companionLocationStatus = 'notRequested';
+        bond.locationSharingEnabled = false;
+        _bondStructuralFingerprint[bond.bondId] = _bondSignature(bond);
+      }
     }
     return clearedCount;
   }
@@ -4110,6 +4390,8 @@ class WatSafeRelayServer {
     this.pairingCodeTtl = const Duration(minutes: 5),
     this.handoffCodeTtl = const Duration(minutes: 10),
     this.hostOnlineTtl = const Duration(seconds: 45),
+    this.armedHeartbeatTimeout = const Duration(seconds: 45),
+    this.watchdogSweepInterval = const Duration(seconds: 10),
     this.tokenRefreshGraceWindow = const Duration(seconds: 60),
     this.maxFailedPairingAttempts = 5,
     this.failedAttemptWindow = const Duration(minutes: 10),
@@ -4131,6 +4413,8 @@ class WatSafeRelayServer {
     DateTime Function()? clock,
     Duration pairingCodeTtl = const Duration(minutes: 5),
     Duration hostOnlineTtl = const Duration(seconds: 45),
+    Duration armedHeartbeatTimeout = const Duration(seconds: 45),
+    Duration watchdogSweepInterval = const Duration(seconds: 10),
   }) {
     final pgStore = PostgresRelayStore.fromEnvironment(environment);
     return WatSafeRelayServer(
@@ -4144,11 +4428,13 @@ class WatSafeRelayServer {
       clock: clock,
       pairingCodeTtl: pairingCodeTtl,
       hostOnlineTtl: hostOnlineTtl,
+      armedHeartbeatTimeout: armedHeartbeatTimeout,
+      watchdogSweepInterval: watchdogSweepInterval,
       environment: environment,
     );
   }
 
-  static const String companionSwVersion = '2026.11.17-v4';
+  static const String companionSwVersion = '2026.11.17-v5';
   static const int locationRetentionDays = 7;
   static const Duration boundedAlarmTrackingMaxTtl = Duration(minutes: 15);
   static const String _codeAlphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -4160,12 +4446,16 @@ class WatSafeRelayServer {
   final Duration pairingCodeTtl;
   final Duration handoffCodeTtl;
   final Duration hostOnlineTtl;
+  final Duration armedHeartbeatTimeout;
+  final Duration watchdogSweepInterval;
   final Duration tokenRefreshGraceWindow;
   final int maxFailedPairingAttempts;
   final Duration failedAttemptWindow;
   final Random _random = Random.secure();
 
   HttpServer? _server;
+  Timer? _watchdogTimer;
+  Future<int>? _watchdogSweepInFlight;
   String? _dynamicPublicOrigin;
   int _seq = 0;
   DateTime? _lastRetentionSweepUtc;
@@ -4246,6 +4536,11 @@ class WatSafeRelayServer {
       await push.syncDurableVapidKeys(_store);
     }
     await _pushProvider.verifyConfiguredSenders();
+    await sweepArmedHeartbeatWatchdog();
+    _watchdogTimer?.cancel();
+    _watchdogTimer = Timer.periodic(watchdogSweepInterval, (_) {
+      unawaited(sweepArmedHeartbeatWatchdog());
+    });
     final bindAddress = address ?? InternetAddress.loopbackIPv4;
     final server = await HttpServer.bind(bindAddress, port);
     _server = server;
@@ -4254,9 +4549,117 @@ class WatSafeRelayServer {
   }
 
   Future<void> stop() async {
+    _watchdogTimer?.cancel();
+    _watchdogTimer = null;
     await _server?.close(force: true);
     _server = null;
     await _store.close();
+  }
+
+  /// Independently checks all armed host sessions and sends a deduplicated
+  /// `protectionInterrupted` alert + Web Push notification when a protected
+  /// laptop stops reporting heartbeats beyond [armedHeartbeatTimeout] without
+  /// an authenticated PIN disarm.
+  Future<int> sweepArmedHeartbeatWatchdog([DateTime? nowOverride]) {
+    final inflight = _watchdogSweepInFlight;
+    if (inflight != null && nowOverride == null) {
+      return inflight;
+    }
+    final future = _runArmedHeartbeatWatchdogSweep(
+      (nowOverride ?? _clock()).toUtc(),
+    );
+    if (nowOverride == null) {
+      _watchdogSweepInFlight = future.whenComplete(() {
+        _watchdogSweepInFlight = null;
+      });
+      return _watchdogSweepInFlight!;
+    }
+    return future;
+  }
+
+  Future<int> _runArmedHeartbeatWatchdogSweep(DateTime nowUtc) async {
+    var triggeredCount = 0;
+    List<RelaySessionRecord> armedSessions;
+    try {
+      armedSessions = await _store.listArmedSessions();
+    } catch (_) {
+      return 0;
+    }
+    for (final session in armedSessions) {
+      if (!session.hostArmed) {
+        continue;
+      }
+      final lastBeat =
+          session.hostLastSeenAtUtc ??
+          session.hostArmedAtUtc ??
+          session.createdAtUtc;
+      final elapsed = nowUtc.difference(lastBeat);
+      if (elapsed <= armedHeartbeatTimeout) {
+        continue;
+      }
+      final armedKey =
+          (session.hostArmedSessionId != null &&
+              session.hostArmedSessionId!.trim().isNotEmpty)
+          ? session.hostArmedSessionId!.trim()
+          : 'armed_${session.pairingSessionId}';
+      if (session.watchdogAlertSentForSession == armedKey) {
+        continue;
+      }
+
+      AlertLocationData? lastKnownLoc = session.hostLatestLocation;
+      if (lastKnownLoc != null &&
+          (!lastKnownLoc.isValid || lastKnownLoc.isExpiredAt(nowUtc))) {
+        lastKnownLoc = null;
+      } else if (lastKnownLoc != null && !lastKnownLoc.isLastKnown) {
+        lastKnownLoc = AlertLocationData(
+          latitude: lastKnownLoc.latitude,
+          longitude: lastKnownLoc.longitude,
+          capturedAtUtc: lastKnownLoc.capturedAtUtc,
+          accuracyMeters: lastKnownLoc.accuracyMeters,
+          isApproximate: lastKnownLoc.isApproximate,
+          isLastKnown: true,
+        );
+      }
+
+      final nowIso = nowUtc.toIso8601String();
+      final incidentId = 'watchdog_${session.pairingSessionId}_$armedKey';
+      final locStatus = lastKnownLoc != null
+          ? 'attached'
+          : session.hostLocationStatus;
+
+      session.watchdogAlertSentForSession = armedKey;
+      session.watchdogAlertSentAtUtc = nowUtc;
+      session.hostActiveIncidentId ??= incidentId;
+      await _store.saveSession(session);
+
+      final activeBonds = await _store.listActiveBondsForSession(
+        session.pairingSessionId,
+      );
+      final recorded = await _store.recordSessionAlert(
+        pairingSessionId: session.pairingSessionId,
+        incidentId: incidentId,
+        sessionId: armedKey,
+        kind: 'protectionInterrupted',
+        detectorType: 'heartbeat_watchdog',
+        triggeredAtUtc: nowIso,
+        triggerSummary:
+            '${session.hostDisplayName} stopped responding while protection was armed (last contact at ${lastBeat.toIso8601String()}). Missed heartbeats indicate sleep, lid closure, power loss, or lost network connectivity — not confirmed theft.',
+        createdAtUtc: nowIso,
+        hostDisplayName: session.hostDisplayName,
+        isTest: false,
+        location: lastKnownLoc,
+        locationStatus: locStatus,
+      );
+
+      await _dispatchRecordedSessionAlert(
+        pairingSessionId: session.pairingSessionId,
+        hostDisplayName: session.hostDisplayName,
+        recorded: recorded,
+        activeBonds: activeBonds,
+      );
+      triggeredCount += 1;
+    }
+    return triggeredCount;
   }
 
   String _randomHex(int byteCount) {
@@ -4429,12 +4832,20 @@ class WatSafeRelayServer {
     final online = session?.isHostOnlineAt(nowUtc, ttl: hostOnlineTtl) ?? false;
     final trackingLive =
         session?.isHostTrackingLiveAt(nowUtc, ttl: hostOnlineTtl) ?? false;
+    final watchdogTriggered =
+        session != null &&
+        session.hostArmed &&
+        session.watchdogAlertSentForSession != null &&
+        !online;
     return <String, Object?>{
       'hostOnline': online,
+      'hostArmed': session?.hostArmed ?? false,
       'hostTrackingLive': trackingLive,
+      'watchdogAlertActive': watchdogTriggered,
       'hostLastSeenAtUtc': ?session?.hostLastSeenAtUtc?.toIso8601String(),
       'hostDisconnectedAtUtc': ?session?.hostDisconnectedAtUtc
           ?.toIso8601String(),
+      'hostReconnectedAtUtc': ?session?.hostReconnectedAtUtc?.toIso8601String(),
       'hostProtectionState': session?.hostProtectionState ?? 'off',
     };
   }
@@ -4471,39 +4882,54 @@ class WatSafeRelayServer {
     return null;
   }
 
-  static String _humanProtectionLabel(String rawState, {required bool online}) {
+  static String _humanProtectionLabel(
+    String rawState, {
+    required bool online,
+    bool watchdogInterrupted = false,
+  }) {
     final lower = rawState.trim().toLowerCase();
+    if (watchdogInterrupted) {
+      return 'Protection interrupted';
+    }
     switch (lower) {
       case 'triggered':
       case 'alarming':
         return 'Alarm triggered';
+      case 'interrupted':
+      case 'protectioninterrupted':
+        return 'Protection interrupted';
       case 'armed':
       case 'protected':
-        return online ? 'Protected' : 'Protected · Laptop offline';
+        return 'Protected';
       case 'arming':
         return 'Arming';
       case 'confirming':
-        return 'Movement detected — checking…';
+        return 'Movement detected';
       case 'paused':
       case 'monitoringpaused':
         return 'Monitoring paused';
       case 'error':
         return 'Attention needed';
       default:
-        return online ? 'Off' : 'Laptop offline';
+        return 'Protection off';
     }
   }
 
   Future<List<Map<String, Object?>>> _buildAuthorizedDevicesList(
     RelaySessionRecord session,
-    DateTime nowUtc,
-  ) async {
+    DateTime nowUtc, {
+    CompanionBondRecord? requesterBond,
+  }) async {
     await _maybeSweepLocationRetention(nowUtc);
     final hostOnline = session.isHostOnlineAt(nowUtc, ttl: hostOnlineTtl);
     final trackingLive = session.isHostTrackingLiveAt(
       nowUtc,
       ttl: hostOnlineTtl,
     );
+    final watchdogInterrupted =
+        session.hostArmed &&
+        session.watchdogAlertSentForSession != null &&
+        !hostOnline;
     final isAlarming =
         session.hostProtectionState == 'triggered' ||
         session.hostProtectionState == 'alarming';
@@ -4559,7 +4985,10 @@ class WatSafeRelayServer {
 
     String statusExplanation;
     if (latestHostLoc != null) {
-      if (!hostOnline) {
+      if (watchdogInterrupted) {
+        statusExplanation =
+            '${session.hostDisplayName} stopped responding while armed. Showing last known location reported before contact was lost.';
+      } else if (!hostOnline) {
         statusExplanation =
             'Showing last reported location from ${session.hostDisplayName}. Sleeping, closed, or offline laptops stop reporting new positions.';
       } else if (trackingLive) {
@@ -4596,12 +5025,18 @@ class WatSafeRelayServer {
         'role': 'protected_device',
         'platform': 'Protected computer',
         'online': hostOnline,
-        'protectionState': session.hostProtectionState,
+        'connectionStatusLabel': hostOnline ? 'Online' : 'Offline',
+        'isCurrentRequester': requesterBond == null,
+        'locationSharingEnabled': latestHostLoc != null,
+        'protectionState': watchdogInterrupted
+            ? 'interrupted'
+            : session.hostProtectionState,
         'protectionStatusLabel': _humanProtectionLabel(
           session.hostProtectionState,
           online: hostOnline,
+          watchdogInterrupted: watchdogInterrupted,
         ),
-        'isAlarming': isAlarming,
+        'isAlarming': isAlarming || watchdogInterrupted,
         'trackingState': trackingState,
         if (latestHostLoc != null && latestHostLoc.isValid)
           'latestLocation': latestHostLoc.toJson(),
@@ -4616,6 +5051,7 @@ class WatSafeRelayServer {
         'statusExplanation': statusExplanation,
         'activeIncidentId': ?(activeAlert?.incidentId ?? activeIncId),
         'lastSeenAtUtc': ?session.hostLastSeenAtUtc?.toIso8601String(),
+        'reconnectedAtUtc': ?session.hostReconnectedAtUtc?.toIso8601String(),
       },
     ];
 
@@ -4623,12 +5059,70 @@ class WatSafeRelayServer {
       session.pairingSessionId,
     );
     for (final bond in bonds) {
+      final isThisPhone = requesterBond?.bondId == bond.bondId;
+      final bondLastSeenDt = bond.lastSeenAtUtcIso != null
+          ? DateTime.tryParse(bond.lastSeenAtUtcIso!)?.toUtc()
+          : null;
+      final bondOnline =
+          bond.connected &&
+          (bondLastSeenDt == null ||
+              nowUtc.difference(bondLastSeenDt) <=
+                  const Duration(seconds: 120));
+
+      AlertLocationData? compLoc = bond.companionLatestLocation;
+      if (compLoc != null &&
+          (!compLoc.isValid || compLoc.isExpiredAt(nowUtc))) {
+        compLoc = null;
+      }
+      final compCapturedDt = compLoc != null
+          ? DateTime.tryParse(compLoc.capturedAtUtc)?.toUtc()
+          : null;
+      final compLocFresh =
+          compCapturedDt != null &&
+          nowUtc.difference(compCapturedDt) <= const Duration(seconds: 90) &&
+          !compLoc!.isLastKnown;
+
+      final String compTrackingState;
+      final String compLocationStatus;
+      final String compExplanation;
+      if (compLoc != null) {
+        compTrackingState =
+            (bond.locationSharingEnabled && bondOnline && compLocFresh)
+            ? 'live'
+            : 'last_known';
+        compLocationStatus = 'attached';
+        compExplanation = compTrackingState == 'live'
+            ? 'Foreground location shared from ${bond.displayName}.'
+            : 'Last known location reported while WATSafe was open on ${bond.displayName}. Background web apps pause live GPS updates when closed.';
+      } else if (bond.companionLocationStatus == 'permissionDenied') {
+        compTrackingState = 'unavailable';
+        compLocationStatus = 'permissionDenied';
+        compExplanation =
+            'Location permission is turned off for ${bond.displayName}. Allow location access in browser or iOS Settings to show this phone on the map.';
+      } else if (bond.locationSharingEnabled &&
+          bond.companionLocationStatus == 'pending') {
+        compTrackingState = 'live';
+        compLocationStatus = 'pending';
+        compExplanation = 'Getting current location for ${bond.displayName}…';
+      } else {
+        compTrackingState = 'unavailable';
+        compLocationStatus = bond.companionLocationStatus == 'notShared'
+            ? 'notShared'
+            : 'notRequested';
+        compExplanation = isThisPhone
+            ? 'Location not shared. Tap "Share this phone’s location" to show this phone alongside ${session.hostDisplayName} while WATSafe is open.'
+            : 'Location sharing is off on ${bond.displayName}. Open WATSafe on that phone to share its position.';
+      }
+
       devices.add(<String, Object?>{
         'deviceId': bond.deviceId,
         'displayName': bond.displayName,
         'role': 'companion_phone',
         'platform': bond.platform,
-        'online': bond.connected,
+        'online': bondOnline,
+        'connectionStatusLabel': bondOnline ? 'Online' : 'Offline',
+        'isCurrentRequester': isThisPhone,
+        'locationSharingEnabled': bond.locationSharingEnabled,
         'protectionState': bond.notificationsEnabled
             ? 'alerts_active'
             : 'companion_connected',
@@ -4636,10 +5130,10 @@ class WatSafeRelayServer {
             ? 'Companion · Alerts on'
             : 'Companion · Setup needed',
         'isAlarming': false,
-        'trackingState': 'unavailable',
-        'locationStatus': 'notRequested',
-        'statusExplanation':
-            '${bond.displayName} receives alarm alerts for ${session.hostDisplayName}. WATSafe never tracks your companion phone or labels its location as your laptop.',
+        'trackingState': compTrackingState,
+        if (compLoc != null) 'latestLocation': compLoc.toJson(),
+        'locationStatus': compLocationStatus,
+        'statusExplanation': compExplanation,
         'lastSeenAtUtc': ?bond.lastSeenAtUtcIso,
       });
     }
@@ -4974,6 +5468,7 @@ class WatSafeRelayServer {
       }
 
       if (method == 'GET' && path == '/v1/health') {
+        await sweepArmedHeartbeatWatchdog();
         final publicHttpsOrigin = _configuredPublicHttpsOrigin();
         final permanentHttpsOrigin = _configuredPermanentHttpsOrigin();
         final envPush = _pushProvider is EnvironmentPushProviderAdapter
@@ -4985,6 +5480,7 @@ class WatSafeRelayServer {
           'storageDurable': isStorageDurable,
           'storageDurabilityWarning': ?storageDurabilityWarning,
           'swVersion': companionSwVersion,
+          'watchdogTimeoutSeconds': armedHeartbeatTimeout.inSeconds,
           'deliveryMode': _pushProvider.isConfigured
               ? 'push_and_live_poll'
               : 'foreground_companion_poll',
@@ -5003,6 +5499,19 @@ class WatSafeRelayServer {
             'webhookConfigured': envPush.hasWebhookConfigured,
             'webhookSenderVerified': envPush.webhookSenderVerified,
           },
+        });
+        return;
+      }
+
+      if ((method == 'GET' || method == 'POST') &&
+          path == '/v1/watchdog/sweep') {
+        final nowUtc = _clock().toUtc();
+        final triggered = await sweepArmedHeartbeatWatchdog(nowUtc);
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'ok': true,
+          'triggeredCount': triggered,
+          'watchdogTimeoutSeconds': armedHeartbeatTimeout.inSeconds,
+          'checkedAtUtc': nowUtc.toIso8601String(),
         });
         return;
       }
@@ -6114,12 +6623,55 @@ class WatSafeRelayServer {
           return;
         }
         final nowUtc = _clock().toUtc();
+        final wasOfflineOrTimedOut = !session.isHostOnlineAt(
+          nowUtc,
+          ttl: armedHeartbeatTimeout,
+        );
+        final reqProtectionState =
+            ((body['hostProtectionState'] ?? body['protectionState'])
+                    as String?)
+                ?.trim();
+        final reqArmed = body['hostArmed'] as bool?;
+        final reqArmedSessionId =
+            ((body['hostArmedSessionId'] ?? body['armedSessionId']) as String?)
+                ?.trim();
+        final disarmVerified = body['disarmVerified'] as bool? ?? false;
+
         session.markHostSeen(
           nowUtc,
           displayName: body['hostDisplayName'] as String?,
           deviceId: body['hostDeviceId'] as String?,
-          protectionState: body['hostProtectionState'] as String?,
+          protectionState: reqProtectionState,
         );
+        if (wasOfflineOrTimedOut &&
+            session.watchdogAlertSentForSession != null) {
+          session.hostReconnectedAtUtc = nowUtc;
+        }
+
+        if (disarmVerified || reqArmed == false) {
+          session.hostArmed = false;
+          session.hostArmedSessionId = null;
+          session.hostArmedAtUtc = null;
+          session.watchdogAlertSentForSession = null;
+          session.watchdogAlertSentAtUtc = null;
+          session.hostReconnectedAtUtc = null;
+        } else if (reqArmed == true ||
+            reqProtectionState == 'armed' ||
+            reqProtectionState == 'protected') {
+          final nextArmedId =
+              (reqArmedSessionId != null && reqArmedSessionId.isNotEmpty)
+              ? reqArmedSessionId
+              : (session.hostArmedSessionId ??
+                    'armed_${nowUtc.millisecondsSinceEpoch}');
+          if (!session.hostArmed || session.hostArmedSessionId != nextArmedId) {
+            session.hostArmed = true;
+            session.hostArmedSessionId = nextArmedId;
+            session.hostArmedAtUtc = nowUtc;
+            session.watchdogAlertSentForSession = null;
+            session.watchdogAlertSentAtUtc = null;
+            session.hostReconnectedAtUtc = null;
+          }
+        }
         await _store.saveSession(session);
         final bonds = await _store.listActiveBondsForSession(
           session.pairingSessionId,
@@ -6406,10 +6958,15 @@ class WatSafeRelayServer {
             (body['locationStatus'] as String?) ??
             (initialLocation != null ? 'attached' : 'notRequested');
 
+        final reportedKind = (body['kind'] as String?) ?? 'realDetectorTrigger';
         session.markHostSeen(
           nowUtc,
           displayName: hostNameOverride,
-          protectionState: isTestIncident ? null : 'triggered',
+          protectionState: isTestIncident
+              ? null
+              : (reportedKind == 'protectionInterrupted'
+                    ? 'interrupted'
+                    : 'triggered'),
         );
         if (!isTestIncident) {
           session.hostActiveIncidentId = incidentId;
@@ -6417,6 +6974,20 @@ class WatSafeRelayServer {
             session.hostTrackingExpiresAtUtc = nowUtc.add(
               boundedAlarmTrackingMaxTtl,
             );
+          }
+          // Deduplicate server-side heartbeat watchdog if the laptop already
+          // succeeded in sending an interruption or alarm alert for this episode.
+          if (session.hostArmed &&
+              (reportedKind == 'protectionInterrupted' ||
+                  reportedKind == 'realDetectorTrigger' ||
+                  reportedKind == 'detectorFailureDuringMonitoring')) {
+            final armedKey =
+                (session.hostArmedSessionId != null &&
+                    session.hostArmedSessionId!.trim().isNotEmpty)
+                ? session.hostArmedSessionId!.trim()
+                : 'armed_${session.pairingSessionId}';
+            session.watchdogAlertSentForSession = armedKey;
+            session.watchdogAlertSentAtUtc = nowUtc;
           }
         }
         if (initialLocation != null) {
@@ -6502,6 +7073,36 @@ class WatSafeRelayServer {
             'message': 'incidentId is required.',
           });
           return;
+        }
+
+        final requestedSessionId = (body['pairingSessionId'] as String? ?? '')
+            .trim();
+        if (requestedSessionId.isNotEmpty &&
+            requestedSessionId != session.pairingSessionId) {
+          _writeJson(request.response, HttpStatus.forbidden, <String, Object?>{
+            'error': 'FORBIDDEN_CROSS_SESSION_ACCESS',
+            'message': 'Cannot update host location belonging to another pairing session.',
+          });
+          return;
+        }
+        final requestedDeviceId =
+            ((body['hostDeviceId'] ?? body['deviceId']) as String? ?? '')
+                .trim();
+        if (requestedDeviceId.isNotEmpty) {
+          final existingBonds = await _store.listActiveBondsForSession(
+            session.pairingSessionId,
+          );
+          if (existingBonds.any((b) => b.deviceId == requestedDeviceId)) {
+            _writeJson(
+              request.response,
+              HttpStatus.forbidden,
+              <String, Object?>{
+                'error': 'FORBIDDEN_DEVICE_IMPERSONATION',
+                'message': 'Host session cannot overwrite a companion phone device location.',
+              },
+            );
+            return;
+          }
         }
 
         AlertLocationData? location;
@@ -6621,6 +7222,36 @@ class WatSafeRelayServer {
           return;
         }
 
+        final requestedSessionId = (body['pairingSessionId'] as String? ?? '')
+            .trim();
+        if (requestedSessionId.isNotEmpty &&
+            requestedSessionId != session.pairingSessionId) {
+          _writeJson(request.response, HttpStatus.forbidden, <String, Object?>{
+            'error': 'FORBIDDEN_CROSS_SESSION_ACCESS',
+            'message': 'Cannot update host location belonging to another pairing session.',
+          });
+          return;
+        }
+        final requestedDeviceId =
+            ((body['hostDeviceId'] ?? body['deviceId']) as String? ?? '')
+                .trim();
+        if (requestedDeviceId.isNotEmpty) {
+          final existingBonds = await _store.listActiveBondsForSession(
+            session.pairingSessionId,
+          );
+          if (existingBonds.any((b) => b.deviceId == requestedDeviceId)) {
+            _writeJson(
+              request.response,
+              HttpStatus.forbidden,
+              <String, Object?>{
+                'error': 'FORBIDDEN_DEVICE_IMPERSONATION',
+                'message': 'Host session cannot overwrite a companion phone device location.',
+              },
+            );
+            return;
+          }
+        }
+
         AlertLocationData? location;
         final rawLoc = body['location'];
         if (rawLoc != null) {
@@ -6714,6 +7345,159 @@ class WatSafeRelayServer {
         return;
       }
 
+      // Companion phone foreground location sharing (explicitly user-enabled).
+      // Strictly requires companion bearer auth and forbids overwriting host or
+      // other companion device locations.
+      if ((method == 'POST' || method == 'DELETE') &&
+          path == '/v1/companion/location') {
+        final body = method == 'POST'
+            ? await _readJsonBody(request)
+            : const <String, Object?>{};
+        final forbidden = detectForbiddenSensitiveField(body);
+        if (forbidden != null) {
+          _writePrivacyViolation(request.response, forbidden);
+          return;
+        }
+        final companionToken = _extractBearerToken(request);
+        if (companionToken == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_COMPANION_SESSION',
+              'message': 'Missing companion session bearer token.',
+            },
+          );
+          return;
+        }
+        final bond = await _store.findActiveBondByCompanionToken(
+          companionToken,
+        );
+        if (bond == null) {
+          _writeJson(
+            request.response,
+            HttpStatus.unauthorized,
+            <String, Object?>{
+              'error': 'UNAUTHORIZED_COMPANION_SESSION',
+              'message': 'Companion session is unpaired or revoked.',
+            },
+          );
+          return;
+        }
+
+        final requestedSessionId =
+            ((body['pairingSessionId'] ??
+                            request.uri.queryParameters['pairingSessionId'])
+                        as String? ??
+                    '')
+                .trim();
+        if (requestedSessionId.isNotEmpty &&
+            requestedSessionId != bond.pairingSessionId) {
+          _writeJson(request.response, HttpStatus.forbidden, <String, Object?>{
+            'error': 'FORBIDDEN_CROSS_SESSION_ACCESS',
+            'message': 'Cannot update companion location belonging to another pairing session.',
+          });
+          return;
+        }
+
+        final requestedDeviceId =
+            ((body['deviceId'] ?? request.uri.queryParameters['deviceId'])
+                        as String? ??
+                    '')
+                .trim();
+        if (requestedDeviceId.isNotEmpty &&
+            requestedDeviceId != bond.deviceId) {
+          _writeJson(request.response, HttpStatus.forbidden, <String, Object?>{
+            'error': 'FORBIDDEN_DEVICE_IMPERSONATION',
+            'message': 'Companion session can only update its own authorized phone location.',
+          });
+          return;
+        }
+
+        final nowUtc = _clock().toUtc();
+        bond.connected = true;
+        bond.lastSeenAtUtcIso = nowUtc.toIso8601String();
+
+        if (method == 'DELETE' || body['sharingEnabled'] == false) {
+          final explicitDisabledStatus = method == 'POST'
+              ? (body['locationStatus'] as String?)?.trim()
+              : null;
+          bond.locationSharingEnabled = false;
+          bond.companionLatestLocation = null;
+          bond.companionLocationUpdatedAtUtc = null;
+          bond.companionLocationStatus =
+              (explicitDisabledStatus == 'permissionDenied' ||
+                  explicitDisabledStatus == 'unavailable')
+              ? explicitDisabledStatus!
+              : 'notShared';
+          await _store.saveCompanionBond(bond);
+          _syncPairedSnapshot(bond);
+          _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+            'ok': true,
+            'deviceId': bond.deviceId,
+            'locationSharingEnabled': false,
+            'locationStatus': bond.companionLocationStatus,
+          });
+          return;
+        }
+
+        AlertLocationData? location;
+        final rawLoc = body['location'];
+        if (rawLoc != null) {
+          if (rawLoc is! Map) {
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'INVALID_LOCATION_COORDINATES',
+                'message': 'Invalid location object.',
+              },
+            );
+            return;
+          }
+          location = AlertLocationData.tryFromJson(
+            Map<String, Object?>.from(rawLoc),
+          );
+          if (location == null) {
+            _writeJson(
+              request.response,
+              HttpStatus.badRequest,
+              <String, Object?>{
+                'error': 'INVALID_LOCATION_COORDINATES',
+                'message': 'Coordinates must be valid finite latitude/longitude (never 0,0 or negative accuracy).',
+              },
+            );
+            return;
+          }
+        }
+
+        final sharingEnabled = body['sharingEnabled'] as bool? ?? true;
+        final locationStatus =
+            (body['locationStatus'] as String?)?.trim() ??
+            (location != null ? 'attached' : 'pending');
+
+        bond.locationSharingEnabled = sharingEnabled;
+        if (location != null) {
+          bond.companionLatestLocation = location;
+          bond.companionLocationStatus = 'attached';
+          bond.companionLocationUpdatedAtUtc = nowUtc;
+        } else {
+          bond.companionLocationStatus = locationStatus;
+        }
+        await _store.saveCompanionBond(bond);
+        _syncPairedSnapshot(bond);
+
+        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+          'ok': true,
+          'deviceId': bond.deviceId,
+          'locationSharingEnabled': bond.locationSharingEnabled,
+          'locationStatus': bond.companionLocationStatus,
+          if (bond.companionLatestLocation != null)
+            'latestLocation': bond.companionLatestLocation!.toJson(),
+        });
+        return;
+      }
+
       // Session-scoped authorized devices & locations for the Devices map view.
       // Rejects unauthenticated requests and cross-session / unauthorized ID queries.
       if (method == 'GET' && path == '/v1/devices/locations') {
@@ -6749,12 +7533,17 @@ class WatSafeRelayServer {
           auth.bond!.connected = true;
           auth.bond!.lastSeenAtUtcIso = nowUtc.toIso8601String();
           await _store.saveCompanionBond(auth.bond!);
+          await sweepArmedHeartbeatWatchdog(nowUtc);
         } else {
           session.markHostSeen(nowUtc);
           await _store.saveSession(session);
         }
 
-        final devices = await _buildAuthorizedDevicesList(session, nowUtc);
+        final devices = await _buildAuthorizedDevicesList(
+          session,
+          nowUtc,
+          requesterBond: auth.bond,
+        );
         final requestedDeviceId =
             (request.uri.queryParameters['deviceId'] ?? '').trim();
         if (requestedDeviceId.isNotEmpty) {
@@ -7010,6 +7799,7 @@ class WatSafeRelayServer {
         bond.connected = true;
         bond.lastSeenAtUtcIso = nowUtc.toIso8601String();
         await _store.saveCompanionBond(bond);
+        await sweepArmedHeartbeatWatchdog(nowUtc);
 
         final session = await _store.findSessionById(bond.pairingSessionId);
         await _maybeSweepLocationRetention(nowUtc);
@@ -7026,6 +7816,12 @@ class WatSafeRelayServer {
                 !session.hostLatestLocation!.isExpiredAt(nowUtc))
             ? session.hostLatestLocation
             : null;
+        final compLoc =
+            (bond.companionLatestLocation != null &&
+                bond.companionLatestLocation!.isValid &&
+                !bond.companionLatestLocation!.isExpiredAt(nowUtc))
+            ? bond.companionLatestLocation
+            : null;
 
         _writeJson(request.response, HttpStatus.ok, <String, Object?>{
           'pairingSessionId': bond.pairingSessionId,
@@ -7036,6 +7832,9 @@ class WatSafeRelayServer {
           'connected': true,
           'notificationsEnabled': bond.notificationsEnabled,
           'backendPushRegistered': bond.backendPushRegistered,
+          'locationSharingEnabled': bond.locationSharingEnabled,
+          'companionLocationStatus': bond.companionLocationStatus,
+          if (compLoc != null) 'companionLocation': compLoc.toJson(),
           ..._vapidMismatchFields(bond),
           'pushConfigured': _pushProvider.isConfigured,
           'vapidPublicKey': ?_pushProvider.vapidPublicKey,

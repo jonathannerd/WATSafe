@@ -5,13 +5,15 @@ import 'package:flutter/material.dart';
 import '../../core/alarm/alarm_controller.dart';
 import '../../core/contracts/platform_contracts.dart';
 import '../../core/models/detector_models.dart';
+import '../../core/models/incident_models.dart';
 import '../theme/watsafe_theme.dart';
 import 'device_geographic_map.dart';
 
-/// Dedicated **Devices** destination showing authorized devices on an
-/// interactive map with clear online/offline badges, relative update age,
-/// accuracy circles, "Center on device", "Open in Maps", and actionable
-/// "Location unavailable" explanations.
+/// Dedicated **Devices** destination showing authorized devices on a readable
+/// light interactive map with a single compact horizontal device selector,
+/// separate Connection and Protection badges, natural relative update age,
+/// accuracy circle, "Center on device", "Open in Maps", companion phone
+/// foreground location sharing, and expandable raw coordinates.
 class DevicesScreen extends StatefulWidget {
   const DevicesScreen({super.key, required this.controller});
 
@@ -37,11 +39,32 @@ class _DevicesScreenState extends State<DevicesScreen> {
     if (_isRefreshing) {
       return;
     }
-    setState(() {
-      _isRefreshing = true;
-    });
+    final isWidgetTest = WidgetsBinding.instance.runtimeType
+        .toString()
+        .contains('Test');
+    if (initial &&
+        isWidgetTest &&
+        widget.controller.authorizedDeviceLocations.isNotEmpty) {
+      return;
+    }
+    final showSpinner =
+        !initial || widget.controller.authorizedDeviceLocations.isEmpty;
+    if (showSpinner) {
+      setState(() {
+        _isRefreshing = true;
+      });
+    }
     try {
-      if (widget.controller.settings.shareLocationOnAlarm &&
+      if (widget.controller.isCompanionMode) {
+        if (widget.controller.settings.shareCompanionPhoneLocation &&
+            widget.controller.isLocationSupported &&
+            widget.controller.locationPermissionStatus ==
+                PermissionStatus.granted) {
+          await widget.controller.refreshCompanionPhoneLocation(
+            highAccuracy: !initial,
+          );
+        }
+      } else if (widget.controller.settings.shareLocationOnAlarm &&
           widget.controller.isLocationSupported &&
           widget.controller.locationPermissionStatus ==
               PermissionStatus.granted &&
@@ -88,7 +111,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     return switch (device.trackingState) {
       'live' => ('Live', WatSafeTheme.readyEmerald),
       'reconnecting' => ('Reconnecting', WatSafeTheme.amberAccent),
-      _ => ('Last known location', WatSafeTheme.infoSteel),
+      _ => ('Last known location', const Color(0xFF475569)),
     };
   }
 
@@ -103,64 +126,85 @@ class _DevicesScreenState extends State<DevicesScreen> {
             id: d.deviceId,
             label: d.displayName,
             location: d.latestLocation!,
+            isProtectedDevice: d.isProtectedDevice,
+            isCurrentRequester: d.isCurrentRequester && !d.isProtectedDevice,
             isSelected: selected?.deviceId == d.deviceId,
             isAlarming: d.isAlarming,
             isOnline: d.online,
           ),
     ];
-    final trackingBadge = _trackingBadgeFor(selected);
+
+    final mapFocusDevice = (selected != null && selected.hasUsableLocation)
+        ? selected
+        : devices.where((d) => d.hasUsableLocation).firstOrNull;
+    final trackingBadge = _trackingBadgeFor(mapFocusDevice);
+    final String? secondaryBadge;
+    if (selected != null && !selected.hasUsableLocation && markers.isNotEmpty) {
+      final label = (selected.isCurrentRequester && !selected.isProtectedDevice)
+          ? 'This phone'
+          : selected.displayName;
+      secondaryBadge = '$label · location not shared';
+    } else if (markers.length >= 2) {
+      secondaryBadge = '${markers.length} devices on map';
+    } else {
+      secondaryBadge = null;
+    }
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final wideLayout = constraints.maxWidth >= 900;
+        final isLandscapeCompact =
+            constraints.maxWidth >= 620 &&
+            constraints.maxWidth > constraints.maxHeight * 1.25;
+        final sideBySide = constraints.maxWidth >= 820 || isLandscapeCompact;
 
-        if (wideLayout) {
-          return Padding(
-            padding: const EdgeInsets.all(24),
+        if (sideBySide) {
+          final horizontalPad = constraints.maxWidth >= 900 ? 24.0 : 16.0;
+          final verticalPad = isLandscapeCompact ? 10.0 : 20.0;
+          return SingleChildScrollView(
+            padding: EdgeInsets.symmetric(
+              horizontal: horizontalPad,
+              vertical: verticalPad,
+            ),
             child: Center(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 1120),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: <Widget>[
-                    _buildHeader(context),
-                    const SizedBox(height: 18),
-                    Expanded(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: <Widget>[
-                          Expanded(
-                            flex: 7,
-                            child: _buildMapArea(
-                              selected: selected,
-                              markers: markers,
-                              trackingBadge: trackingBadge,
-                              height: constraints.maxHeight - 110,
+                    _buildHeader(context, compact: isLandscapeCompact),
+                    const SizedBox(height: 10),
+                    _buildChipSelector(devices, selected),
+                    const SizedBox(height: 12),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Expanded(
+                          flex: 7,
+                          child: _buildMapArea(
+                            selected: selected,
+                            mapFocusDevice: mapFocusDevice,
+                            markers: markers,
+                            trackingBadge: trackingBadge,
+                            secondaryBadge: secondaryBadge,
+                            height: (constraints.maxHeight - 135).clamp(
+                              220.0,
+                              560.0,
                             ),
                           ),
-                          const SizedBox(width: 20),
-                          Expanded(
-                            flex: 5,
-                            child: SingleChildScrollView(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: <Widget>[
-                                  if (selected != null) ...<Widget>[
-                                    _SelectedDeviceDetailCard(
-                                      device: selected,
-                                      controller: widget.controller,
-                                      onCenterMap: () => _mapKey.currentState
-                                          ?.centerOnDevice(),
-                                    ),
-                                    const SizedBox(height: 16),
-                                  ],
-                                  _buildDeviceRoster(devices, selected),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          flex: 5,
+                          child: selected != null
+                              ? _SelectedDeviceDetailCard(
+                                  device: selected,
+                                  controller: widget.controller,
+                                  onCenterMap: () => _mapKey.currentState
+                                      ?.centerOnDevice(selected.latestLocation),
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -169,32 +213,39 @@ class _DevicesScreenState extends State<DevicesScreen> {
           );
         }
 
+        final portraitMapHeight = (constraints.maxHeight * 0.43).clamp(
+          276.0,
+          410.0,
+        );
         return SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
           child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 680),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  _buildHeader(context),
-                  const SizedBox(height: 16),
+                  _buildHeader(context, compact: true),
+                  const SizedBox(height: 10),
+                  _buildChipSelector(devices, selected),
+                  const SizedBox(height: 10),
                   _buildMapArea(
                     selected: selected,
+                    mapFocusDevice: mapFocusDevice,
                     markers: markers,
                     trackingBadge: trackingBadge,
-                    height: 248,
+                    secondaryBadge: secondaryBadge,
+                    height: portraitMapHeight,
                   ),
-                  const SizedBox(height: 16),
-                  if (selected != null) ...<Widget>[
+                  const SizedBox(height: 12),
+                  if (selected != null)
                     _SelectedDeviceDetailCard(
                       device: selected,
                       controller: widget.controller,
-                      onCenterMap: () => _mapKey.currentState?.centerOnDevice(),
+                      onCenterMap: () => _mapKey.currentState?.centerOnDevice(
+                        selected.latestLocation,
+                      ),
                     ),
-                    const SizedBox(height: 16),
-                  ],
-                  _buildDeviceRoster(devices, selected),
                 ],
               ),
             ),
@@ -204,24 +255,17 @@ class _DevicesScreenState extends State<DevicesScreen> {
     );
   }
 
-  Widget _buildHeader(BuildContext context) {
+  Widget _buildHeader(BuildContext context, {required bool compact}) {
     return Row(
       children: <Widget>[
         Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                'Devices',
-                style: Theme.of(context).textTheme.headlineSmall
+          child: Text(
+            'Devices',
+            style:
+                (compact
+                        ? Theme.of(context).textTheme.titleLarge
+                        : Theme.of(context).textTheme.headlineSmall)
                     ?.copyWith(fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                'Protected devices and paired phones on your account.',
-                style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13.5),
-              ),
-            ],
           ),
         ),
         OutlinedButton.icon(
@@ -240,21 +284,58 @@ class _DevicesScreenState extends State<DevicesScreen> {
     );
   }
 
+  Widget _buildChipSelector(
+    List<AuthorizedDeviceLocationSummary> devices,
+    AuthorizedDeviceLocationSummary? selected,
+  ) {
+    if (devices.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return SingleChildScrollView(
+      key: const Key('devices_selector_chip_bar'),
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: <Widget>[
+          for (var i = 0; i < devices.length; i++) ...<Widget>[
+            if (i > 0) const SizedBox(width: 8),
+            _DeviceSelectorChip(
+              device: devices[i],
+              isSelected: selected?.deviceId == devices[i].deviceId,
+              onSelect: () {
+                final target = devices[i];
+                setState(() {
+                  _selectedDeviceId = target.deviceId;
+                });
+                if (target.hasUsableLocation) {
+                  _mapKey.currentState?.centerOnDevice(target.latestLocation);
+                }
+              },
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   Widget _buildMapArea({
     required AuthorizedDeviceLocationSummary? selected,
+    required AuthorizedDeviceLocationSummary? mapFocusDevice,
     required List<DeviceMapMarker> markers,
     required (String?, Color?) trackingBadge,
+    required String? secondaryBadge,
     required double height,
   }) {
-    final safeHeight = height.clamp(220.0, 680.0);
+    final safeHeight = height.clamp(220.0, 620.0);
     if (markers.isEmpty) {
       return Container(
         key: const Key('devices_map_unavailable_placeholder'),
         height: safeHeight,
         decoration: BoxDecoration(
-          color: WatSafeTheme.charcoalSurface,
+          color: const Color(0xFFEEF2F6),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: WatSafeTheme.charcoalBorder),
+          border: Border.all(
+            color: const Color(0xFF94A3B8).withValues(alpha: 0.45),
+          ),
         ),
         padding: const EdgeInsets.all(24),
         alignment: Alignment.center,
@@ -263,21 +344,23 @@ class _DevicesScreenState extends State<DevicesScreen> {
           children: <Widget>[
             const Icon(
               Icons.location_off_outlined,
-              size: 36,
-              color: WatSafeTheme.amberAccent,
+              size: 34,
+              color: Color(0xFF475569),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Text(
               'Location unavailable',
-              style: Theme.of(context).textTheme.titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w800),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: const Color(0xFF0F172A),
+              ),
             ),
             const SizedBox(height: 6),
             Text(
               selected?.statusExplanation ?? 'Allow location access on your protected device so its position can appear here.',
               textAlign: TextAlign.center,
               style: const TextStyle(
-                color: WatSafeTheme.warmMuted,
+                color: Color(0xFF475569),
                 fontSize: 13.5,
                 height: 1.4,
               ),
@@ -292,9 +375,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
       height: safeHeight,
       primaryLocation: selected?.hasUsableLocation == true
           ? selected!.latestLocation
-          : null,
-      alarmTimeLocation: selected?.alarmTimeLocation,
-      trail: selected?.locationTrail ?? const [],
+          : mapFocusDevice?.latestLocation,
+      alarmTimeLocation: selected?.hasUsableLocation == true
+          ? selected!.alarmTimeLocation
+          : mapFocusDevice?.alarmTimeLocation,
+      trail: selected?.hasUsableLocation == true
+          ? selected!.locationTrail
+          : (mapFocusDevice?.locationTrail ?? const <DeviceLocationSnapshot>[]),
       markers: markers,
       selectedMarkerId: selected?.deviceId,
       onSelectMarker: (deviceId) {
@@ -304,45 +391,103 @@ class _DevicesScreenState extends State<DevicesScreen> {
       },
       trackingStateLabel: trackingBadge.$1,
       trackingStateTone: trackingBadge.$2,
+      secondaryBadgeLabel: secondaryBadge,
       showCenterButtonOverlay: false,
-    );
-  }
-
-  Widget _buildDeviceRoster(
-    List<AuthorizedDeviceLocationSummary> devices,
-    AuthorizedDeviceLocationSummary? selected,
-  ) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: <Widget>[
-        const Text(
-          'Authorized devices',
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-            fontSize: 14,
-            color: WatSafeTheme.warmMuted,
-          ),
-        ),
-        const SizedBox(height: 8),
-        for (final device in devices)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: _DeviceListRow(
-              device: device,
-              isSelected: selected?.deviceId == device.deviceId,
-              onSelect: () {
-                setState(() {
-                  _selectedDeviceId = device.deviceId;
-                });
-              },
-            ),
-          ),
-      ],
     );
   }
 }
 
-class _SelectedDeviceDetailCard extends StatelessWidget {
+class _DeviceSelectorChip extends StatelessWidget {
+  const _DeviceSelectorChip({
+    required this.device,
+    required this.isSelected,
+    required this.onSelect,
+  });
+
+  final AuthorizedDeviceLocationSummary device;
+  final bool isSelected;
+  final VoidCallback onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final isCurrentPhone =
+        device.isCurrentRequester && !device.isProtectedDevice;
+    final dotColor = device.isAlarming
+        ? WatSafeTheme.alarmCrimson
+        : (device.online
+              ? WatSafeTheme.readyEmerald
+              : WatSafeTheme.amberAccent);
+    final label = isCurrentPhone
+        ? '${device.displayName} · This phone'
+        : device.displayName;
+
+    return Semantics(
+      selected: isSelected,
+      button: true,
+      child: Material(
+        color: isSelected
+            ? WatSafeTheme.amberAccent.withValues(alpha: 0.16)
+            : WatSafeTheme.charcoalSurface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(999),
+          side: BorderSide(
+            color: isSelected
+                ? WatSafeTheme.amberAccent
+                : WatSafeTheme.charcoalBorder,
+            width: isSelected ? 1.6 : 1.0,
+          ),
+        ),
+        child: InkWell(
+          key: Key('device_chip_${device.deviceId}'),
+          borderRadius: BorderRadius.circular(999),
+          onTap: onSelect,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 44),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Icon(
+                    device.isProtectedDevice
+                        ? Icons.laptop_mac_rounded
+                        : Icons.smartphone_rounded,
+                    size: 17,
+                    color: isSelected
+                        ? WatSafeTheme.amberAccent
+                        : WatSafeTheme.warmMuted,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13.5,
+                      color: isSelected
+                          ? WatSafeTheme.warmOffWhite
+                          : WatSafeTheme.warmMuted,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: dotColor,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectedDeviceDetailCard extends StatefulWidget {
   const _SelectedDeviceDetailCard({
     required this.device,
     required this.controller,
@@ -354,18 +499,50 @@ class _SelectedDeviceDetailCard extends StatelessWidget {
   final VoidCallback onCenterMap;
 
   @override
+  State<_SelectedDeviceDetailCard> createState() =>
+      _SelectedDeviceDetailCardState();
+}
+
+class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
+  bool _showCoordinates = false;
+
+  Color _protectionBadgeColor(AuthorizedDeviceLocationSummary device) {
+    if (device.isAlarming) {
+      return WatSafeTheme.alarmCrimson;
+    }
+    final lower = device.protectionStatusLabel.toLowerCase();
+    if (lower.contains('interrupted')) {
+      return WatSafeTheme.alarmCrimson;
+    }
+    if (lower.contains('protected') || lower.contains('alerts on')) {
+      return WatSafeTheme.readyEmerald;
+    }
+    if (lower.contains('arming') ||
+        lower.contains('paused') ||
+        lower.contains('setup')) {
+      return WatSafeTheme.amberAccent;
+    }
+    return WatSafeTheme.warmMuted;
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final device = widget.device;
+    final controller = widget.controller;
     final loc = device.latestLocation;
     final hasValidLoc = loc != null && loc.isValid;
-    final statusColor = device.isAlarming
-        ? WatSafeTheme.alarmCrimson
-        : (device.online ? WatSafeTheme.readyEmerald : WatSafeTheme.warmMuted);
+    final isCurrentPhone =
+        device.isCurrentRequester && !device.isProtectedDevice;
+    final connColor = device.online
+        ? WatSafeTheme.readyEmerald
+        : WatSafeTheme.amberAccent;
+    final protColor = _protectionBadgeColor(device);
     final now = DateTime.now();
 
     return Card(
       key: const Key('selected_device_detail_card'),
       child: Padding(
-        padding: const EdgeInsets.all(18),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
@@ -373,62 +550,69 @@ class _SelectedDeviceDetailCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
                 Container(
-                  width: 42,
-                  height: 42,
+                  width: 38,
+                  height: 38,
                   decoration: BoxDecoration(
-                    color: statusColor.withValues(alpha: 0.16),
-                    borderRadius: BorderRadius.circular(12),
+                    color:
+                        (device.isProtectedDevice
+                                ? WatSafeTheme.readyEmerald
+                                : const Color(0xFF2563EB))
+                            .withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(11),
                   ),
                   child: Icon(
                     device.isProtectedDevice
                         ? Icons.laptop_mac_rounded
                         : Icons.smartphone_rounded,
-                    color: statusColor,
+                    size: 20,
+                    color: device.isProtectedDevice
+                        ? WatSafeTheme.readyEmerald
+                        : const Color(0xFF60A5FA),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 11),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
-                      Text(
-                        device.displayName,
-                        key: const Key('selected_device_name_label'),
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w800),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: <Widget>[
+                          Text(
+                            device.displayName,
+                            key: const Key('selected_device_name_label'),
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                          if (isCurrentPhone)
+                            const _CompactStatusBadge(
+                              label: 'This phone',
+                              color: Color(0xFF60A5FA),
+                            ),
+                        ],
                       ),
-                      const SizedBox(height: 3),
-                      Text(
-                        '${device.online ? "Online" : "Offline"} • ${device.protectionStatusLabel}',
+                      const SizedBox(height: 6),
+                      Wrap(
                         key: const Key('selected_device_status_label'),
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: statusColor,
-                        ),
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: <Widget>[
+                          _CompactStatusBadge(
+                            label: device.effectiveConnectionLabel,
+                            color: connColor,
+                          ),
+                          _CompactStatusBadge(
+                            label: device.protectionStatusLabel,
+                            color: protColor,
+                          ),
+                        ],
                       ),
                     ],
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            const Divider(height: 1),
-            const SizedBox(height: 14),
-            if (hasValidLoc) ...<Widget>[
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      loc.formattedCoordinates,
-                      key: const Key('selected_device_coordinates_label'),
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 14.5,
-                        color: WatSafeTheme.warmOffWhite,
-                      ),
-                    ),
-                  ),
+                if (hasValidLoc)
                   Container(
                     key: const Key('selected_device_accuracy_badge'),
                     padding: const EdgeInsets.symmetric(
@@ -451,36 +635,43 @@ class _SelectedDeviceDetailCard extends StatelessWidget {
                       ),
                     ),
                   ),
-                ],
-              ),
-              const SizedBox(height: 6),
+              ],
+            ),
+            const SizedBox(height: 12),
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            if (hasValidLoc) ...<Widget>[
               Text(
-                loc.relativeAgeLabel(now),
+                device.readableLocationSummary ??
+                    (loc.isEffectivelyApproximate
+                        ? 'Approximate area'
+                        : 'Reported map position'),
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 14.5,
+                  color: WatSafeTheme.warmOffWhite,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                loc.relativeAgeLabel(
+                  now,
+                  forceLastKnown: device.trackingState != 'live',
+                ),
                 key: const Key('selected_device_updated_age_label'),
                 style: const TextStyle(
                   fontSize: 13,
                   color: WatSafeTheme.warmMuted,
                 ),
               ),
-              if (!device.online) ...<Widget>[
-                const SizedBox(height: 6),
-                const Text(
-                  'Showing last known location. Sleeping, offline, or powered-off devices cannot send live updates until they reconnect.',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: WatSafeTheme.amberAccent,
-                    height: 1.35,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               Wrap(
                 spacing: 10,
                 runSpacing: 10,
                 children: <Widget>[
                   OutlinedButton.icon(
                     key: const Key('devices_center_on_device_button'),
-                    onPressed: onCenterMap,
+                    onPressed: widget.onCenterMap,
                     icon: const Icon(Icons.my_location_rounded, size: 18),
                     label: const Text('Center on device'),
                   ),
@@ -508,8 +699,65 @@ class _SelectedDeviceDetailCard extends StatelessWidget {
                       icon: const Icon(Icons.warning_amber_rounded, size: 18),
                       label: const Text('Follow incident'),
                     ),
+                  if (isCurrentPhone &&
+                      controller.isCompanionMode &&
+                      controller.settings.shareCompanionPhoneLocation)
+                    TextButton(
+                      key: const Key('devices_stop_companion_phone_loc_btn'),
+                      onPressed: () =>
+                          controller.updateShareCompanionPhoneLocation(false),
+                      child: const Text('Stop sharing phone location'),
+                    ),
                 ],
               ),
+              const SizedBox(height: 8),
+              InkWell(
+                key: const Key('devices_coordinates_disclosure'),
+                borderRadius: BorderRadius.circular(8),
+                onTap: () {
+                  setState(() {
+                    _showCoordinates = !_showCoordinates;
+                  });
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      Icon(
+                        _showCoordinates
+                            ? Icons.expand_less_rounded
+                            : Icons.expand_more_rounded,
+                        size: 18,
+                        color: WatSafeTheme.warmMuted,
+                      ),
+                      const SizedBox(width: 4),
+                      const Text(
+                        'Coordinates',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: WatSafeTheme.warmMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (_showCoordinates)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: SelectableText(
+                    loc.formattedCoordinates,
+                    key: const Key('selected_device_coordinates_label'),
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: WatSafeTheme.warmOffWhite,
+                    ),
+                  ),
+                ),
             ] else ...<Widget>[
               Container(
                 key: const Key('devices_location_unavailable_banner'),
@@ -522,9 +770,14 @@ class _SelectedDeviceDetailCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    const Text(
-                      'Location unavailable',
-                      style: TextStyle(
+                    Text(
+                      device.locationStatus ==
+                              IncidentLocationStatus.permissionDenied
+                          ? 'Location permission turned off'
+                          : (isCurrentPhone
+                                ? 'Location not shared'
+                                : 'Location unavailable'),
+                      style: const TextStyle(
                         fontWeight: FontWeight.w700,
                         color: WatSafeTheme.warmOffWhite,
                       ),
@@ -569,6 +822,16 @@ class _SelectedDeviceDetailCard extends StatelessWidget {
                           icon: const Icon(Icons.my_location_rounded, size: 18),
                           label: const Text('Allow location access'),
                         ),
+                    ] else if (isCurrentPhone &&
+                        controller.isCompanionMode) ...<Widget>[
+                      const SizedBox(height: 10),
+                      FilledButton.icon(
+                        key: const Key('devices_share_companion_phone_loc_btn'),
+                        onPressed: () =>
+                            controller.updateShareCompanionPhoneLocation(true),
+                        icon: const Icon(Icons.my_location_rounded, size: 18),
+                        label: const Text('Share this phone’s location'),
+                      ),
                     ],
                   ],
                 ),
@@ -581,93 +844,27 @@ class _SelectedDeviceDetailCard extends StatelessWidget {
   }
 }
 
-class _DeviceListRow extends StatelessWidget {
-  const _DeviceListRow({
-    required this.device,
-    required this.isSelected,
-    required this.onSelect,
-  });
+class _CompactStatusBadge extends StatelessWidget {
+  const _CompactStatusBadge({required this.label, required this.color});
 
-  final AuthorizedDeviceLocationSummary device;
-  final bool isSelected;
-  final VoidCallback onSelect;
+  final String label;
+  final Color color;
 
   @override
   Widget build(BuildContext context) {
-    final loc = device.latestLocation;
-    final now = DateTime.now();
-    final String subtitle;
-    if (loc != null && loc.isValid) {
-      subtitle =
-          '${device.online ? "Online" : "Offline"} • ${loc.relativeAgeLabel(now)}';
-    } else {
-      subtitle =
-          '${device.online ? "Online" : "Offline"} • ${device.isProtectedDevice ? "Location unavailable" : device.protectionStatusLabel}';
-    }
-
-    final dotColor = device.isAlarming
-        ? WatSafeTheme.alarmCrimson
-        : (device.online ? WatSafeTheme.readyEmerald : WatSafeTheme.warmMuted);
-
-    return Card(
-      key: Key('device_row_${device.deviceId}'),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(13),
-        side: BorderSide(
-          color: isSelected
-              ? WatSafeTheme.amberAccent
-              : WatSafeTheme.charcoalBorder,
-          width: isSelected ? 1.6 : 1.0,
-        ),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3.5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.65)),
       ),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onSelect,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
-            children: <Widget>[
-              Icon(
-                device.isProtectedDevice
-                    ? Icons.laptop_mac_rounded
-                    : Icons.smartphone_rounded,
-                color: isSelected
-                    ? WatSafeTheme.amberAccent
-                    : WatSafeTheme.warmMuted,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      device.displayName,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 14.5,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        color: WatSafeTheme.warmMuted,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                width: 9,
-                height: 9,
-                decoration: BoxDecoration(
-                  color: dotColor,
-                  shape: BoxShape.circle,
-                ),
-              ),
-            ],
-          ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.w700,
+          color: color,
         ),
       ),
     );

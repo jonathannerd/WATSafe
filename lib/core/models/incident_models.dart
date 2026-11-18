@@ -4,11 +4,14 @@ import 'package:flutter/foundation.dart';
 
 import 'detector_models.dart';
 
-/// Distinguishes real detector incidents from manual test alarms and hardware failures.
+/// Distinguishes real detector incidents from manual test alarms, protection
+/// interruptions (lid close / impending sleep / quit / lost heartbeat while
+/// armed), and hardware failures.
 enum IncidentKind {
   realDetectorTrigger,
   manualTestAlarm,
   detectorFailureDuringMonitoring,
+  protectionInterrupted,
 }
 
 /// Lifecycle state of location capture for an alarm event.
@@ -118,22 +121,41 @@ class DeviceLocationSnapshot {
     return 'Precise location';
   }
 
-  String relativeAgeLabel(DateTime now) {
+  DeviceLocationSnapshot copyWith({
+    double? latitude,
+    double? longitude,
+    DateTime? capturedAt,
+    double? accuracyMeters,
+    bool? isApproximate,
+    bool? isLastKnown,
+  }) {
+    return DeviceLocationSnapshot(
+      latitude: latitude ?? this.latitude,
+      longitude: longitude ?? this.longitude,
+      capturedAt: capturedAt ?? this.capturedAt,
+      accuracyMeters: accuracyMeters ?? this.accuracyMeters,
+      isApproximate: isApproximate ?? this.isApproximate,
+      isLastKnown: isLastKnown ?? this.isLastKnown,
+    );
+  }
+
+  String relativeAgeLabel(DateTime now, {bool forceLastKnown = false}) {
     final diff = now.difference(capturedAt);
     final seconds = diff.inSeconds < 0 ? 0 : diff.inSeconds;
-    if (seconds < 45) {
-      return 'Updated just now';
+    final stalePrefix = (isLastKnown || forceLastKnown) ? 'Last known · ' : '';
+    if (seconds < 60) {
+      return stalePrefix.isEmpty ? 'Just now' : '${stalePrefix}just now';
     }
     final minutes = diff.inMinutes < 1 ? 1 : diff.inMinutes;
     if (minutes < 60) {
-      return 'Updated $minutes minute${minutes == 1 ? '' : 's'} ago';
+      return '$stalePrefix$minutes minute${minutes == 1 ? '' : 's'} ago';
     }
     final hours = diff.inHours;
     if (hours < 24) {
-      return 'Updated $hours hour${hours == 1 ? '' : 's'} ago';
+      return '$stalePrefix$hours hour${hours == 1 ? '' : 's'} ago';
     }
     final days = diff.inDays;
-    return 'Updated $days day${days == 1 ? '' : 's'} ago';
+    return '$stalePrefix$days day${days == 1 ? '' : 's'} ago';
   }
 
   /// Great-circle distance in meters using the Haversine formula.

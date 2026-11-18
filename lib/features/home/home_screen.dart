@@ -195,6 +195,45 @@ class _ProtectionHeroCard extends StatelessWidget {
                 ),
               ),
             ],
+            if (state == ProtectionState.armed &&
+                controller.isInputInteractionGraceActive) ...<Widget>[
+              const SizedBox(height: 12),
+              Container(
+                key: const Key('input_interaction_grace_banner'),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: WatSafeTheme.amberAccent.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: WatSafeTheme.amberAccent.withValues(alpha: 0.65),
+                  ),
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: <Widget>[
+                    Icon(
+                      Icons.keyboard_alt_outlined,
+                      size: 16,
+                      color: WatSafeTheme.amberAccent,
+                    ),
+                    SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        'Keyboard or trackpad input detected — enter your PIN within 8s to disarm.',
+                        style: TextStyle(
+                          color: WatSafeTheme.amberAccent,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             if (state == ProtectionState.arming) ...<Widget>[
               const SizedBox(height: 18),
               ClipRRect(
@@ -214,6 +253,50 @@ class _ProtectionHeroCard extends StatelessWidget {
             ],
             const SizedBox(height: 24),
             _buildPrimaryAction(context),
+            if (!controller.isCompanionMode &&
+                (state == ProtectionState.disarmed ||
+                    state == ProtectionState.arming ||
+                    state == ProtectionState.armed)) ...<Widget>[
+              const SizedBox(height: 16),
+              Container(
+                key: const Key('home_sleep_lid_notice'),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 11,
+                ),
+                decoration: BoxDecoration(
+                  color: WatSafeTheme.charcoalElevated.withValues(alpha: 0.65),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: WatSafeTheme.charcoalBorder),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child: Icon(
+                        Icons.laptop_mac_rounded,
+                        size: 16,
+                        color: WatSafeTheme.warmSubtle,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        state == ProtectionState.armed
+                            ? 'Keep the lid open while protected. Closing the lid triggers an immediate siren and urgent phone alert before sleep completes; if this laptop abruptly loses connection, the relay warns your phone within ~45–55s.'
+                            : 'Before arming: keep your laptop lid open. Sleeping or powered-off laptops cannot run local sirens or sensors, so closing the lid while armed immediately alerts your phone before sleep, and the cloud relay warns you within ~45–55s if an armed laptop goes offline.',
+                        style: const TextStyle(
+                          color: WatSafeTheme.warmMuted,
+                          fontSize: 12.5,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
       ),

@@ -491,7 +491,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (value) =>
                   controller.updateSettings(alarmVolume: value),
             ),
-            const SizedBox(height: 8),
+            if (!controller.isCompanionMode &&
+                controller.isInputInteractionDetectionSupported) ...<Widget>[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 14),
+                child: Divider(height: 1),
+              ),
+              SwitchListTile(
+                key: const Key('alert_on_input_interaction_switch'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: WatSafeTheme.amberAccent,
+                title: const Text(
+                  'Alert on keyboard or trackpad interaction while armed',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: const Text(
+                  'Optional: starts an 8-second PIN grace window when keys or the trackpad are used, then triggers an alarm if not disarmed. Standard laptop hardware cannot detect touching the outer case without movement or key/trackpad input.',
+                  style: TextStyle(
+                    color: WatSafeTheme.warmMuted,
+                    fontSize: 12.5,
+                    height: 1.35,
+                  ),
+                ),
+                value: controller.settings.alertOnInputInteraction,
+                onChanged: isLockedByProtection
+                    ? null
+                    : controller.updateAlertOnInputInteraction,
+              ),
+            ],
+            const SizedBox(height: 12),
             Wrap(
               spacing: 10,
               runSpacing: 10,
@@ -548,6 +576,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 14),
+
+            if (controller.isCompanionMode) ...<Widget>[
+              SwitchListTile(
+                key: const Key('share_companion_phone_location_switch'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: WatSafeTheme.amberAccent,
+                title: const Text(
+                  'Share this phone’s location',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: const Text(
+                  'Off by default. Shares this phone’s location on the Devices map only while WATSafe is open in the foreground, and pauses in the background while keeping last-known coordinates labeled with their timestamp.',
+                  style: TextStyle(
+                    color: WatSafeTheme.warmMuted,
+                    fontSize: 13,
+                    height: 1.35,
+                  ),
+                ),
+                value: controller.settings.shareCompanionPhoneLocation,
+                onChanged: controller.updateShareCompanionPhoneLocation,
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Divider(height: 1),
+              ),
+            ],
 
             // Location sharing toggle + permission status
             SwitchListTile(
@@ -646,7 +700,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 4),
             const Text(
-              'Only your protected device’s location is shared with your paired devices while armed and for up to 15 minutes after an alarm. Reporting stops immediately when you disarm with your PIN. Laptop Wi-Fi positioning may be approximate, and sleeping or offline devices cannot report new updates. Stored location history is automatically deleted after 7 days.',
+              'Protected-device location is shared only with your paired session while armed and for up to 15 minutes after an alarm, stopping immediately on PIN disarm. Companion phone location is off by default and updates only in the foreground when explicitly enabled. Laptop Wi-Fi positioning may be approximate, and sleeping or offline devices cannot report new updates. Stored location history is automatically deleted after 7 days.',
               style: TextStyle(
                 color: WatSafeTheme.warmMuted,
                 fontSize: 12.5,

@@ -64,7 +64,7 @@ class CompanionPwaAssets {
   }
 
   static const String serviceWorkerJs = r'''
-const SHELL_CACHE = 'watsafe-shell-2026.11.17-v4';
+const SHELL_CACHE = 'watsafe-shell-2026.11.17-v5';
 const SHELL_URLS = [
   '/companion',
   '/manifest.webmanifest',
@@ -507,7 +507,7 @@ self.addEventListener('notificationclick', (event) => {
   <meta name="theme-color" content="#141619">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="WATSafe">
   <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
@@ -527,6 +527,7 @@ self.addEventListener('notificationclick', (event) => {
       --amber: #E58E26;
       --emerald: #2E9B68;
       --crimson: #D6453A;
+      --phone-blue: #2563EB;
     }
     * { box-sizing: border-box; }
     body {
@@ -537,28 +538,43 @@ self.addEventListener('notificationclick', (event) => {
       min-height: 100vh;
       display: flex;
       flex-direction: column;
+      padding-left: env(safe-area-inset-left, 0px);
+      padding-right: env(safe-area-inset-right, 0px);
     }
     header {
-      padding: calc(14px + env(safe-area-inset-top)) 20px 14px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      padding: calc(11px + env(safe-area-inset-top, 0px)) 16px 11px;
       border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
       justify-content: space-between;
-      background: var(--bg);
+      gap: 10px;
+      background: rgba(20, 22, 25, 0.96);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
     }
-    .brand { font-weight: 800; font-size: 18px; letter-spacing: 0.3px; display: flex; align-items: center; gap: 10px; }
-    .shield-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--amber); display: inline-block; }
-    main { flex: 1; max-width: 540px; width: 100%; margin: 0 auto; padding: 20px; padding-bottom: 96px; }
+    .brand { font-weight: 800; font-size: 17px; letter-spacing: 0.25px; display: flex; align-items: center; gap: 9px; white-space: nowrap; }
+    .shield-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--amber); display: inline-block; flex-shrink: 0; }
+    main {
+      flex: 1;
+      max-width: 560px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 14px 16px calc(86px + env(safe-area-inset-bottom, 0px));
+    }
+    main.wide-devices { max-width: 960px; }
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 16px;
-      padding: 20px;
-      margin-bottom: 16px;
+      padding: 18px;
+      margin-bottom: 14px;
     }
-    h1 { font-size: 22px; margin: 0 0 8px 0; line-height: 1.3; }
-    h2 { font-size: 17px; margin: 0 0 8px 0; }
-    p { margin: 0 0 14px 0; color: var(--muted); line-height: 1.45; font-size: 14.5px; }
+    h1 { font-size: 21px; margin: 0 0 8px 0; line-height: 1.28; }
+    h2 { font-size: 17px; margin: 0 0 6px 0; line-height: 1.3; }
+    p { margin: 0 0 12px 0; color: var(--muted); line-height: 1.45; font-size: 14.5px; }
     label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
     input {
       width: 100%;
@@ -574,11 +590,12 @@ self.addEventListener('notificationclick', (event) => {
       display: inline-flex;
       align-items: center;
       justify-content: center;
+      min-height: 44px;
       width: 100%;
-      padding: 14px 18px;
+      padding: 12px 16px;
       border-radius: 12px;
       border: none;
-      font-size: 15.5px;
+      font-size: 15px;
       font-weight: 700;
       cursor: pointer;
       text-decoration: none;
@@ -590,15 +607,20 @@ self.addEventListener('notificationclick', (event) => {
     .btn-secondary { background: var(--elevated); color: var(--text); border: 1px solid var(--border); margin-top: 10px; }
     .btn-danger { background: rgba(214,69,58,0.16); color: #ffb4ae; border: 1px solid var(--crimson); margin-top: 10px; }
     .pill {
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
       padding: 4px 10px;
       border-radius: 999px;
       font-size: 12px;
       font-weight: 700;
+      line-height: 1.25;
     }
     .pill-ok { background: rgba(46,155,104,0.18); color: #6ee7b7; border: 1px solid var(--emerald); }
     .pill-warn { background: rgba(229,142,38,0.18); color: #fcd34d; border: 1px solid var(--amber); }
     .pill-alert { background: rgba(214,69,58,0.2); color: #fca5a5; border: 1px solid var(--crimson); }
+    .pill-neutral { background: var(--elevated); color: var(--muted); border: 1px solid var(--border); }
+    .pill-map-light { background: rgba(255,255,255,0.95); color: #0F172A; border: 1px solid rgba(15,23,42,0.18); box-shadow: 0 2px 6px rgba(15,23,42,0.12); }
     .error-box {
       background: rgba(214,69,58,0.16);
       border: 1px solid var(--crimson);
@@ -623,8 +645,8 @@ self.addEventListener('notificationclick', (event) => {
       background: var(--elevated);
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 15px;
-      margin: 14px 0;
+      padding: 14px;
+      margin: 12px 0;
     }
     .guide-box ol {
       margin: 8px 0 0 18px;
@@ -687,25 +709,88 @@ self.addEventListener('notificationclick', (event) => {
     .nav-bar {
       position: fixed;
       bottom: 0; left: 0; right: 0;
+      z-index: 20;
       background: var(--surface);
       border-top: 1px solid var(--border);
       display: flex;
       justify-content: space-around;
-      padding: 10px 8px calc(10px + env(safe-area-inset-bottom));
+      padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
     }
     .nav-btn {
       background: none; border: none; color: var(--muted);
-      font-size: 13px; font-weight: 700; padding: 8px 13px; border-radius: 999px; cursor: pointer;
+      min-height: 40px;
+      font-size: 13px; font-weight: 700; padding: 8px 14px; border-radius: 999px; cursor: pointer;
     }
     .nav-btn.active { background: rgba(229,142,38,0.2); color: var(--amber); }
+    .devices-topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .device-chip-bar {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 2px 0 10px;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+    .device-chip-bar::-webkit-scrollbar { display: none; }
+    .device-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1.5px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 13.5px;
+      font-weight: 700;
+      white-space: nowrap;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .device-chip.selected {
+      border-color: var(--amber);
+      background: rgba(229, 142, 38, 0.16);
+      color: #FDE68A;
+    }
+    .device-chip .chip-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .devices-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    @media (min-width: 720px), (orientation: landscape) and (min-width: 640px) {
+      .devices-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.95fr);
+        align-items: start;
+        gap: 14px;
+      }
+      .devices-grid .card { margin-bottom: 0; }
+    }
+    .map-card {
+      padding: 8px;
+      margin-bottom: 0;
+    }
     .map-stage {
       position: relative;
       width: 100%;
-      height: 236px;
-      border-radius: 14px;
+      height: clamp(292px, 45vh, 430px);
+      border-radius: 12px;
       overflow: hidden;
-      border: 1px solid var(--border);
-      background: #16202B;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: #EEF2F6;
       touch-action: none;
     }
     .map-canvas {
@@ -725,7 +810,7 @@ self.addEventListener('notificationclick', (event) => {
       position: absolute;
       top: 10px;
       left: 10px;
-      right: 52px;
+      right: 56px;
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
@@ -742,30 +827,95 @@ self.addEventListener('notificationclick', (event) => {
       z-index: 5;
     }
     .map-ctrl-btn {
-      width: 34px;
-      height: 34px;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      background: rgba(20,22,25,0.9);
-      color: var(--text);
-      font-size: 16px;
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      border: 1px solid rgba(15, 23, 42, 0.18);
+      background: rgba(255, 255, 255, 0.95);
+      color: #0F172A;
+      font-size: 18px;
       font-weight: 800;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
     }
     .map-attrib {
       position: absolute;
       bottom: 6px;
       right: 8px;
+      left: 8px;
+      width: fit-content;
+      margin-left: auto;
+      max-width: calc(100% - 16px);
       z-index: 4;
-      background: rgba(20,22,25,0.84);
-      color: var(--muted);
+      background: rgba(255, 255, 255, 0.9);
+      color: #334155;
+      border: 1px solid rgba(15, 23, 42, 0.1);
       font-size: 10px;
-      padding: 2px 6px;
+      padding: 2px 7px;
       border-radius: 5px;
       pointer-events: none;
+    }
+    .map-pin-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .map-pin-badge {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #FFFFFF;
+      border: 2.5px solid #FFFFFF;
+      box-shadow: 0 3px 10px rgba(15, 23, 42, 0.28);
+      transition: transform 0.15s ease;
+    }
+    .map-pin-wrap.selected .map-pin-badge {
+      transform: scale(1.12);
+      box-shadow: 0 0 0 4px rgba(229, 142, 38, 0.42), 0 4px 12px rgba(15, 23, 42, 0.34);
+    }
+    .map-pin-label {
+      margin-top: 3px;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.96);
+      color: #0F172A;
+      border: 1px solid rgba(15, 23, 42, 0.18);
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+      max-width: 148px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.14);
+    }
+    .coords-disclosure {
+      margin-top: 12px;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+      font-size: 12.5px;
+      color: var(--muted);
+    }
+    .coords-disclosure summary {
+      cursor: pointer;
+      font-weight: 700;
+      color: var(--subtle);
+      padding: 4px 0;
+      user-select: none;
+    }
+    .coords-disclosure .coords-mono {
+      margin-top: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12.5px;
+      color: var(--text);
+      user-select: all;
     }
     .btn-row {
       display: flex;
@@ -774,9 +924,9 @@ self.addEventListener('notificationclick', (event) => {
       margin-top: 12px;
     }
     .btn-row .btn {
-      flex: 1 1 140px;
+      flex: 1 1 136px;
       margin-top: 0;
-      padding: 12px 14px;
+      padding: 11px 14px;
       font-size: 14px;
     }
     .hidden { display: none !important; }
@@ -787,7 +937,7 @@ self.addEventListener('notificationclick', (event) => {
     <div class="brand"><span class="shield-dot" id="statusDot"></span> WATSafe</div>
     <span class="pill pill-warn" id="headerBadge">Connecting…</span>
   </header>
-  <main>
+  <main id="appMain">
     <div id="errorBox" class="error-box hidden"></div>
     <div id="infoBox" class="info-box hidden"></div>
     <div id="migrationBanner" class="guide-box hidden" style="border-color:var(--amber);"></div>
@@ -847,15 +997,17 @@ self.addEventListener('notificationclick', (event) => {
 
     <!-- Connected Devices Map Tab -->
     <section id="tabDevices" class="hidden">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div class="devices-topbar">
         <h1 style="margin:0;">Devices</h1>
-        <button id="refreshDevicesBtn" class="btn btn-secondary" style="width:auto;margin:0;padding:8px 14px;font-size:13.5px;">Refresh</button>
+        <button id="refreshDevicesBtn" class="btn btn-secondary" style="width:auto;min-height:40px;margin:0;padding:8px 14px;font-size:13.5px;">Refresh</button>
       </div>
-      <div id="devicesMapWrap" class="card" style="padding:14px;">
-        <div id="devicesMapStage" class="map-stage"></div>
+      <div id="devicesRosterList" class="device-chip-bar" role="tablist" aria-label="Paired devices"></div>
+      <div class="devices-grid">
+        <div id="devicesMapWrap" class="card map-card">
+          <div id="devicesMapStage" class="map-stage"></div>
+        </div>
+        <div id="selectedDeviceCard" class="card" style="padding:16px;"></div>
       </div>
-      <div id="selectedDeviceCard" class="card"></div>
-      <div id="devicesRosterList"></div>
     </section>
 
     <!-- Connected Activity Tab -->
@@ -875,8 +1027,14 @@ self.addEventListener('notificationclick', (event) => {
         <button id="disconnectPhoneBtn" class="btn btn-danger">Disconnect phone</button>
       </div>
       <div class="card">
+        <h2>This phone’s location</h2>
+        <p id="settingsPhoneLocationStatus" style="font-size:13.5px;">Off — this phone’s position is not shared on the Devices map.</p>
+        <p style="font-size:12.5px;color:var(--subtle);">When enabled, WATSafe updates this phone’s marker only while WATSafe is open on screen. Home Screen web apps cannot track phone GPS in the background.</p>
+        <button id="togglePhoneLocationBtn" class="btn btn-secondary">Share this phone’s location</button>
+      </div>
+      <div class="card">
         <h2>Location privacy &amp; history</h2>
-        <p style="font-size:13.5px;">Only your protected laptop reports coordinates while armed and for up to 15 minutes after an alarm. This phone companion does not collect background phone location. Stored location history is automatically deleted after 7 days.</p>
+        <p style="font-size:13.5px;">Your protected laptop reports its own coordinates while armed and for up to 15 minutes after an alarm. Phone and laptop locations are stored separately and automatically deleted after 7 days.</p>
         <button id="deleteLocationHistoryBtn" class="btn btn-secondary">Delete stored location history</button>
       </div>
     </section>
@@ -1032,6 +1190,10 @@ self.addEventListener('notificationclick', (event) => {
       hostLastSeenAtUtc: null,
       hostDisconnectedAtUtc: null,
       hostProtectionState: 'off',
+      phoneLocationSharingEnabled: false,
+      phoneLatestLocation: null,
+      phoneLocationPermission: 'prompt',
+      placeLabelCache: {},
       lastSeq: 0,
       seenIds: {},
       events: [],
@@ -1205,7 +1367,10 @@ self.addEventListener('notificationclick', (event) => {
       eventsList: document.getElementById('eventsList'),
       eventDetailCard: document.getElementById('eventDetailCard'),
       settingsDeliverySummary: document.getElementById('settingsDeliverySummary'),
-      settingsAddressSummary: document.getElementById('settingsAddressSummary')
+      settingsAddressSummary: document.getElementById('settingsAddressSummary'),
+      settingsPhoneLocationStatus: document.getElementById('settingsPhoneLocationStatus'),
+      togglePhoneLocationBtn: document.getElementById('togglePhoneLocationBtn'),
+      appMain: document.getElementById('appMain')
     };
     els.phoneNameInput.value = state.phoneDisplayName || detectPhoneName();
 
@@ -1219,7 +1384,10 @@ self.addEventListener('notificationclick', (event) => {
     let connState = 'connecting'; // 'connecting' | 'connected' | 'laptop_offline' | 'service_unavailable'
     let consecutiveFailures = 0;
     let pollTimerId = null;
+    let phoneGeoWatchId = null;
+    let lastPhoneGeoUploadMs = 0;
     const mapControllers = {};
+    const pendingGeocodeKeys = {};
 
     function showError(msg) {
       if (!msg) { els.errorBox.classList.add('hidden'); return; }
@@ -2083,8 +2251,20 @@ self.addEventListener('notificationclick', (event) => {
     document.getElementById('refreshDevicesBtn').addEventListener('click', () => {
       fetchAuthorizedDevicesLocations(true);
     });
+    if (els.togglePhoneLocationBtn) {
+      els.togglePhoneLocationBtn.addEventListener('click', () => {
+        if (state.phoneLocationSharingEnabled) {
+          disableCompanionPhoneLocationSharing(true);
+        } else {
+          enableCompanionPhoneLocationSharing(true);
+        }
+      });
+    }
     document.getElementById('deleteLocationHistoryBtn').addEventListener('click', async () => {
       if (!state.companionToken) return;
+      stopForegroundPhoneLocationWatch();
+      state.phoneLocationSharingEnabled = false;
+      state.phoneLatestLocation = null;
       try {
         const res = await fetch('/v1/location-history', {
           method: 'DELETE',
@@ -2101,6 +2281,7 @@ self.addEventListener('notificationclick', (event) => {
           latestLocation: null,
           alarmLocation: null,
           locationTrail: [],
+          locationSharingEnabled: false,
           locationStatus: 'notRequested',
           trackingState: 'unavailable',
           statusExplanation: 'Stored location history was deleted.'
@@ -2124,6 +2305,7 @@ self.addEventListener('notificationclick', (event) => {
     });
 
     document.getElementById('disconnectPhoneBtn').addEventListener('click', async () => {
+      stopForegroundPhoneLocationWatch();
       if (pollTimerId) {
         clearTimeout(pollTimerId);
         pollTimerId = null;
@@ -2147,6 +2329,8 @@ self.addEventListener('notificationclick', (event) => {
       state.backendPushRegistered = false;
       state.pushEndpoint = null;
       state.backendRegisteredEndpoint = null;
+      state.phoneLocationSharingEnabled = false;
+      state.phoneLatestLocation = null;
       els.bottomNav.classList.add('hidden');
       els.connectionStatusBanner.classList.add('hidden');
       els.headerBadge.textContent = 'Disconnected';
@@ -2163,6 +2347,9 @@ self.addEventListener('notificationclick', (event) => {
     function switchTab(tab) {
       activeTab = tab;
       document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+      if (els.appMain) {
+        els.appMain.classList.toggle('wide-devices', tab === 'Devices');
+      }
       hideAllSections();
       if (tab === 'Home') els.tabHome.classList.remove('hidden');
       if (tab === 'Devices') {
@@ -2196,6 +2383,7 @@ self.addEventListener('notificationclick', (event) => {
       if (s === 'monitoring' || s === 'protected') return 'Protected';
       if (s === 'arming') return 'Arming';
       if (s === 'paused') return 'Monitoring paused';
+      if (s === 'interrupted') return 'Protection interrupted';
       if (s === 'triggered') return 'Alarm triggered';
       return 'Protection off';
     }
@@ -2425,6 +2613,7 @@ self.addEventListener('notificationclick', (event) => {
           : ' (permanent address)') +
         ' · Last connected: ' +
         formatTime(state.lastConnectedAtIso);
+      renderPhoneLocationSettingsCard();
       renderDevicesTab();
       renderActivityEvents();
     }
@@ -2436,6 +2625,10 @@ self.addEventListener('notificationclick', (event) => {
       if (!isFinite(lat) || !isFinite(lon)) return false;
       if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return false;
       if (Math.abs(lat) < 0.000001 && Math.abs(lon) < 0.000001) return false;
+      if (loc.accuracyMeters !== undefined && loc.accuracyMeters !== null) {
+        const acc = Number(loc.accuracyMeters);
+        if (!isFinite(acc) || acc < 0) return false;
+      }
       return true;
     }
 
@@ -2457,20 +2650,21 @@ self.addEventListener('notificationclick', (event) => {
       return dist >= Math.max(25, acc * 0.65);
     }
 
-    function formatRelativeAge(iso) {
+    function formatRelativeAge(iso, isLastKnown) {
       if (!iso) return 'Update time unavailable';
       const ts = new Date(iso).getTime();
-      if (isNaN(ts)) return 'Updated recently';
+      if (isNaN(ts)) return isLastKnown ? 'Last known recently' : 'Updated recently';
       const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
-      if (sec < 45) return 'Updated just now';
-      const min = Math.floor(sec / 60);
-      if (min === 1) return 'Updated 1 minute ago';
-      if (min < 60) return 'Updated ' + min + ' minutes ago';
+      const prefix = isLastKnown ? 'Last known · ' : 'Updated ';
+      if (sec < 60) return isLastKnown ? 'Last known · just now' : 'Just now';
+      const min = Math.max(1, Math.floor(sec / 60));
+      if (min === 1) return prefix + '1 minute ago';
+      if (min < 60) return prefix + min + ' minutes ago';
       const hr = Math.floor(min / 60);
-      if (hr === 1) return 'Updated 1 hour ago';
-      if (hr < 24) return 'Updated ' + hr + ' hours ago';
+      if (hr === 1) return prefix + '1 hour ago';
+      if (hr < 24) return prefix + hr + ' hours ago';
       const days = Math.floor(hr / 24);
-      return 'Updated ' + days + (days === 1 ? ' day ago' : ' days ago');
+      return prefix + days + (days === 1 ? ' day ago' : ' days ago');
     }
 
     function formatAccuracyLabel(loc) {
@@ -2487,16 +2681,226 @@ self.addEventListener('notificationclick', (event) => {
       if (connState === 'service_unavailable') {
         return { label: 'Reconnecting', cls: 'pill-warn' };
       }
-      if (connState === 'laptop_offline') {
-        return { label: 'Last known location', cls: 'pill-warn' };
-      }
       if (rawTracking === 'live') {
         return { label: 'Live', cls: 'pill-ok' };
       }
       if (rawTracking === 'reconnecting') {
         return { label: 'Reconnecting', cls: 'pill-warn' };
       }
-      return { label: 'Last known location', cls: 'pill-warn' };
+      return { label: 'Last known location', cls: 'pill-map-light' };
+    }
+
+    function getReadableLocationSummary(loc) {
+      if (!isValidCoord(loc)) return 'Location unavailable';
+      const key = Number(loc.latitude).toFixed(3) + ',' + Number(loc.longitude).toFixed(3);
+      if (state.placeLabelCache && state.placeLabelCache[key]) {
+        return state.placeLabelCache[key];
+      }
+      if (!pendingGeocodeKeys[key] && typeof navigator !== 'undefined' && navigator.onLine !== false) {
+        pendingGeocodeKeys[key] = true;
+        fetch(
+          'https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=16&lat=' +
+            encodeURIComponent(Number(loc.latitude).toFixed(3)) +
+            '&lon=' +
+            encodeURIComponent(Number(loc.longitude).toFixed(3)),
+          { headers: { 'Accept-Language': 'en' } }
+        )
+          .then(r => (r && r.ok ? r.json() : null))
+          .then(data => {
+            if (!data || typeof data !== 'object') return;
+            const addr = data.address || {};
+            const primary = addr.road || addr.pedestrian || addr.neighbourhood || addr.suburb || data.name || '';
+            const secondary = addr.city || addr.town || addr.village || addr.municipality || addr.county || '';
+            const label = [primary, secondary].filter(Boolean).join(', ');
+            if (label) {
+              if (!state.placeLabelCache) state.placeLabelCache = {};
+              state.placeLabelCache[key] = label;
+              saveState();
+              renderDevicesTab();
+            }
+          })
+          .catch(() => {});
+      }
+      return (loc.isApproximate || Number(loc.accuracyMeters || 0) > 100)
+        ? 'Approximate area'
+        : 'Reported map position';
+    }
+
+    function stopForegroundPhoneLocationWatch() {
+      if (phoneGeoWatchId !== null && typeof navigator !== 'undefined' && navigator.geolocation) {
+        try { navigator.geolocation.clearWatch(phoneGeoWatchId); } catch (_) {}
+      }
+      phoneGeoWatchId = null;
+    }
+
+    async function uploadCompanionPhoneLocationSnapshot(snap, statusOverride, keepalive) {
+      if (!state.companionToken) return;
+      const body = {
+        sharingEnabled: Boolean(state.phoneLocationSharingEnabled),
+        locationStatus: statusOverride || (snap ? 'attached' : 'pending')
+      };
+      if (snap && isValidCoord(snap)) {
+        body.location = {
+          latitude: Number(snap.latitude),
+          longitude: Number(snap.longitude),
+          accuracyMeters: Number(snap.accuracyMeters || 35),
+          capturedAt: snap.capturedAtUtc || snap.capturedAt || new Date().toISOString(),
+          isApproximate: Boolean(snap.isApproximate),
+          isLastKnown: Boolean(snap.isLastKnown)
+        };
+      }
+      try {
+        const res = await fetch('/v1/companion/location', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + state.companionToken
+          },
+          body: JSON.stringify(body),
+          keepalive: Boolean(keepalive)
+        });
+        if (isAuthenticWatSafeHeader(res) && res.ok) {
+          fetchAuthorizedDevicesLocations(false);
+        }
+      } catch (_) {}
+    }
+
+    function handlePhoneGeoPosition(pos, forceUpload) {
+      if (!pos || !pos.coords) return;
+      const acc = isFinite(pos.coords.accuracy) && pos.coords.accuracy > 0
+        ? Number(pos.coords.accuracy)
+        : 35;
+      const candidate = {
+        latitude: Number(pos.coords.latitude),
+        longitude: Number(pos.coords.longitude),
+        accuracyMeters: acc,
+        capturedAtUtc: new Date(pos.timestamp || Date.now()).toISOString(),
+        isApproximate: acc > 100,
+        isLastKnown: false
+      };
+      if (!isValidCoord(candidate)) return;
+      const prev = state.phoneLatestLocation;
+      const nowMs = Date.now();
+      const movedMeters = isValidCoord(prev) ? haversineMeters(prev, candidate) : 9999;
+      const accImproved = isValidCoord(prev) && acc + 10 < Number(prev.accuracyMeters || 999);
+      state.phoneLatestLocation = candidate;
+      state.phoneLocationPermission = 'granted';
+      saveState();
+      if (forceUpload || nowMs - lastPhoneGeoUploadMs >= 12000 && (movedMeters >= 12 || accImproved || !prev)) {
+        lastPhoneGeoUploadMs = nowMs;
+        uploadCompanionPhoneLocationSnapshot(candidate, 'attached', false);
+      } else {
+        renderDevicesTab();
+      }
+    }
+
+    function startForegroundPhoneLocationWatch() {
+      if (!state.phoneLocationSharingEnabled) return;
+      if (document.visibilityState === 'hidden') return;
+      if (typeof navigator === 'undefined' || !navigator.geolocation || !isHttpsReady()) return;
+      if (phoneGeoWatchId !== null) return;
+      try {
+        phoneGeoWatchId = navigator.geolocation.watchPosition(
+          pos => handlePhoneGeoPosition(pos, false),
+          err => {
+            if (err && err.code === 1) {
+              stopForegroundPhoneLocationWatch();
+              state.phoneLocationPermission = 'denied';
+              state.phoneLocationSharingEnabled = false;
+              saveState();
+              uploadCompanionPhoneLocationSnapshot(null, 'permissionDenied', false);
+              renderPhoneLocationSettingsCard();
+              renderDevicesTab();
+            }
+          },
+          { enableHighAccuracy: true, maximumAge: 15000, timeout: 15000 }
+        );
+      } catch (_) {}
+    }
+
+    function enableCompanionPhoneLocationSharing(showFeedback) {
+      if (!isHttpsReady() || typeof navigator === 'undefined' || !navigator.geolocation) {
+        state.phoneLocationPermission = 'unsupported';
+        saveState();
+        showError('Browser geolocation requires HTTPS and Location Services enabled on this phone.');
+        renderPhoneLocationSettingsCard();
+        renderDevicesTab();
+        return;
+      }
+      state.phoneLocationSharingEnabled = true;
+      saveState();
+      renderPhoneLocationSettingsCard();
+      renderDevicesTab();
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          lastPhoneGeoUploadMs = 0;
+          handlePhoneGeoPosition(pos, true);
+          startForegroundPhoneLocationWatch();
+          renderPhoneLocationSettingsCard();
+          if (showFeedback) {
+            showInfo('Sharing this phone’s foreground location while WATSafe is open.');
+          }
+        },
+        err => {
+          stopForegroundPhoneLocationWatch();
+          if (err && err.code === 1) {
+            state.phoneLocationPermission = 'denied';
+            state.phoneLocationSharingEnabled = false;
+            saveState();
+            uploadCompanionPhoneLocationSnapshot(null, 'permissionDenied', false);
+            showError('Location permission is turned off for WATSafe. Allow Location in iOS Settings → Safari / Location Services, then try again.');
+          } else {
+            showError('Could not determine this phone’s current position right now. Try again with a clear Wi-Fi or GPS signal.');
+          }
+          renderPhoneLocationSettingsCard();
+          renderDevicesTab();
+        },
+        { enableHighAccuracy: true, maximumAge: 10000, timeout: 12000 }
+      );
+    }
+
+    async function disableCompanionPhoneLocationSharing(showFeedback) {
+      stopForegroundPhoneLocationWatch();
+      state.phoneLocationSharingEnabled = false;
+      state.phoneLatestLocation = null;
+      saveState();
+      if (state.companionToken) {
+        try {
+          await fetch('/v1/companion/location', {
+            method: 'DELETE',
+            headers: { 'Authorization': 'Bearer ' + state.companionToken }
+          });
+          await fetchAuthorizedDevicesLocations(false);
+        } catch (_) {}
+      }
+      renderPhoneLocationSettingsCard();
+      renderDevicesTab();
+      if (showFeedback) {
+        showInfo('Stopped sharing this phone’s location.');
+      }
+    }
+
+    function renderPhoneLocationSettingsCard() {
+      if (!els.settingsPhoneLocationStatus || !els.togglePhoneLocationBtn) return;
+      if (state.phoneLocationSharingEnabled) {
+        const age = isValidCoord(state.phoneLatestLocation)
+          ? (' · ' + formatRelativeAge(state.phoneLatestLocation.capturedAtUtc, false))
+          : ' · Waiting for GPS fix…';
+        els.settingsPhoneLocationStatus.textContent =
+          'On while WATSafe is open' + age;
+        els.togglePhoneLocationBtn.textContent = 'Stop sharing this phone’s location';
+        els.togglePhoneLocationBtn.className = 'btn btn-danger';
+      } else if (state.phoneLocationPermission === 'denied') {
+        els.settingsPhoneLocationStatus.textContent =
+          'Blocked — Location permission is turned off in browser or iOS Settings.';
+        els.togglePhoneLocationBtn.textContent = 'Retry sharing phone location';
+        els.togglePhoneLocationBtn.className = 'btn btn-secondary';
+      } else {
+        els.settingsPhoneLocationStatus.textContent =
+          'Off — this phone’s position is not shared on the Devices map.';
+        els.togglePhoneLocationBtn.textContent = 'Share this phone’s location';
+        els.togglePhoneLocationBtn.className = 'btn btn-primary';
+      }
     }
 
     function mercatorProject(lat, lon, worldSize) {
@@ -2514,27 +2918,74 @@ self.addEventListener('notificationclick', (event) => {
       return { lat: Math.max(-85, Math.min(85, lat)), lon: (((lon + 180) % 360) + 360) % 360 - 180 };
     }
 
-    function mountInteractiveMap(stageEl, mapKey, opts) {
-      if (!stageEl || !opts || !isValidCoord(opts.primary)) return null;
+    function deviceSvgIcon(role, size) {
+      const px = size || 16;
+      if (role === 'protected_device') {
+        return '<svg width="' + px + '" height="' + px + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M1 19h22"></path></svg>';
+      }
+      return '<svg width="' + px + '" height="' + px + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"></rect><path d="M11 18h2"></path></svg>';
+    }
+
+    function computeMarkerPixelOffsets(markers) {
+      const offsets = markers.map(() => ({ x: 0, y: 0, coLocated: false }));
+      for (let i = 0; i < markers.length; i++) {
+        if (offsets[i].assigned) continue;
+        const group = [i];
+        for (let j = i + 1; j < markers.length; j++) {
+          if (haversineMeters(markers[i].location, markers[j].location) < 28) {
+            group.push(j);
+          }
+        }
+        if (group.length >= 2) {
+          const r = group.length === 2 ? 28 : 32;
+          group.forEach((idx, k) => {
+            const angle = -Math.PI / 4 + (k * 2 * Math.PI) / group.length;
+            const oy = Math.round(Math.sin(angle) * r * 0.78);
+            offsets[idx] = {
+              x: Math.round(Math.cos(angle) * r),
+              y: oy,
+              labelAbove: oy < -4,
+              coLocated: true,
+              assigned: true
+            };
+          });
+        } else {
+          offsets[i].assigned = true;
+        }
+      }
+      return offsets;
+    }
+
+    function destroyMapController(mapKey) {
       const prev = mapControllers[mapKey];
-      if (prev && prev.mlMap) {
+      if (!prev) return;
+      if (Array.isArray(prev.mlMarkers)) {
+        prev.mlMarkers.forEach(m => { try { m.remove(); } catch (_) {} });
+      }
+      if (prev.mlMap) {
         try { prev.mlMap.remove(); } catch (_) {}
       }
+      delete mapControllers[mapKey];
+    }
 
-      const acc = Number(opts.primary.accuracyMeters || (opts.primary.isApproximate ? 180 : 25));
-      let zoom = acc >= 600 ? 12.8 : (acc >= 180 ? 14.2 : 15.6);
+    function mountInteractiveMap(stageEl, mapKey, opts) {
+      if (!stageEl || !opts || !isValidCoord(opts.primary)) return null;
+      const existing = mapControllers[mapKey];
+      if (existing && existing.stageEl === stageEl && stageEl.contains(existing.canvas)) {
+        existing.update(opts);
+        return existing;
+      }
+      destroyMapController(mapKey);
+
+      const initialAcc = Number(opts.primary.accuracyMeters || (opts.primary.isApproximate ? 180 : 25));
+      let zoom = initialAcc >= 600 ? 13.0 : (initialAcc >= 180 ? 14.3 : 15.6);
       let centerLat = Number(opts.primary.latitude);
       let centerLon = Number(opts.primary.longitude);
 
       stageEl.innerHTML =
         '<canvas class="map-canvas"></canvas>' +
         '<div class="map-vector-host"></div>' +
-        '<div class="map-overlay-top">' +
-        (opts.badge ? '<span class="pill ' + opts.badge.cls + '">' + escapeHtml(opts.badge.label) + '</span>' : '') +
-        (opts.alarmOrigin && differsMeaningfully(opts.primary, opts.alarmOrigin)
-          ? '<span class="pill pill-warn">Start → Latest</span>'
-          : '') +
-        '</div>' +
+        '<div class="map-overlay-top"></div>' +
         '<div class="map-controls">' +
         '<button type="button" class="map-ctrl-btn" data-act="in" title="Zoom in">+</button>' +
         '<button type="button" class="map-ctrl-btn" data-act="out" title="Zoom out">−</button>' +
@@ -2543,32 +2994,152 @@ self.addEventListener('notificationclick', (event) => {
 
       const canvas = stageEl.querySelector('.map-canvas');
       const vectorHost = stageEl.querySelector('.map-vector-host');
+      const overlayTop = stageEl.querySelector('.map-overlay-top');
+
+      const ctrl = {
+        stageEl: stageEl,
+        canvas: canvas,
+        mlMap: null,
+        mlReady: false,
+        mlMarkers: [],
+        opts: opts,
+        userInteracted: false,
+        lastLocatedSig: '',
+        centerOnDevice: targetLoc => {
+          const loc = isValidCoord(targetLoc) ? targetLoc : ctrl.opts.primary;
+          if (!isValidCoord(loc)) return;
+          const acc = Number(loc.accuracyMeters || (loc.isApproximate ? 180 : 25));
+          zoom = Math.max(zoom, acc >= 600 ? 13.2 : (acc >= 180 ? 14.5 : 15.6));
+          centerLat = Number(loc.latitude);
+          centerLon = Number(loc.longitude);
+          if (ctrl.mlMap && ctrl.mlReady) {
+            ctrl.mlMap.flyTo({ center: [centerLon, centerLat], zoom: zoom, essential: true });
+          } else {
+            drawCanvasFallback();
+          }
+        },
+        update: nextOpts => {
+          ctrl.opts = nextOpts;
+          renderTopBadges();
+          const markers = effectiveMarkers(nextOpts);
+          const sig = markers.map(m => m.deviceId).join('|');
+          if (!ctrl.userInteracted && sig !== ctrl.lastLocatedSig) {
+            ctrl.lastLocatedSig = sig;
+            fitViewportToMarkers(markers, nextOpts.primary);
+          }
+          drawCanvasFallback();
+          if (ctrl.mlMap && ctrl.mlReady) {
+            syncMapLibreOverlays();
+          }
+        }
+      };
+
+      function effectiveMarkers(o) {
+        if (Array.isArray(o.markers) && o.markers.length > 0) {
+          return o.markers.filter(m => m && isValidCoord(m.location));
+        }
+        return [{
+          deviceId: 'primary',
+          displayName: o.label || 'Protected device',
+          role: 'protected_device',
+          isCurrentRequester: false,
+          isSelected: true,
+          isAlarming: Boolean(o.isAlarming),
+          location: o.primary
+        }];
+      }
+
+      function fitViewportToMarkers(markers, fallbackPrimary) {
+        if (markers.length >= 2) {
+          let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+          markers.forEach(m => {
+            const la = Number(m.location.latitude);
+            const lo = Number(m.location.longitude);
+            if (la < minLat) minLat = la;
+            if (la > maxLat) maxLat = la;
+            if (lo < minLon) minLon = lo;
+            if (lo > maxLon) maxLon = lo;
+          });
+          centerLat = (minLat + maxLat) / 2;
+          centerLon = (minLon + maxLon) / 2;
+          const spanMeters = haversineMeters(
+            { latitude: minLat, longitude: minLon },
+            { latitude: maxLat, longitude: maxLon }
+          );
+          if (spanMeters < 60) zoom = 16.0;
+          else if (spanMeters < 350) zoom = 15.0;
+          else if (spanMeters < 1500) zoom = 13.6;
+          else if (spanMeters < 8000) zoom = 11.8;
+          else zoom = 9.8;
+          if (ctrl.mlMap && ctrl.mlReady && spanMeters >= 60) {
+            try {
+              ctrl.mlMap.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
+                padding: { top: 54, bottom: 54, left: 48, right: 56 },
+                maxZoom: 16,
+                duration: 450
+              });
+              return;
+            } catch (_) {}
+          }
+        } else if (isValidCoord(fallbackPrimary)) {
+          centerLat = Number(fallbackPrimary.latitude);
+          centerLon = Number(fallbackPrimary.longitude);
+        }
+        if (ctrl.mlMap && ctrl.mlReady) {
+          ctrl.mlMap.jumpTo({ center: [centerLon, centerLat], zoom: zoom });
+        }
+      }
+
+      function renderTopBadges() {
+        const o = ctrl.opts;
+        let html = '';
+        if (o.badge) {
+          html += '<span class="pill ' + o.badge.cls + '">' + escapeHtml(o.badge.label) + '</span>';
+        }
+        if (o.secondaryBadge) {
+          html += '<span class="pill pill-map-light">' + escapeHtml(o.secondaryBadge) + '</span>';
+        }
+        if (o.alarmOrigin && differsMeaningfully(o.primary, o.alarmOrigin)) {
+          html += '<span class="pill pill-warn">Start → Latest</span>';
+        }
+        overlayTop.innerHTML = html;
+      }
 
       function drawCanvasFallback() {
+        const o = ctrl.opts;
         const rect = stageEl.getBoundingClientRect();
-        const w = Math.max(220, rect.width || 320);
-        const h = Math.max(180, rect.height || 230);
+        const w = Math.max(240, rect.width || 340);
+        const h = Math.max(200, rect.height || 292);
         const dpr = window.devicePixelRatio || 1;
         canvas.width = Math.round(w * dpr);
         canvas.height = Math.round(h * dpr);
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.fillStyle = '#16202B';
+
+        // Crisp light street-map fallback styling
+        ctx.fillStyle = '#EEF2F6';
         ctx.fillRect(0, 0, w, h);
 
         const worldSize = 256 * Math.pow(2, zoom);
         const cw = mercatorProject(centerLat, centerLon, worldSize);
-        const step = 46;
-        const sx = -(cw.x % step);
-        const sy = -(cw.y % step);
-        ctx.lineWidth = 1;
-        for (let x = sx, i = 0; x < w; x += step, i++) {
-          ctx.strokeStyle = i % 3 === 0 ? '#2C3F53' : '#223140';
+        const step = 48;
+        const sx = -((cw.x % step) + step) % step;
+        const sy = -((cw.y % step) + step) % step;
+
+        // Subtle park blocks for spatial orientation
+        ctx.fillStyle = '#E2F1E8';
+        ctx.fillRect(sx + step * 0.15, sy + step * 0.15, step * 1.7, step * 1.2);
+        ctx.fillRect(w - step * 2.2, h - step * 1.8, step * 1.5, step * 1.1);
+
+        for (let x = sx, i = 0; x < w + step; x += step, i++) {
+          ctx.strokeStyle = i % 3 === 0 ? '#CBD5E1' : '#FFFFFF';
+          ctx.lineWidth = i % 3 === 0 ? 4.5 : 2.5;
           ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
         }
-        for (let y = sy, i = 0; y < h; y += step, i++) {
-          ctx.strokeStyle = i % 3 === 0 ? '#2C3F53' : '#223140';
+        for (let y = sy, i = 0; y < h + step; y += step, i++) {
+          ctx.strokeStyle = i % 3 === 0 ? '#CBD5E1' : '#FFFFFF';
+          ctx.lineWidth = i % 3 === 0 ? 4.5 : 2.5;
           ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
         }
 
@@ -2577,10 +3148,10 @@ self.addEventListener('notificationclick', (event) => {
           return { x: w / 2 + (p.x - cw.x), y: h / 2 + (p.y - cw.y) };
         };
 
-        const trail = Array.isArray(opts.trail) ? opts.trail.filter(isValidCoord) : [];
+        const trail = Array.isArray(o.trail) ? o.trail.filter(isValidCoord) : [];
         if (trail.length >= 2) {
-          ctx.strokeStyle = 'rgba(229,142,38,0.9)';
-          ctx.lineWidth = 3;
+          ctx.strokeStyle = '#D97706';
+          ctx.lineWidth = 3.5;
           ctx.beginPath();
           trail.forEach((pt, idx) => {
             const sp = toScr(pt);
@@ -2589,38 +3160,172 @@ self.addEventListener('notificationclick', (event) => {
           ctx.stroke();
         }
 
-        if (opts.alarmOrigin && isValidCoord(opts.alarmOrigin) && differsMeaningfully(opts.primary, opts.alarmOrigin)) {
-          const ap = toScr(opts.alarmOrigin);
-          ctx.fillStyle = '#E58E26';
+        if (o.alarmOrigin && isValidCoord(o.alarmOrigin) && differsMeaningfully(o.primary, o.alarmOrigin)) {
+          const ap = toScr(o.alarmOrigin);
+          ctx.fillStyle = '#D97706';
           ctx.beginPath(); ctx.arc(ap.x, ap.y, 6.5, 0, Math.PI * 2); ctx.fill();
-          ctx.strokeStyle = '#F5F2EB'; ctx.lineWidth = 2; ctx.stroke();
+          ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2; ctx.stroke();
         }
 
-        const pp = toScr(opts.primary);
+        const markers = effectiveMarkers(o);
+        const offsets = computeMarkerPixelOffsets(markers);
         const mpp = (156543.03 * Math.cos(centerLat * Math.PI / 180)) / Math.pow(2, zoom);
-        const rPx = Math.max(14, Math.min(92, acc / Math.max(0.05, mpp)));
-        ctx.fillStyle = opts.isAlarming ? 'rgba(214,69,58,0.18)' : 'rgba(46,155,104,0.18)';
-        ctx.beginPath(); ctx.arc(pp.x, pp.y, rPx, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = opts.isAlarming ? 'rgba(214,69,58,0.65)' : 'rgba(46,155,104,0.65)';
-        ctx.lineWidth = 1.5; ctx.stroke();
 
-        ctx.fillStyle = '#F5F2EB';
-        ctx.beginPath(); ctx.arc(pp.x, pp.y, 9, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = opts.isAlarming ? '#D6453A' : '#2E9B68';
-        ctx.beginPath(); ctx.arc(pp.x, pp.y, 6, 0, Math.PI * 2); ctx.fill();
+        markers.forEach((m, idx) => {
+          const base = toScr(m.location);
+          const off = offsets[idx];
+          const px = base.x + off.x;
+          const py = base.y + off.y;
+          const mAcc = Number(m.location.accuracyMeters || 30);
+          if (m.isSelected) {
+            const rPx = Math.max(18, Math.min(88, mAcc / Math.max(0.05, mpp)));
+            ctx.fillStyle = m.isAlarming ? 'rgba(214,69,58,0.14)' : (m.role === 'protected_device' ? 'rgba(46,155,104,0.15)' : 'rgba(37,99,235,0.14)');
+            ctx.beginPath(); ctx.arc(base.x, base.y, rPx, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = m.isAlarming ? 'rgba(214,69,58,0.55)' : (m.role === 'protected_device' ? 'rgba(46,155,104,0.55)' : 'rgba(37,99,235,0.5)');
+            ctx.lineWidth = 1.5; ctx.stroke();
+          }
+          if (off.coLocated) {
+            ctx.strokeStyle = 'rgba(15,23,42,0.35)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(base.x, base.y); ctx.lineTo(px, py); ctx.stroke();
+            ctx.fillStyle = '#334155';
+            ctx.beginPath(); ctx.arc(base.x, base.y, 3, 0, Math.PI * 2); ctx.fill();
+          }
+          const pinColor = m.isAlarming ? '#D6453A' : (m.role === 'protected_device' ? '#1E8254' : '#2563EB');
+          if (m.isSelected) {
+            ctx.fillStyle = 'rgba(229,142,38,0.38)';
+            ctx.beginPath(); ctx.arc(px, py, 19, 0, Math.PI * 2); ctx.fill();
+          }
+          ctx.fillStyle = '#FFFFFF';
+          ctx.beginPath(); ctx.arc(px, py, 15, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = pinColor;
+          ctx.beginPath(); ctx.arc(px, py, 12.5, 0, Math.PI * 2); ctx.fill();
+
+          // Distinct simplified laptop vs phone glyph inside fallback pin
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.lineWidth = 1.8;
+          if (m.role === 'protected_device') {
+            ctx.strokeRect(px - 5.5, py - 4.5, 11, 7);
+            ctx.beginPath(); ctx.moveTo(px - 7.5, py + 4.5); ctx.lineTo(px + 7.5, py + 4.5); ctx.stroke();
+          } else {
+            ctx.strokeRect(px - 4, py - 6, 8, 12);
+          }
+
+          const lbl = m.isCurrentRequester ? (m.displayName + ' · This phone') : m.displayName;
+          ctx.font = '700 11px -apple-system, BlinkMacSystemFont, sans-serif';
+          const tw = Math.min(144, ctx.measureText(lbl).width + 12);
+          const lx = px - tw / 2;
+          const ly = off.labelAbove ? (py - 35) : (py + 17);
+          ctx.fillStyle = 'rgba(255,255,255,0.95)';
+          ctx.fillRect(lx, ly, tw, 18);
+          ctx.strokeStyle = 'rgba(15,23,42,0.18)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(lx, ly, tw, 18);
+          ctx.fillStyle = '#0F172A';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(lbl.length > 21 ? (lbl.slice(0, 20) + '…') : lbl, px, ly + 9.5);
+        });
+        ctrl.lastCanvasHitTargets = markers.map((m, idx) => {
+          const base = toScr(m.location);
+          return {
+            deviceId: m.deviceId,
+            x: base.x + offsets[idx].x,
+            y: base.y + offsets[idx].y
+          };
+        });
       }
 
+      function syncMapLibreOverlays() {
+        const ml = ctrl.mlMap;
+        if (!ml || !ctrl.mlReady) return;
+        const o = ctrl.opts;
+        ctrl.mlMarkers.forEach(m => { try { m.remove(); } catch (_) {} });
+        ctrl.mlMarkers = [];
+
+        const trail = Array.isArray(o.trail) ? o.trail.filter(isValidCoord) : [];
+        const trailGeo = {
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: trail.map(p => [Number(p.longitude), Number(p.latitude)])
+          }
+        };
+        if (ml.getSource('incident-trail')) {
+          ml.getSource('incident-trail').setData(trailGeo);
+        } else if (trail.length >= 2) {
+          ml.addSource('incident-trail', { type: 'geojson', data: trailGeo });
+          ml.addLayer({
+            id: 'incident-trail-line',
+            type: 'line',
+            source: 'incident-trail',
+            paint: { 'line-color': '#D97706', 'line-width': 3.5 }
+          });
+        }
+
+        if (o.alarmOrigin && isValidCoord(o.alarmOrigin) && differsMeaningfully(o.primary, o.alarmOrigin)) {
+          const originEl = document.createElement('div');
+          originEl.style.cssText = 'width:13px;height:13px;border-radius:50%;background:#D97706;border:2px solid #FFFFFF;box-shadow:0 2px 6px rgba(15,23,42,0.25);';
+          const om = new window.maplibregl.Marker({ element: originEl })
+            .setLngLat([Number(o.alarmOrigin.longitude), Number(o.alarmOrigin.latitude)])
+            .addTo(ml);
+          ctrl.mlMarkers.push(om);
+        }
+
+        const markers = effectiveMarkers(o);
+        const offsets = computeMarkerPixelOffsets(markers);
+        markers.forEach((m, idx) => {
+          const off = offsets[idx];
+          const pinColor = m.isAlarming ? '#D6453A' : (m.role === 'protected_device' ? '#1E8254' : '#2563EB');
+          const lblText = m.isCurrentRequester ? (m.displayName + ' · This phone') : m.displayName;
+          const wrap = document.createElement('div');
+          wrap.className = 'map-pin-wrap' + (m.isSelected ? ' selected' : '');
+          wrap.setAttribute('data-device-id', m.deviceId);
+          const badgeHtml =
+            '<div class="map-pin-badge" style="background:' + pinColor + ';">' +
+            deviceSvgIcon(m.role, 16) +
+            '</div>';
+          const labelHtml = off.labelAbove
+            ? '<div class="map-pin-label" style="margin-top:0;margin-bottom:4px;">' + escapeHtml(lblText) + '</div>'
+            : '<div class="map-pin-label">' + escapeHtml(lblText) + '</div>';
+          wrap.innerHTML = off.labelAbove ? (labelHtml + badgeHtml) : (badgeHtml + labelHtml);
+          wrap.onclick = ev => {
+            ev.stopPropagation();
+            if (typeof o.onSelectDevice === 'function') {
+              o.onSelectDevice(m.deviceId);
+            }
+          };
+          const marker = new window.maplibregl.Marker({
+            element: wrap,
+            offset: [off.x, off.y]
+          })
+            .setLngLat([Number(m.location.longitude), Number(m.location.latitude)])
+            .addTo(ml);
+          ctrl.mlMarkers.push(marker);
+        });
+      }
+
+      renderTopBadges();
+      const initMarkers = effectiveMarkers(opts);
+      ctrl.lastLocatedSig = initMarkers.map(m => m.deviceId).join('|');
+      fitViewportToMarkers(initMarkers, opts.primary);
       drawCanvasFallback();
 
       let dragLast = null;
+      let dragMoved = false;
       stageEl.onpointerdown = e => {
-        if (e.target && e.target.closest('.map-ctrl-btn')) return;
+        if (e.target && (e.target.closest('.map-ctrl-btn') || e.target.closest('.map-pin-wrap'))) return;
         dragLast = { x: e.clientX, y: e.clientY };
+        dragMoved = false;
       };
       stageEl.onpointermove = e => {
         if (!dragLast || (ctrl.mlMap && ctrl.mlReady)) return;
         const dx = e.clientX - dragLast.x;
         const dy = e.clientY - dragLast.y;
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+          dragMoved = true;
+          ctrl.userInteracted = true;
+        }
         dragLast = { x: e.clientX, y: e.clientY };
         const worldSize = 256 * Math.pow(2, zoom);
         const cw = mercatorProject(centerLat, centerLon, worldSize);
@@ -2629,29 +3334,28 @@ self.addEventListener('notificationclick', (event) => {
         centerLon = next.lon;
         drawCanvasFallback();
       };
-      stageEl.onpointerup = () => { dragLast = null; };
-      stageEl.onpointercancel = () => { dragLast = null; };
-
-      const ctrl = {
-        mlMap: null,
-        mlReady: false,
-        centerOnDevice: () => {
-          centerLat = Number(opts.primary.latitude);
-          centerLon = Number(opts.primary.longitude);
-          if (ctrl.mlMap && ctrl.mlReady) {
-            ctrl.mlMap.flyTo({ center: [centerLon, centerLat], zoom: zoom, essential: true });
-          } else {
-            drawCanvasFallback();
+      stageEl.onpointerup = e => {
+        if (dragLast && !dragMoved && !(ctrl.mlMap && ctrl.mlReady) && Array.isArray(ctrl.lastCanvasHitTargets)) {
+          const rect = stageEl.getBoundingClientRect();
+          const cx = e.clientX - rect.left;
+          const cy = e.clientY - rect.top;
+          const hit = ctrl.lastCanvasHitTargets.find(t => Math.hypot(t.x - cx, t.y - cy) <= 24);
+          if (hit && typeof ctrl.opts.onSelectDevice === 'function') {
+            ctrl.opts.onSelectDevice(hit.deviceId);
           }
         }
+        dragLast = null;
       };
+      stageEl.onpointercancel = () => { dragLast = null; };
 
       stageEl.querySelector('[data-act="in"]').onclick = () => {
-        zoom = Math.min(18, zoom + 1);
+        ctrl.userInteracted = true;
+        zoom = Math.min(18, (ctrl.mlMap && ctrl.mlReady ? ctrl.mlMap.getZoom() : zoom) + 1);
         if (ctrl.mlMap && ctrl.mlReady) ctrl.mlMap.zoomTo(zoom); else drawCanvasFallback();
       };
       stageEl.querySelector('[data-act="out"]').onclick = () => {
-        zoom = Math.max(3, zoom - 1);
+        ctrl.userInteracted = true;
+        zoom = Math.max(3, (ctrl.mlMap && ctrl.mlReady ? ctrl.mlMap.getZoom() : zoom) - 1);
         if (ctrl.mlMap && ctrl.mlReady) ctrl.mlMap.zoomTo(zoom); else drawCanvasFallback();
       };
 
@@ -2659,45 +3363,23 @@ self.addEventListener('notificationclick', (event) => {
         try {
           const ml = new window.maplibregl.Map({
             container: vectorHost,
-            style: 'https://tiles.openfreemap.org/styles/dark',
+            style: 'https://tiles.openfreemap.org/styles/liberty',
             center: [centerLon, centerLat],
             zoom: zoom,
             attributionControl: false
           });
           ctrl.mlMap = ml;
+          ml.on('dragstart', () => { ctrl.userInteracted = true; });
+          ml.on('zoomstart', e => {
+            if (e && e.originalEvent) ctrl.userInteracted = true;
+          });
           ml.on('load', () => {
             ctrl.mlReady = true;
-            const trail = Array.isArray(opts.trail) ? opts.trail.filter(isValidCoord) : [];
-            if (trail.length >= 2) {
-              ml.addSource('incident-trail', {
-                type: 'geojson',
-                data: {
-                  type: 'Feature',
-                  geometry: {
-                    type: 'LineString',
-                    coordinates: trail.map(p => [Number(p.longitude), Number(p.latitude)])
-                  }
-                }
-              });
-              ml.addLayer({
-                id: 'incident-trail-line',
-                type: 'line',
-                source: 'incident-trail',
-                paint: { 'line-color': '#E58E26', 'line-width': 3.5 }
-              });
+            const curMarkers = effectiveMarkers(ctrl.opts);
+            if (!ctrl.userInteracted && curMarkers.length >= 2) {
+              fitViewportToMarkers(curMarkers, ctrl.opts.primary);
             }
-            if (opts.alarmOrigin && isValidCoord(opts.alarmOrigin) && differsMeaningfully(opts.primary, opts.alarmOrigin)) {
-              const originEl = document.createElement('div');
-              originEl.style.cssText = 'width:13px;height:13px;border-radius:50%;background:#E58E26;border:2px solid #F5F2EB;';
-              new window.maplibregl.Marker({ element: originEl })
-                .setLngLat([Number(opts.alarmOrigin.longitude), Number(opts.alarmOrigin.latitude)])
-                .addTo(ml);
-            }
-            const pinEl = document.createElement('div');
-            pinEl.style.cssText = 'width:18px;height:18px;border-radius:50%;background:' + (opts.isAlarming ? '#D6453A' : '#2E9B68') + ';border:3px solid #F5F2EB;box-shadow:0 0 0 8px ' + (opts.isAlarming ? 'rgba(214,69,58,0.22)' : 'rgba(46,155,104,0.22)') + ';';
-            new window.maplibregl.Marker({ element: pinEl })
-              .setLngLat([centerLon, centerLat])
-              .addTo(ml);
+            syncMapLibreOverlays();
           });
           ml.on('error', () => {
             if (!ctrl.mlReady) {
@@ -2738,43 +3420,79 @@ self.addEventListener('notificationclick', (event) => {
     }
 
     function buildEffectiveDevicesRoster() {
+      let base;
       if (Array.isArray(state.authorizedDevices) && state.authorizedDevices.length > 0) {
-        return state.authorizedDevices;
+        base = state.authorizedDevices.map(d => Object.assign({}, d));
+      } else {
+        const evWithLoc = state.events.find(e => isValidCoord(e.location));
+        const hostOnline = connState !== 'laptop_offline';
+        base = [
+          {
+            deviceId: 'host_primary',
+            displayName: state.hostDisplayName || 'Protected Laptop',
+            role: 'protected_device',
+            platform: 'Protected laptop',
+            online: hostOnline,
+            protectionStatusLabel: formatProtectionLabel(state.hostProtectionState),
+            isAlarming: String(state.hostProtectionState || '').toLowerCase() === 'triggered',
+            trackingState: evWithLoc ? (evWithLoc.locationTrackingState || 'last_known') : 'unavailable',
+            latestLocation: evWithLoc ? evWithLoc.location : null,
+            alarmLocation: evWithLoc ? (evWithLoc.alarmLocation || evWithLoc.location) : null,
+            locationTrail: evWithLoc && Array.isArray(evWithLoc.locationTrail) ? evWithLoc.locationTrail : [],
+            locationStatus: evWithLoc ? 'attached' : 'notRequested',
+            statusExplanation: hostOnline
+              ? 'Arm protection or allow Location access on your laptop to report its position.'
+              : 'Laptop is currently offline or sleeping. New coordinates arrive when it reconnects.'
+          },
+          {
+            deviceId: state.deviceId || 'phone_self',
+            displayName: state.phoneDisplayName || 'This Phone',
+            role: 'companion_phone',
+            platform: detectPlatformLabel(),
+            online: true,
+            isCurrentRequester: true,
+            locationSharingEnabled: Boolean(state.phoneLocationSharingEnabled),
+            protectionStatusLabel: 'Companion · Alerts on',
+            isAlarming: false,
+            trackingState: 'unavailable',
+            latestLocation: null,
+            locationStatus: 'notRequested',
+            statusExplanation: 'Location not shared. Tap "Share this phone’s location" to show this phone alongside your laptop while WATSafe is open.'
+          }
+        ];
       }
-      const evWithLoc = state.events.find(e => isValidCoord(e.location));
-      const hostOnline = connState !== 'laptop_offline';
-      return [
-        {
-          deviceId: 'host_primary',
-          displayName: state.hostDisplayName || 'Protected Laptop',
-          role: 'protected_device',
-          platform: 'Protected laptop',
-          online: hostOnline,
-          protectionStatusLabel: formatProtectionLabel(state.hostProtectionState),
-          isAlarming: String(state.hostProtectionState || '').toLowerCase() === 'triggered',
-          trackingState: evWithLoc ? (evWithLoc.locationTrackingState || 'last_known') : 'unavailable',
-          latestLocation: evWithLoc ? evWithLoc.location : null,
-          alarmLocation: evWithLoc ? (evWithLoc.alarmLocation || evWithLoc.location) : null,
-          locationTrail: evWithLoc && Array.isArray(evWithLoc.locationTrail) ? evWithLoc.locationTrail : [],
-          locationStatus: evWithLoc ? 'attached' : 'notRequested',
-          statusExplanation: hostOnline
-            ? 'Arm protection or allow Location access on your laptop to report its position.'
-            : 'Laptop is currently offline or sleeping. New coordinates arrive when it reconnects.'
-        },
-        {
-          deviceId: state.deviceId || 'phone_self',
-          displayName: state.phoneDisplayName || 'This Phone',
-          role: 'companion_phone',
-          platform: detectPlatformLabel(),
-          online: true,
-          protectionStatusLabel: 'Receiving alerts',
-          isAlarming: false,
-          trackingState: 'unavailable',
-          latestLocation: null,
-          locationStatus: 'notRequested',
-          statusExplanation: 'Companion phones receive alerts and do not report background coordinates as your laptop.'
-        }
-      ];
+      if (state.phoneLocationSharingEnabled && isValidCoord(state.phoneLatestLocation)) {
+        base = base.map(d => {
+          if (d.isCurrentRequester || (state.deviceId && d.deviceId === state.deviceId)) {
+            return Object.assign({}, d, {
+              isCurrentRequester: true,
+              locationSharingEnabled: true,
+              latestLocation: isValidCoord(d.latestLocation) ? d.latestLocation : state.phoneLatestLocation,
+              trackingState: document.visibilityState === 'visible' ? 'live' : 'last_known',
+              locationStatus: 'attached'
+            });
+          }
+          return d;
+        });
+      }
+      return base;
+    }
+
+    function protectionBadgeClass(dev) {
+      if (dev.isAlarming) return 'pill-alert';
+      const lbl = String(dev.protectionStatusLabel || '').toLowerCase();
+      if (lbl.indexOf('interrupted') >= 0) return 'pill-alert';
+      if (lbl.indexOf('protected') >= 0 || lbl.indexOf('alerts on') >= 0) return 'pill-ok';
+      if (lbl.indexOf('arming') >= 0 || lbl.indexOf('paused') >= 0 || lbl.indexOf('setup') >= 0) return 'pill-warn';
+      return 'pill-neutral';
+    }
+
+    function eventKindMeta(ev) {
+      if (ev && ev.isTest) return { label: 'Test alert', cls: 'pill-warn' };
+      const kind = String((ev && ev.kind) || '').trim();
+      if (kind === 'protectionInterrupted') return { label: 'Protection interrupted', cls: 'pill-alert' };
+      if (kind === 'detectorFailureDuringMonitoring') return { label: 'Monitoring stopped', cls: 'pill-warn' };
+      return { label: 'Alarm triggered', cls: 'pill-alert' };
     }
 
     function renderDevicesTab() {
@@ -2786,77 +3504,157 @@ self.addEventListener('notificationclick', (event) => {
       if (!selected) return;
       selectedDeviceId = selected.deviceId;
 
-      const hasValid = isValidCoord(selected.latestLocation);
-      if (hasValid) {
-        const badge = trackingBadgeMeta(selected.trackingState);
+      // 1. Single horizontal device selector strip (>= 44px touch targets, zero duplicate cards)
+      els.devicesRosterList.innerHTML = '';
+      devices.forEach(dev => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.setAttribute('role', 'tab');
+        chip.setAttribute('aria-selected', dev.deviceId === selected.deviceId ? 'true' : 'false');
+        chip.className = 'device-chip' + (dev.deviceId === selected.deviceId ? ' selected' : '');
+        const dotColor = dev.isAlarming ? '#D6453A' : (dev.online ? '#2E9B68' : '#E58E26');
+        const chipTitle = dev.isCurrentRequester ? (dev.displayName + ' · This phone') : dev.displayName;
+        chip.innerHTML =
+          deviceSvgIcon(dev.role, 16) +
+          '<span>' + escapeHtml(chipTitle) + '</span>' +
+          '<span class="chip-dot" style="background:' + dotColor + ';"></span>';
+        chip.onclick = () => {
+          selectedDeviceId = dev.deviceId;
+          renderDevicesTab();
+          if (isValidCoord(dev.latestLocation) && mapControllers.devices) {
+            mapControllers.devices.centerOnDevice(dev.latestLocation);
+          }
+        };
+        els.devicesRosterList.appendChild(chip);
+      });
+
+      // 2. Multi-device interactive light map (keeps located devices visible even if an unlocated chip is selected)
+      const locatedDevices = devices.filter(d => isValidCoord(d.latestLocation));
+      const selectedHasCoord = isValidCoord(selected.latestLocation);
+      if (locatedDevices.length > 0) {
+        const mapPrimaryDev = selectedHasCoord ? selected : locatedDevices[0];
+        const badge = trackingBadgeMeta(mapPrimaryDev.trackingState);
+        const secondaryBadge = !selectedHasCoord
+          ? ((selected.isCurrentRequester ? 'This phone' : selected.displayName) + ' · location not shared')
+          : (locatedDevices.length >= 2 ? (locatedDevices.length + ' devices on map') : '');
         mountInteractiveMap(els.devicesMapStage, 'devices', {
-          primary: selected.latestLocation,
-          alarmOrigin: selected.alarmLocation,
-          trail: selected.locationTrail,
+          primary: mapPrimaryDev.latestLocation,
+          label: mapPrimaryDev.displayName,
+          alarmOrigin: selectedHasCoord ? selected.alarmLocation : mapPrimaryDev.alarmLocation,
+          trail: selectedHasCoord ? selected.locationTrail : mapPrimaryDev.locationTrail,
           badge: badge,
-          isAlarming: Boolean(selected.isAlarming)
+          secondaryBadge: secondaryBadge,
+          isAlarming: Boolean(mapPrimaryDev.isAlarming),
+          markers: locatedDevices.map(d => ({
+            deviceId: d.deviceId,
+            displayName: d.displayName,
+            role: d.role,
+            isCurrentRequester: Boolean(d.isCurrentRequester),
+            isSelected: d.deviceId === selected.deviceId,
+            isAlarming: Boolean(d.isAlarming),
+            location: d.latestLocation
+          })),
+          onSelectDevice: id => {
+            selectedDeviceId = id;
+            renderDevicesTab();
+          }
         });
+      } else {
+        destroyMapController('devices');
+        els.devicesMapStage.innerHTML =
+          '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;color:#0F172A;">' +
+          '<div style="font-weight:800;font-size:16px;margin-bottom:6px;">Location unavailable</div>' +
+          '<div style="font-size:13.5px;color:#475569;max-width:300px;line-height:1.45;">' +
+          escapeHtml(selected.statusExplanation || 'Allow Location access on your protected laptop or share this phone’s location while WATSafe is open.') +
+          '</div></div>';
+      }
+
+      // 3. Single concise selected-device detail card
+      const connPill = '<span class="pill ' + (selected.online ? 'pill-ok' : 'pill-warn') + '">' +
+        (selected.online ? 'Online' : 'Offline') + '</span>';
+      const protPill = '<span class="pill ' + protectionBadgeClass(selected) + '">' +
+        escapeHtml(selected.protectionStatusLabel || (selected.role === 'protected_device' ? 'Protection off' : 'Companion')) + '</span>';
+      const thisPhoneTag = selected.isCurrentRequester
+        ? ' <span class="pill pill-neutral" style="font-size:11px;padding:2px 8px;">This phone</span>'
+        : '';
+
+      if (selectedHasCoord) {
         const loc = selected.latestLocation;
+        const isLastKnown = selected.trackingState !== 'live' || Boolean(loc.isLastKnown);
+        const placeText = getReadableLocationSummary(loc);
         const mapsHref = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(loc.latitude + ',' + loc.longitude);
+        const stopBtnHtml = selected.isCurrentRequester && state.phoneLocationSharingEnabled
+          ? '<button type="button" id="stopPhoneLocInlineBtn" class="btn btn-secondary" style="margin-top:8px;font-size:13.5px;">Stop sharing phone location</button>'
+          : '';
         els.selectedDeviceCard.innerHTML =
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">' +
-          '<div><h2 style="margin-bottom:4px;">' + escapeHtml(selected.displayName) + '</h2>' +
-          '<div style="font-size:13px;font-weight:700;color:' + (selected.online ? '#6ee7b7' : '#fcd34d') + ';">' +
-          (selected.online ? 'Online' : 'Offline') + ' · ' + escapeHtml(selected.protectionStatusLabel || 'Protected') +
-          '</div></div>' +
-          '<span class="pill pill-warn">' + escapeHtml(formatAccuracyLabel(loc)) + '</span>' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+          '<span style="color:var(--muted);display:inline-flex;">' + deviceSvgIcon(selected.role, 18) + '</span>' +
+          '<h2 style="margin:0;">' + escapeHtml(selected.displayName) + '</h2>' + thisPhoneTag +
           '</div>' +
-          '<div style="margin-top:12px;font-size:14px;font-weight:700;">' +
-          Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) +
+          '<span class="pill pill-neutral">' + escapeHtml(formatAccuracyLabel(loc)) + '</span>' +
           '</div>' +
-          '<div style="font-size:13px;color:var(--muted);margin-top:4px;">' +
-          escapeHtml(formatRelativeAge(loc.capturedAtUtc)) +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">' + connPill + protPill + '</div>' +
+          '<div style="margin-top:12px;font-size:15px;font-weight:700;color:var(--text);">' + escapeHtml(placeText) + '</div>' +
+          '<div style="font-size:13px;color:var(--muted);margin-top:3px;">' +
+          escapeHtml(formatRelativeAge(loc.capturedAtUtc, isLastKnown)) +
           '</div>' +
           '<div class="btn-row">' +
           '<button type="button" id="centerSelectedDeviceBtn" class="btn btn-secondary">Center on device</button>' +
           '<a class="btn btn-primary" target="_blank" rel="noopener" href="' + mapsHref + '">Open in Maps</a>' +
-          '</div>';
+          '</div>' +
+          stopBtnHtml +
+          '<details class="coords-disclosure">' +
+          '<summary>Coordinates</summary>' +
+          '<div class="coords-mono">' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + '</div>' +
+          '<div style="margin-top:3px;font-size:12px;color:var(--subtle);">Captured ' + escapeHtml(formatTime(loc.capturedAtUtc)) + '</div>' +
+          '</details>';
         const centerBtn = document.getElementById('centerSelectedDeviceBtn');
         if (centerBtn) {
           centerBtn.onclick = () => {
-            if (mapControllers.devices) mapControllers.devices.centerOnDevice();
+            if (mapControllers.devices) mapControllers.devices.centerOnDevice(loc);
           };
         }
+        const stopInlineBtn = document.getElementById('stopPhoneLocInlineBtn');
+        if (stopInlineBtn) {
+          stopInlineBtn.onclick = () => disableCompanionPhoneLocationSharing(true);
+        }
       } else {
-        els.devicesMapStage.innerHTML =
-          '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center;">' +
-          '<div style="font-weight:800;font-size:16px;margin-bottom:6px;">Location unavailable</div>' +
-          '<div style="font-size:13px;color:var(--muted);line-height:1.45;">' +
-          escapeHtml(selected.statusExplanation || 'Allow Location access on your protected laptop so its coordinates can appear here.') +
-          '</div></div>';
+        const isCurrentPhone = Boolean(selected.isCurrentRequester);
+        const denied = selected.locationStatus === 'permissionDenied' || (isCurrentPhone && state.phoneLocationPermission === 'denied');
+        let actionHtml = '';
+        if (isCurrentPhone) {
+          if (denied) {
+            actionHtml =
+              '<div class="guide-box" style="margin:10px 0 0;">' +
+              '<strong>Location permission turned off</strong>' +
+              '<p style="margin:5px 0 0;font-size:13px;">Open iOS <strong>Settings → Privacy &amp; Security → Location Services → Safari Websites</strong>, allow access while using the app, then tap below.</p>' +
+              '</div>' +
+              '<button type="button" id="shareThisPhoneLocationBtn" class="btn btn-secondary">Retry sharing phone location</button>';
+          } else {
+            actionHtml =
+              '<button type="button" id="shareThisPhoneLocationBtn" class="btn btn-primary" style="margin-top:12px;">Share this phone’s location</button>' +
+              '<p style="margin:8px 0 0;font-size:12px;color:var(--subtle);">Updates only while WATSafe is open on screen.</p>';
+          }
+        }
         els.selectedDeviceCard.innerHTML =
-          '<h2 style="margin-bottom:4px;">' + escapeHtml(selected.displayName) + '</h2>' +
-          '<p style="margin-bottom:8px;font-size:13px;font-weight:700;color:' + (selected.online ? '#6ee7b7' : '#fcd34d') + ';">' +
-          (selected.online ? 'Online' : 'Offline') + ' · ' + escapeHtml(selected.protectionStatusLabel || '') + '</p>' +
-          '<p style="margin:0;font-size:13.5px;">Location unavailable — ' +
-          escapeHtml(selected.statusExplanation || 'No valid position has been reported for this device yet.') +
-          '</p>';
-      }
-
-      els.devicesRosterList.innerHTML = '';
-      devices.forEach(dev => {
-        const item = document.createElement('div');
-        item.className = 'event-item' + (dev.deviceId === selected.deviceId ? ' selected' : '');
-        const sub = isValidCoord(dev.latestLocation)
-          ? ((dev.online ? 'Online' : 'Offline') + ' · ' + formatRelativeAge(dev.latestLocation.capturedAtUtc))
-          : ((dev.online ? 'Online' : 'Offline') + ' · ' + (dev.role === 'protected_device' ? 'Location unavailable' : (dev.protectionStatusLabel || 'Paired')));
-        item.innerHTML =
-          '<div style="display:flex;justify-content:space-between;align-items:center;">' +
-          '<strong>' + escapeHtml(dev.displayName) + '</strong>' +
-          '<span class="pill ' + (dev.online ? 'pill-ok' : 'pill-warn') + '">' + (dev.online ? 'Online' : 'Offline') + '</span>' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+          '<span style="color:var(--muted);display:inline-flex;">' + deviceSvgIcon(selected.role, 18) + '</span>' +
+          '<h2 style="margin:0;">' + escapeHtml(selected.displayName) + '</h2>' + thisPhoneTag +
           '</div>' +
-          '<div style="font-size:13px;color:var(--muted);margin-top:4px;">' + escapeHtml(sub) + '</div>';
-        item.onclick = () => {
-          selectedDeviceId = dev.deviceId;
-          renderDevicesTab();
-        };
-        els.devicesRosterList.appendChild(item);
-      });
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">' + connPill + protPill + '</div>' +
+          '<div style="margin-top:12px;font-size:14px;font-weight:700;color:var(--text);">' +
+          (denied ? 'Location permission turned off' : (isCurrentPhone ? 'Location not shared' : 'Location unavailable')) +
+          '</div>' +
+          '<p style="margin:4px 0 0;font-size:13.5px;">' +
+          escapeHtml(selected.statusExplanation || 'No valid position has been reported for this device yet.') +
+          '</p>' +
+          actionHtml;
+        const shareBtn = document.getElementById('shareThisPhoneLocationBtn');
+        if (shareBtn) {
+          shareBtn.onclick = () => enableCompanionPhoneLocationSharing(true);
+        }
+      }
     }
 
     function renderActivityEvents() {
@@ -2874,7 +3672,8 @@ self.addEventListener('notificationclick', (event) => {
       if (selectedIncidentId) {
         const ev = state.events.find(e => e.incidentId === selectedIncidentId);
         if (ev) {
-          let locHtml = '<div class="guide-box"><strong>Location unavailable</strong><p style="margin:6px 0 0 0;font-size:13.5px;">Location permission was turned off or unavailable on the protected device when this alarm triggered.</p></div>';
+          const kindMeta = eventKindMeta(ev);
+          let locHtml = '<div class="guide-box"><strong>Location unavailable</strong><p style="margin:6px 0 0 0;font-size:13.5px;">Location permission was turned off or unavailable on the protected device when this event was recorded.</p></div>';
           if (ev.locationStatus === 'pending' && !isValidCoord(ev.location)) {
             locHtml = '<div class="guide-box" style="border-color:var(--amber);"><strong>Getting device location…</strong><p style="margin:6px 0 0 0;font-size:13.5px;">Waiting for your protected laptop to report coordinates. This view updates automatically.</p></div>';
           } else if (ev.locationStatus === 'notRequested' && !isValidCoord(ev.location)) {
@@ -2890,31 +3689,33 @@ self.addEventListener('notificationclick', (event) => {
                  '<div style="font-size:12.5px;color:var(--muted);">Alarm-time location: <strong style="color:var(--text);">' + Number(alarmOrigin.latitude).toFixed(5) + ', ' + Number(alarmOrigin.longitude).toFixed(5) + '</strong> (' + escapeHtml(formatTime(alarmOrigin.capturedAtUtc)) + ')</div>' +
                  '<div style="font-size:12.5px;color:var(--muted);margin-top:6px;">Latest known location: <strong style="color:var(--text);">' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + '</strong> · ' + escapeHtml(formatAccuracyLabel(loc)) + '</div>' +
                  '</div>')
-              : ('<div style="font-size:13.5px;font-weight:700;margin-top:10px;">' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + ' · ' + escapeHtml(formatAccuracyLabel(loc)) + '</div>');
+              : ('<div style="font-size:14px;font-weight:700;margin-top:10px;">' + escapeHtml(getReadableLocationSummary(loc)) + ' · ' + escapeHtml(formatAccuracyLabel(loc)) + '</div>');
             const trailNote = trail.length >= 2
               ? ('<div style="font-size:12.5px;color:var(--amber);font-weight:700;margin-top:4px;">' + trail.length + ' verified movement updates recorded</div>')
               : '';
             locHtml = '<div style="margin-top:12px;">' +
-              '<div id="incidentMapStage" class="map-stage" style="height:220px;"></div>' +
+              '<div id="incidentMapStage" class="map-stage" style="height:240px;"></div>' +
               comparisonHtml +
               trailNote +
-              '<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">' + escapeHtml(formatRelativeAge(loc.capturedAtUtc)) + ' (' + escapeHtml(formatTime(loc.capturedAtUtc)) + ')</div>' +
+              '<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">' + escapeHtml(formatRelativeAge(loc.capturedAtUtc, ev.locationTrackingState !== 'live')) + ' (' + escapeHtml(formatTime(loc.capturedAtUtc)) + ')</div>' +
               '<div class="btn-row">' +
               '<button type="button" id="incidentCenterBtn" class="btn btn-secondary">Center on device</button>' +
               '<a class="btn btn-primary" target="_blank" rel="noopener" href="' + mapsHref + '">Open in Maps</a>' +
-              '</div></div>';
+              '</div>' +
+              '<details class="coords-disclosure"><summary>Coordinates</summary><div class="coords-mono">' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + '</div></details>' +
+              '</div>';
           }
           const receiptBadge = ev.receiptConfirmed
             ? '<span class="pill pill-ok" style="margin-left:8px;">Phone receipt confirmed</span>'
             : '<span class="pill pill-warn" style="margin-left:8px;">Awaiting phone push receipt</span>';
           els.eventDetailCard.innerHTML =
             '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">' +
-            '<span class="pill ' + (ev.isTest ? 'pill-warn' : 'pill-alert') + '">' + (ev.isTest ? 'Test alert' : 'Alarm triggered') + '</span>' +
+            '<span class="pill ' + kindMeta.cls + '">' + escapeHtml(kindMeta.label) + '</span>' +
             receiptBadge +
             '</div>' +
             '<h2 style="margin-top:10px;">' + escapeHtml(ev.hostDisplayName || state.hostDisplayName) + '</h2>' +
             '<p style="margin-bottom:6px;">' + escapeHtml(formatTime(ev.triggeredAtUtc)) + '</p>' +
-            '<p style="margin-bottom:8px;">' + escapeHtml(ev.triggerSummary || 'Alarm triggered') + '</p>' + locHtml;
+            '<p style="margin-bottom:8px;">' + escapeHtml(ev.triggerSummary || kindMeta.label) + '</p>' + locHtml;
           els.eventDetailCard.classList.remove('hidden');
 
           if (isValidCoord(ev.location) && !els.tabActivity.classList.contains('hidden')) {
@@ -2922,6 +3723,7 @@ self.addEventListener('notificationclick', (event) => {
             const badge = trackingBadgeMeta(ev.locationTrackingState);
             const ctrl = mountInteractiveMap(stage, 'incident', {
               primary: ev.location,
+              label: ev.hostDisplayName || state.hostDisplayName,
               alarmOrigin: isValidCoord(ev.alarmLocation) ? ev.alarmLocation : ev.location,
               trail: Array.isArray(ev.locationTrail) ? ev.locationTrail : [],
               badge: badge,
@@ -2929,7 +3731,7 @@ self.addEventListener('notificationclick', (event) => {
             });
             const centerBtn = document.getElementById('incidentCenterBtn');
             if (centerBtn && ctrl) {
-              centerBtn.onclick = () => ctrl.centerOnDevice();
+              centerBtn.onclick = () => ctrl.centerOnDevice(ev.location);
             }
           }
         }
@@ -2941,9 +3743,10 @@ self.addEventListener('notificationclick', (event) => {
         const div = document.createElement('div');
         div.className = 'event-item' + (ev.incidentId === selectedIncidentId ? ' selected' : '');
         const hasLoc = isValidCoord(ev.location);
+        const kindMeta = eventKindMeta(ev);
         div.innerHTML =
           '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;">' +
-          '<strong>' + (ev.isTest ? 'Test alert' : 'Alarm triggered') + ' · ' + escapeHtml(ev.hostDisplayName || state.hostDisplayName) + '</strong>' +
+          '<strong>' + escapeHtml(kindMeta.label) + ' · ' + escapeHtml(ev.hostDisplayName || state.hostDisplayName) + '</strong>' +
           '<span style="font-size:12px;color:var(--muted);">' + escapeHtml(formatTime(ev.triggeredAtUtc)) + '</span>' +
           '</div>' +
           '<div style="font-size:13.5px;color:var(--muted);">' + escapeHtml(ev.triggerSummary || '') + '</div>' +
@@ -2991,7 +3794,8 @@ self.addEventListener('notificationclick', (event) => {
       if (r.notificationsEnabled) return;
       if (r.notificationPermission !== 'granted') return;
       const title = ev.hostDisplayName || state.hostDisplayName || 'WATSafe Alert';
-      const body = ev.isTest ? 'Test alert — tap to view in Activity' : 'Alarm triggered — tap to view event';
+      const kindMeta = eventKindMeta(ev);
+      const body = kindMeta.label + ' — tap to view in Activity';
       if (swRegistration && swRegistration.showNotification) {
         swRegistration.showNotification(title, {
           body: body,
@@ -3065,8 +3869,12 @@ self.addEventListener('notificationclick', (event) => {
         consecutiveFailures = 0;
         if (data.hostDisplayName) state.hostDisplayName = data.hostDisplayName;
         if (data.vapidPublicKey) state.vapidPublicKey = data.vapidPublicKey;
+        if (data.deviceId) state.deviceId = data.deviceId;
         if (typeof data.backendPushRegistered === 'boolean') {
           state.backendPushRegistered = data.backendPushRegistered;
+        }
+        if (data.companionLocation && isValidCoord(data.companionLocation)) {
+          state.phoneLatestLocation = data.companionLocation;
         }
         const prevNeedsRenewal = state.pushSubscriptionNeedsRenewal;
         state.pushSubscriptionNeedsRenewal = Boolean(data.pushSubscriptionNeedsRenewal);
@@ -3120,13 +3928,29 @@ self.addEventListener('notificationclick', (event) => {
     }
 
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && state.companionToken) {
-        triggerImmediateReconnect();
+      if (document.visibilityState === 'visible') {
+        if (state.companionToken) {
+          triggerImmediateReconnect();
+        }
+        if (state.phoneLocationSharingEnabled && state.phoneLocationPermission === 'granted') {
+          startForegroundPhoneLocationWatch();
+        }
+      } else {
+        stopForegroundPhoneLocationWatch();
+        if (state.companionToken && state.phoneLocationSharingEnabled && isValidCoord(state.phoneLatestLocation)) {
+          const lastKnownSnap = Object.assign({}, state.phoneLatestLocation, { isLastKnown: true });
+          state.phoneLatestLocation = lastKnownSnap;
+          saveState();
+          uploadCompanionPhoneLocationSnapshot(lastKnownSnap, 'attached', true);
+        }
       }
     });
     window.addEventListener('pageshow', () => {
       if (state.companionToken) {
         triggerImmediateReconnect();
+        if (state.phoneLocationSharingEnabled && state.phoneLocationPermission === 'granted') {
+          startForegroundPhoneLocationWatch();
+        }
       }
     });
     window.addEventListener('online', () => {

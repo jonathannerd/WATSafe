@@ -76,6 +76,7 @@ class ConfigurableRemoteNotificationService
     this.persistToDisk = true,
     this.enableBackgroundPolling = false,
     this.pollInterval = const Duration(seconds: 2),
+    this.armedHeartbeatInterval = const Duration(seconds: 15),
     String? initialRelayEndpointUrl,
     List<PairedDeviceSummary>? initialDevices,
     this._httpTimeout = const Duration(seconds: 3),
@@ -99,6 +100,7 @@ class ConfigurableRemoteNotificationService
   bool get usesSystemStorageDirectory =>
       persistToDisk && _storageDirectory == null;
   final Duration pollInterval;
+  final Duration armedHeartbeatInterval;
   final Duration _httpTimeout;
   final DateTime Function() _clock;
 
@@ -118,8 +120,12 @@ class ConfigurableRemoteNotificationService
   String? _hostToken;
   String _hostDisplayName = 'My Laptop';
   String _hostProtectionState = 'off';
+  bool _hostArmed = false;
+  String? _hostArmedSessionId;
+  bool _pendingVerifiedDisarmSync = false;
   PairingCodeInvitation? _activePairingInvitation;
   Timer? _hostSyncTimer;
+  Timer? _armedHeartbeatTimer;
   Future<List<PairedDeviceSummary>>? _inFlightHostSync;
   int _deviceMutationEpoch = 0;
   int _consecutiveHostSyncFailures = 0;
@@ -614,6 +620,9 @@ class ConfigurableRemoteNotificationService
       }
       _activePairingInvitation = null;
       _consecutiveHostSyncFailures = 0;
+      if (!_hostArmed && _pendingVerifiedDisarmSync) {
+        _pendingVerifiedDisarmSync = false;
+      }
       _nextAllowedBackgroundHostSyncAt = null;
 
       if (normalized != null && _credentialsByOrigin.containsKey(normalized)) {
@@ -669,6 +678,93 @@ class ConfigurableRemoteNotificationService
         await syncPairedDevicesFromRelay();
       }
     }
+  }
+
+  @override
+  Future<void> syncHostArmedState({
+    required bool armed,
+    String? armedSessionId,
+    bool disarmVerified = false,
+    String? protectionState,
+  }) async {
+    await _ensureLoaded();
+    _hostArmed = armed;
+    _hostArmedSessionId = armed ? armedSessionId : null;
+    if (armed) {
+      _pendingVerifiedDisarmSync = false;
+    } else if (disarmVerified) {
+      _pendingVerifiedDisarmSync = true;
+    }
+    if (protectionState != null && protectionState.trim().isNotEmpty) {
+      _hostProtectionState = protectionState.trim();
+    } else {
+      _hostProtectionState = armed ? 'armed' : 'off';
+    }
+    _reconfigureArmedHeartbeatTimer();
+
+    final url = _relayEndpointUrl;
+    final token = _hostToken;
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      return;
+    }
+    // Allow up to 65s when arming over HTTPS so a spun-down Render Free service
+    // can complete its ~50-60s cold start and persist `hostArmed = true`.
+    final syncTimeout =
+        (armed && url.startsWith('https://') && _httpTimeout.inSeconds < 65)
+        ? const Duration(seconds: 65)
+        : _httpTimeout;
+    final res = await sendRelayJsonRequest(
+      method: 'POST',
+      url: '$url/v1/host/heartbeat',
+      headers: _bearerHeaders(token),
+      body: <String, Object?>{
+        'hostDisplayName': _hostDisplayName,
+        'hostDeviceId': _ensureHostInstallationId(),
+        'hostProtectionState': _hostProtectionState,
+        'hostArmed': _hostArmed,
+        'hostArmedSessionId': ?_hostArmedSessionId,
+        'disarmVerified': disarmVerified || _pendingVerifiedDisarmSync,
+      },
+      timeout: syncTimeout,
+    );
+    if (res.isSuccess && !_hostArmed && _pendingVerifiedDisarmSync) {
+      _pendingVerifiedDisarmSync = false;
+    }
+  }
+
+  void _reconfigureArmedHeartbeatTimer() {
+    _armedHeartbeatTimer?.cancel();
+    _armedHeartbeatTimer = null;
+    if (_disposed || !enableBackgroundPolling || !_hostArmed) {
+      return;
+    }
+    _armedHeartbeatTimer = Timer.periodic(armedHeartbeatInterval, (_) {
+      if (_disposed || !_hostArmed) {
+        _armedHeartbeatTimer?.cancel();
+        _armedHeartbeatTimer = null;
+        return;
+      }
+      final url = _relayEndpointUrl;
+      final token = _hostToken;
+      if (url == null || url.isEmpty || token == null || token.isEmpty) {
+        return;
+      }
+      unawaited(
+        sendRelayJsonRequest(
+          method: 'POST',
+          url: '$url/v1/host/heartbeat',
+          headers: _bearerHeaders(token),
+          body: <String, Object?>{
+            'hostDisplayName': _hostDisplayName,
+            'hostDeviceId': _ensureHostInstallationId(),
+            'hostProtectionState': _hostProtectionState,
+            'hostArmed': _hostArmed,
+            'hostArmedSessionId': ?_hostArmedSessionId,
+          },
+          timeout: _httpTimeout,
+        ),
+      );
+    });
   }
 
   /// Explicitly marks the laptop host offline on the relay (`POST /v1/host/offline`)
@@ -861,6 +957,9 @@ class ConfigurableRemoteNotificationService
         'hostDisplayName': _hostDisplayName,
         'hostDeviceId': _ensureHostInstallationId(),
         'hostProtectionState': _hostProtectionState,
+        'hostArmed': _hostArmed,
+        'hostArmedSessionId': ?_hostArmedSessionId,
+        if (!_hostArmed && _pendingVerifiedDisarmSync) 'disarmVerified': true,
       },
       timeout: _httpTimeout,
     );
@@ -883,6 +982,9 @@ class ConfigurableRemoteNotificationService
         response.isAuthenticWatSafe &&
         _isAuthenticErrorCode(response.body, 'UNAUTHORIZED_HOST_SESSION')) {
       _consecutiveHostSyncFailures = 0;
+      if (!_hostArmed && _pendingVerifiedDisarmSync) {
+        _pendingVerifiedDisarmSync = false;
+      }
       _nextAllowedBackgroundHostSyncAt = null;
       _hostToken = null;
       _hostPairingSessionId = null;
@@ -908,6 +1010,9 @@ class ConfigurableRemoteNotificationService
     }
 
     _consecutiveHostSyncFailures = 0;
+    if (!_hostArmed && _pendingVerifiedDisarmSync) {
+      _pendingVerifiedDisarmSync = false;
+    }
     final hasActiveInvite =
         _activePairingInvitation != null &&
         !_activePairingInvitation!.isExpiredAt(_clock());
@@ -1467,6 +1572,45 @@ class ConfigurableRemoteNotificationService
   }
 
   @override
+  Future<bool> reportCompanionLocation({
+    DeviceLocationSnapshot? location,
+    required bool sharingEnabled,
+    required IncidentLocationStatus locationStatus,
+  }) async {
+    await _ensureLoaded();
+    final token = _companionToken;
+    final url = _companionSession.relayEndpointUrl ?? _relayEndpointUrl;
+    if (token == null || token.isEmpty || url == null || url.isEmpty) {
+      return false;
+    }
+    if (!sharingEnabled) {
+      final res = await sendRelayJsonRequest(
+        method: 'DELETE',
+        url: '$url/v1/companion/location',
+        headers: _bearerHeaders(token),
+        timeout: _httpTimeout,
+      );
+      return res.isSuccess;
+    }
+    final res = await sendRelayJsonRequest(
+      method: 'POST',
+      url: '$url/v1/companion/location',
+      headers: _bearerHeaders(token),
+      body: <String, Object?>{
+        'sharingEnabled': true,
+        'locationStatus': locationStatus.name,
+        if (_companionSession.deviceId != null)
+          'deviceId': _companionSession.deviceId,
+        if (_companionSession.pairingSessionId != null)
+          'pairingSessionId': _companionSession.pairingSessionId,
+        if (location != null && location.isValid) 'location': location.toJson(),
+      },
+      timeout: _httpTimeout,
+    );
+    return res.isSuccess;
+  }
+
+  @override
   Future<List<AuthorizedDeviceLocationSummary>>
   fetchAuthorizedDevicesLocations() async {
     await _ensureLoaded();
@@ -1828,6 +1972,10 @@ class ConfigurableRemoteNotificationService
     ++_deviceMutationEpoch;
     _hostSyncTimer?.cancel();
     _hostSyncTimer = null;
+    _armedHeartbeatTimer?.cancel();
+    _armedHeartbeatTimer = null;
+    _hostArmed = false;
+    _hostArmedSessionId = null;
     _companionPollTimer?.cancel();
     _companionPollTimer = null;
 
@@ -1875,6 +2023,9 @@ class ConfigurableRemoteNotificationService
     _companionSession = CompanionSessionState.disconnected;
     _credentialsByOrigin.clear();
     _consecutiveHostSyncFailures = 0;
+    if (!_hostArmed && _pendingVerifiedDisarmSync) {
+      _pendingVerifiedDisarmSync = false;
+    }
     _consecutiveCompanionFailures = 0;
     _nextAllowedBackgroundHostSyncAt = null;
     if (defaultRelayUrl != null) {
@@ -1896,6 +2047,97 @@ class ConfigurableRemoteNotificationService
     }
     await _persistState();
     _onStateChanged?.call();
+  }
+
+  @override
+  Future<NotificationDispatchResult> sendUrgentPreSuspensionAlert(
+    IncidentRecord incident,
+  ) async {
+    await _ensureLoaded();
+    final hasUrl = _relayEndpointUrl != null && _relayEndpointUrl!.isNotEmpty;
+    final connectedDevices = _devices.where((d) => d.connected).toList();
+    if (!hasUrl && connectedDevices.isEmpty) {
+      return const NotificationDispatchResult(
+        delivered: false,
+        capabilityStatus: CapabilityStatus.notConfigured,
+        message: 'No phone paired',
+      );
+    }
+
+    final payload = <String, Object?>{
+      'incidentId': incident.id,
+      'sessionId': incident.sessionId,
+      'kind': incident.kind.name,
+      'detectorType': incident.detectorType?.id ?? 'unknown',
+      'triggeredAtUtc': incident.triggeredAt.toUtc().toIso8601String(),
+      'peakMotionScore': incident.peakMotionScore,
+      'triggerSummary': incident.triggerSummary,
+      'deviceName': ?incident.deviceName,
+      'isTest': incident.isTest,
+      'locationStatus': incident.locationStatus.name,
+      if (incident.location != null) 'location': incident.location!.toJson(),
+    };
+
+    if (hasUrl && _hostToken != null && _hostToken!.isNotEmpty) {
+      final postResult = await sendRelayJsonRequest(
+        method: 'POST',
+        url: '$_relayEndpointUrl/v1/incidents:report',
+        headers: _bearerHeaders(_hostToken!),
+        body: payload,
+        timeout: const Duration(milliseconds: 1400),
+      );
+      Map<String, Object?>? responseJson;
+      if (postResult.isSuccess && postResult.body.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(postResult.body);
+          if (decoded is Map) {
+            responseJson = Map<String, Object?>.from(decoded);
+          }
+        } catch (_) {}
+      }
+      final serverDelivered =
+          postResult.isSuccess && (responseJson?['delivered'] as bool? ?? true);
+      final relayRecorded =
+          postResult.isSuccess &&
+          (responseJson?['alertRecorded'] as bool? ?? true);
+      final pushAcceptedCount =
+          (responseJson?['pushAcceptedCount'] as num?)?.toInt() ??
+          (responseJson?['pushDispatchedCount'] as num?)?.toInt() ??
+          0;
+      final receiptConfirmed =
+          responseJson?['receiptConfirmed'] as bool? ?? false;
+      final deliveryStage =
+          responseJson?['deliveryStage'] as String? ??
+          (postResult.isSuccess ? 'companion_poll_queued' : 'network_error');
+      if (postResult.isSuccess) {
+        unawaited(_appendAlertToLocalOutbox(payload));
+      }
+      return NotificationDispatchResult(
+        delivered: serverDelivered,
+        capabilityStatus: postResult.isSuccess
+            ? CapabilityStatus.ready
+            : CapabilityStatus.degraded,
+        message: postResult.isSuccess
+            ? (pushAcceptedCount > 0
+                  ? 'Urgent pre-sleep alert accepted by push service'
+                  : 'Urgent pre-sleep alert recorded on relay')
+            : 'Pre-sleep alert could not reach relay before suspension; server watchdog will follow up',
+        relayRecorded: relayRecorded,
+        pushAccepted: pushAcceptedCount > 0,
+        receiptConfirmed: receiptConfirmed,
+        deliveryStage: deliveryStage,
+      );
+    }
+
+    if (!hasUrl && connectedDevices.isNotEmpty) {
+      return sendIncidentAlert(incident);
+    }
+
+    return const NotificationDispatchResult(
+      delivered: false,
+      capabilityStatus: CapabilityStatus.degraded,
+      message: 'No active host pairing session for urgent pre-sleep alert',
+    );
   }
 
   @override
@@ -2196,6 +2438,8 @@ class ConfigurableRemoteNotificationService
     _onStateChanged = null;
     _hostSyncTimer?.cancel();
     _hostSyncTimer = null;
+    _armedHeartbeatTimer?.cancel();
+    _armedHeartbeatTimer = null;
     _companionPollTimer?.cancel();
     _companionPollTimer = null;
     if (!_incomingAlertsController.isClosed) {
