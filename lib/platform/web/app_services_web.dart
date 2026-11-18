@@ -1,6 +1,7 @@
 import '../../core/models/detector_models.dart';
 import '../../services/relay_config.dart';
 import '../../services/remote_notification_service.dart';
+import '../../services/system_lifecycle_service.dart';
 import '../app_services.dart';
 import 'browser_alarm_audio.dart';
 import 'browser_camera_detector.dart';
@@ -28,5 +29,6 @@ AppServices createAppServices() {
     ),
     location: BrowserLocationService(),
     localNotifications: BrowserNotificationService(),
+    systemLifecycle: const NoOpSystemLifecycleService(),
   );
 }

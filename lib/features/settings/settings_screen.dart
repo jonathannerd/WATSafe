@@ -582,7 +582,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (value) =>
                   controller.updateSettings(alarmVolume: value),
             ),
-            const SizedBox(height: 8),
+            if (!controller.isCompanionMode &&
+                controller.isInputInteractionDetectionSupported) ...<Widget>[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 14),
+                child: Divider(height: 1),
+              ),
+              SwitchListTile(
+                key: const Key('alert_on_input_interaction_switch'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: WatSafeTheme.amberAccent,
+                title: const Text(
+                  'Alert on keyboard or trackpad interaction while armed',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: const Text(
+                  'Optional: starts an 8-second PIN grace window when keys or the trackpad are used, then triggers an alarm if not disarmed. Standard laptop hardware cannot detect touching the outer case without movement or key/trackpad input.',
+                  style: TextStyle(
+                    color: WatSafeTheme.warmMuted,
+                    fontSize: 12.5,
+                    height: 1.35,
+                  ),
+                ),
+                value: controller.settings.alertOnInputInteraction,
+                onChanged: isLockedByProtection
+                    ? null
+                    : controller.updateAlertOnInputInteraction,
+              ),
+            ],
+            const SizedBox(height: 12),
             Wrap(
               spacing: 10,
               runSpacing: 10,
@@ -759,19 +787,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Row(
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: <Widget>[
-                Icon(
-                  Icons.notifications_active_outlined,
-                  color: WatSafeTheme.amberAccent,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Alarm Noises & Custom Alarm Sounds',
-                    style: Theme.of(context).textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                  ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(
+                      Icons.notifications_active_outlined,
+                      color: WatSafeTheme.amberAccent,
+                    ),
+                    const SizedBox(width: 10),
+                    Flexible(
+                      child: Text(
+                        'Alarm Noises & Custom Alarm Sounds',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
                 ),
                 OutlinedButton.icon(
                   key: const Key('preview_alarm_sound_button'),
@@ -916,33 +953,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: TextField(
-                    key: const Key('custom_wav_path_input'),
-                    controller: _customSoundFilePathController,
-                    decoration: const InputDecoration(
-                      labelText: 'Custom .wav file path',
-                      hintText: r'C:\Sounds\my_alarm.wav',
-                    ),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final wavInput = TextField(
+                  key: const Key('custom_wav_path_input'),
+                  controller: _customSoundFilePathController,
+                  decoration: const InputDecoration(
+                    labelText: 'Custom .wav file path',
+                    hintText: r'C:\Sounds\my_alarm.wav',
                   ),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
+                );
+                final browseBtn = OutlinedButton.icon(
                   key: const Key('browse_custom_wav_button'),
                   onPressed: _handleBrowseCustomWav,
                   icon: const Icon(Icons.folder_open_rounded, size: 18),
                   label: const Text('Browse'),
-                ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
+                );
+                final importBtn = FilledButton.icon(
                   key: const Key('import_custom_wav_button'),
                   onPressed: _handleImportCustomWav,
                   icon: const Icon(Icons.file_upload_outlined, size: 18),
                   label: const Text('Add WAV'),
-                ),
-              ],
+                );
+                if (constraints.maxWidth < 460) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      wavInput,
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: <Widget>[browseBtn, importBtn],
+                      ),
+                    ],
+                  );
+                }
+                return Row(
+                  children: <Widget>[
+                    Expanded(child: wavInput),
+                    const SizedBox(width: 8),
+                    browseBtn,
+                    const SizedBox(width: 8),
+                    importBtn,
+                  ],
+                );
+              },
             ),
             const SizedBox(height: 16),
             Text(
@@ -956,13 +1012,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 8),
             DropdownButtonFormField<CustomAlarmWavePattern>(
               key: const Key('custom_pattern_dropdown'),
+              isExpanded: true,
               initialValue: _customWavePattern,
               decoration: const InputDecoration(labelText: 'Waveform Pattern'),
               items: CustomAlarmWavePattern.values
                   .map(
                     (pattern) => DropdownMenuItem<CustomAlarmWavePattern>(
                       value: pattern,
-                      child: Text(pattern.displayName),
+                      child: Text(
+                        pattern.displayName,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   )
                   .toList(growable: false),
@@ -978,7 +1038,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                const Text('Primary Tone Frequency'),
+                const Expanded(child: Text('Primary Tone Frequency')),
+                const SizedBox(width: 8),
                 Text(
                   '${_customPrimaryFreqHz.round()} Hz',
                   style: TextStyle(
@@ -1004,7 +1065,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                const Text('Secondary Tone Frequency'),
+                const Expanded(child: Text('Secondary Tone Frequency')),
+                const SizedBox(width: 8),
                 Text(
                   '${_customSecondaryFreqHz.round()} Hz',
                   style: TextStyle(
@@ -1030,7 +1092,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                const Text('Modulation / Pulse Speed'),
+                const Expanded(child: Text('Modulation / Pulse Speed')),
+                const SizedBox(width: 8),
                 Text(
                   '${_customModulationRateHz.toStringAsFixed(1)} Hz',
                   style: TextStyle(
@@ -1103,6 +1166,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 14),
+
+            if (controller.isCompanionMode) ...<Widget>[
+              SwitchListTile(
+                key: const Key('share_companion_phone_location_switch'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: WatSafeTheme.amberAccent,
+                title: const Text(
+                  'Share this phone’s location',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: const Text(
+                  'Off by default. Shares this phone’s location on the Devices map only while WATSafe is open in the foreground, and pauses in the background while keeping last-known coordinates labeled with their timestamp.',
+                  style: TextStyle(
+                    color: WatSafeTheme.warmMuted,
+                    fontSize: 13,
+                    height: 1.35,
+                  ),
+                ),
+                value: controller.settings.shareCompanionPhoneLocation,
+                onChanged: controller.updateShareCompanionPhoneLocation,
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Divider(height: 1),
+              ),
+            ],
 
             // Location sharing toggle + permission status
             SwitchListTile(
@@ -1201,7 +1290,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 4),
             const Text(
-              'Only your protected device’s location is shared with your paired devices while armed and for up to 15 minutes after an alarm. Reporting stops immediately when you disarm with your PIN. Laptop Wi-Fi positioning may be approximate, and sleeping or offline devices cannot report new updates. Stored location history is automatically deleted after 7 days.',
+              'Protected-device location is shared only with your paired session while armed and for up to 15 minutes after an alarm, stopping immediately on PIN disarm. Companion phone location is off by default and updates only in the foreground when explicitly enabled. Laptop Wi-Fi positioning may be approximate, and sleeping or offline devices cannot report new updates. Stored location history is automatically deleted after 7 days.',
               style: TextStyle(
                 color: WatSafeTheme.warmMuted,
                 fontSize: 12.5,

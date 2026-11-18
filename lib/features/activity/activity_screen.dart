@@ -160,6 +160,7 @@ class _ActivityEntry {
       IncidentKind.realDetectorTrigger => 'Alarm triggered',
       IncidentKind.manualTestAlarm => 'Test alert',
       IncidentKind.detectorFailureDuringMonitoring => 'Monitoring stopped',
+      IncidentKind.protectionInterrupted => 'Protection interrupted',
     };
     return _ActivityEntry(
       id: inc.id,
@@ -170,7 +171,9 @@ class _ActivityEntry {
       summary: inc.triggerSummary,
       triggeredAt: inc.triggeredAt,
       isTest: inc.kind == IncidentKind.manualTestAlarm,
-      isFailure: inc.kind == IncidentKind.detectorFailureDuringMonitoring,
+      isFailure:
+          inc.kind == IncidentKind.detectorFailureDuringMonitoring ||
+          inc.kind == IncidentKind.protectionInterrupted,
       location: inc.location,
       alarmTimeLocation: inc.effectiveAlarmLocation,
       locationTrail: inc.locationTrail,
@@ -181,10 +184,14 @@ class _ActivityEntry {
   }
 
   factory _ActivityEntry.fromCompanionAlert(CompanionAlertEvent alert) {
-    final isFailure = alert.kind == 'detectorFailureDuringMonitoring';
+    final isInterrupted = alert.kind == 'protectionInterrupted';
+    final isFailure =
+        alert.kind == 'detectorFailureDuringMonitoring' || isInterrupted;
     final title = alert.isTest
         ? 'Test alert'
-        : (isFailure ? 'Monitoring stopped' : 'Alarm triggered');
+        : (isInterrupted
+              ? 'Protection interrupted'
+              : (isFailure ? 'Monitoring stopped' : 'Alarm triggered'));
     return _ActivityEntry(
       id: alert.incidentId,
       deviceName:

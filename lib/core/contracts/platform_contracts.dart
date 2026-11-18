@@ -667,6 +667,10 @@ class AuthorizedDeviceLocationSummary {
     required this.platform,
     required this.online,
     required this.protectionStatusLabel,
+    this.connectionStatusLabel,
+    this.isCurrentRequester = false,
+    this.locationSharingEnabled = false,
+    this.readableLocationSummary,
     this.isAlarming = false,
     this.trackingState = 'unavailable',
     this.latestLocation,
@@ -686,6 +690,10 @@ class AuthorizedDeviceLocationSummary {
   final String platform;
   final bool online;
   final String protectionStatusLabel;
+  final String? connectionStatusLabel;
+  final bool isCurrentRequester;
+  final bool locationSharingEnabled;
+  final String? readableLocationSummary;
   final bool isAlarming;
 
   /// `'live'`, `'reconnecting'`, `'last_known'`, or `'unavailable'`.
@@ -699,6 +707,14 @@ class AuthorizedDeviceLocationSummary {
   final DateTime? lastSeenAt;
 
   bool get isProtectedDevice => role == 'protected_device';
+
+  String get effectiveConnectionLabel {
+    final explicit = connectionStatusLabel?.trim();
+    if (explicit != null && explicit.isNotEmpty) {
+      return explicit;
+    }
+    return online ? 'Online' : 'Offline';
+  }
 
   bool get hasUsableLocation =>
       latestLocation != null && latestLocation!.isValid;
@@ -737,7 +753,12 @@ class AuthorizedDeviceLocationSummary {
       role: json['role'] as String? ?? 'protected_device',
       platform: json['platform'] as String? ?? 'Device',
       online: json['online'] as bool? ?? false,
-      protectionStatusLabel: json['protectionStatusLabel'] as String? ?? 'Off',
+      protectionStatusLabel:
+          json['protectionStatusLabel'] as String? ?? 'Protection off',
+      connectionStatusLabel: json['connectionStatusLabel'] as String?,
+      isCurrentRequester: json['isCurrentRequester'] as bool? ?? false,
+      locationSharingEnabled: json['locationSharingEnabled'] as bool? ?? false,
+      readableLocationSummary: json['readableLocationSummary'] as String?,
       isAlarming: json['isAlarming'] as bool? ?? false,
       trackingState: json['trackingState'] as String? ?? 'unavailable',
       latestLocation: parsedLatest,
@@ -963,6 +984,31 @@ abstract class MutableRemoteNotificationAdapter
     required String protectionState,
     String? activeIncidentId,
     bool isBoundedAlarmTracking = false,
+  });
+
+  /// Synchronizes the protected laptop's armed state and current protection
+  /// session ID with the relay so the backend heartbeat watchdog monitors
+  /// armed sessions independently and clears cleanly only on verified PIN disarm.
+  Future<void> syncHostArmedState({
+    required bool armed,
+    String? armedSessionId,
+    bool disarmVerified = false,
+    String? protectionState,
+  });
+
+  /// Fast single-shot incident dispatch used right before OS sleep, lid close,
+  /// shutdown, or application termination when execution time is bounded.
+  Future<NotificationDispatchResult> sendUrgentPreSuspensionAlert(
+    IncidentRecord incident,
+  );
+
+  /// Uploads or clears this companion phone's own explicit foreground location
+  /// (`POST /v1/companion/location` / `DELETE /v1/companion/location`), never
+  /// modifying the protected laptop's location record.
+  Future<bool> reportCompanionLocation({
+    DeviceLocationSnapshot? location,
+    required bool sharingEnabled,
+    required IncidentLocationStatus locationStatus,
   });
 
   Future<List<AuthorizedDeviceLocationSummary>>

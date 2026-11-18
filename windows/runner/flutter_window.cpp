@@ -701,7 +701,7 @@ class WindowsAccelerometerBridge {
 
   ~WindowsAccelerometerBridge() { StopCapture(); }
 
-  void OnSystemSuspend() {
+  void OnSystemSuspend(bool protection_armed) {
     std::string session_id;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
@@ -712,17 +712,19 @@ class WindowsAccelerometerBridge {
     }
     if (!session_id.empty()) {
       StopCapture();
-      EmitEvent(flutter::EncodableMap{
-          {flutter::EncodableValue("sessionId"),
-           flutter::EncodableValue(session_id)},
-          {flutter::EncodableValue("eventType"),
-           flutter::EncodableValue("lifecyclePaused")},
-          {flutter::EncodableValue("summary"),
-           flutter::EncodableValue(
-               "Windows system entering sleep; accelerometer monitoring paused.")},
-          {flutter::EncodableValue("timestampMs"),
-           flutter::EncodableValue(CurrentTimeMillis())},
-      });
+      if (!protection_armed) {
+        EmitEvent(flutter::EncodableMap{
+            {flutter::EncodableValue("sessionId"),
+             flutter::EncodableValue(session_id)},
+            {flutter::EncodableValue("eventType"),
+             flutter::EncodableValue("lifecyclePaused")},
+            {flutter::EncodableValue("summary"),
+             flutter::EncodableValue(
+                 "Windows system entering sleep; accelerometer monitoring paused.")},
+            {flutter::EncodableValue("timestampMs"),
+             flutter::EncodableValue(CurrentTimeMillis())},
+        });
+      }
     }
   }
 
@@ -1945,7 +1947,7 @@ class WindowsCameraMotionBridge {
     }
   }
 
-  void OnSystemSuspend() {
+  void OnSystemSuspend(bool protection_armed) {
     std::string session_id;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
@@ -1956,17 +1958,19 @@ class WindowsCameraMotionBridge {
     }
     if (!session_id.empty()) {
       StopCapture();
-      EmitEvent(flutter::EncodableMap{
-          {flutter::EncodableValue("sessionId"),
-           flutter::EncodableValue(session_id)},
-          {flutter::EncodableValue("eventType"),
-           flutter::EncodableValue("lifecyclePaused")},
-          {flutter::EncodableValue("summary"),
-           flutter::EncodableValue(
-               "Windows system entering sleep; webcam capture paused.")},
-          {flutter::EncodableValue("timestampMs"),
-           flutter::EncodableValue(CurrentTimeMillis())},
-      });
+      if (!protection_armed) {
+        EmitEvent(flutter::EncodableMap{
+            {flutter::EncodableValue("sessionId"),
+             flutter::EncodableValue(session_id)},
+            {flutter::EncodableValue("eventType"),
+             flutter::EncodableValue("lifecyclePaused")},
+            {flutter::EncodableValue("summary"),
+             flutter::EncodableValue(
+                 "Windows system entering sleep; webcam capture paused.")},
+            {flutter::EncodableValue("timestampMs"),
+             flutter::EncodableValue(CurrentTimeMillis())},
+        });
+      }
     }
   }
 
@@ -3089,6 +3093,298 @@ class WindowsCameraMotionBridge {
   std::thread worker_thread_;
 };
 
+// ============================================================================
+// 5. Windows System Lifecycle, Lid Switch, Power & Non-Invasive HID Bridge
+//    (`dev.watsafe/system_lifecycle` & `dev.watsafe/system_lifecycle_events`)
+// ============================================================================
+
+class WindowsSystemLifecycleBridge {
+ public:
+  WindowsSystemLifecycleBridge(HWND hwnd,
+                               flutter::BinaryMessenger* messenger,
+                               std::shared_ptr<MainThreadDispatcher> dispatcher)
+      : hwnd_(hwnd), dispatcher_(std::move(dispatcher)) {
+    method_channel_ =
+        std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+            messenger, "dev.watsafe/system_lifecycle",
+            &flutter::StandardMethodCodec::GetInstance());
+    event_channel_ =
+        std::make_unique<flutter::EventChannel<flutter::EncodableValue>>(
+            messenger, "dev.watsafe/system_lifecycle_events",
+            &flutter::StandardMethodCodec::GetInstance());
+
+    method_channel_->SetMethodCallHandler(
+        [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+               std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                   result) { HandleMethodCall(call, std::move(result)); });
+
+    auto handler = std::make_unique<
+        flutter::StreamHandlerFunctions<flutter::EncodableValue>>(
+        [this](const flutter::EncodableValue*,
+               std::unique_ptr<flutter::EventSink<flutter::EncodableValue>>&&
+                   events)
+            -> std::unique_ptr<flutter::StreamHandlerError<
+                flutter::EncodableValue>> {
+          event_sink_ = std::move(events);
+          return nullptr;
+        },
+        [this](const flutter::EncodableValue*)
+            -> std::unique_ptr<flutter::StreamHandlerError<
+                flutter::EncodableValue>> {
+          event_sink_.reset();
+          return nullptr;
+        });
+    event_channel_->SetStreamHandler(std::move(handler));
+
+    if (hwnd_ != nullptr) {
+      lid_power_notify_ = ::RegisterPowerSettingNotification(
+          hwnd_, &GUID_LIDSWITCH_STATE_CHANGE, DEVICE_NOTIFY_WINDOW_HANDLE);
+    }
+  }
+
+  ~WindowsSystemLifecycleBridge() {
+    StopInputPolling();
+    if (lid_power_notify_ != nullptr) {
+      ::UnregisterPowerSettingNotification(lid_power_notify_);
+      lid_power_notify_ = nullptr;
+    }
+  }
+
+  bool IsProtectionArmed() const { return armed_.load(); }
+
+  void OnPowerBroadcast(WPARAM wparam, LPARAM lparam) {
+    if (wparam == PBT_POWERSETTINGCHANGE && lparam != 0) {
+      const auto* setting =
+          reinterpret_cast<const POWERBROADCAST_SETTING*>(lparam);
+      if (::IsEqualGUID(setting->PowerSetting, GUID_LIDSWITCH_STATE_CHANGE) &&
+          setting->DataLength >= sizeof(DWORD)) {
+        const DWORD lid_open =
+            *reinterpret_cast<const DWORD*>(setting->Data);  // 0=closed, 1=open
+        const bool closed = (lid_open == 0);
+        has_observed_lid_switch_.store(true);
+        const int prev = last_lid_state_.exchange(closed ? 0 : 1);
+        if (prev == -1) {
+          // Initial registration broadcast reflects current state; do not fire a transition.
+          return;
+        }
+        if (prev != (closed ? 0 : 1)) {
+          if (closed) {
+            last_lid_close_ms_.store(CurrentTimeMillis());
+            EmitLifecycleEvent(
+                "lidClosed",
+                "Protection interrupted — laptop lid closed while armed.",
+                true);
+          } else {
+            EmitLifecycleEvent("lidOpened", "Laptop lid opened.", false);
+          }
+        }
+      }
+      return;
+    }
+
+    if (wparam == PBT_APMSUSPEND) {
+      if (armed_.load()) {
+        const bool recently_closed_lid =
+            (last_lid_state_.load() == 0) &&
+            (CurrentTimeMillis() - last_lid_close_ms_.load() > 1800);
+        const bool known_closed = (last_lid_state_.load() == 0);
+        if (CurrentTimeMillis() - last_lid_close_ms_.load() >= 1800) {
+          EmitLifecycleEvent(
+              recently_closed_lid ? "lidClosed" : "systemWillSleep",
+              known_closed
+                  ? "Protection interrupted — laptop lid closed while armed."
+                  : "Protection interrupted — Windows PC is entering sleep while armed.",
+              has_observed_lid_switch_.load()
+                  ? std::optional<bool>(known_closed)
+                  : std::nullopt);
+        }
+      }
+      return;
+    }
+
+    if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND) {
+      EmitLifecycleEvent(
+          "systemDidWake", "Windows PC resumed from sleep.",
+          has_observed_lid_switch_.load()
+              ? std::optional<bool>(last_lid_state_.load() == 0)
+              : std::nullopt);
+    }
+  }
+
+  void OnSystemShutdownOrLogoff() {
+    if (armed_.load()) {
+      EmitLifecycleEvent(
+          "systemWillPowerOff",
+          "Protection interrupted — Windows shutdown or sign-out started while armed.",
+          std::nullopt);
+    }
+  }
+
+  void OnAppCloseAttempted() {
+    if (armed_.load()) {
+      EmitLifecycleEvent(
+          "appWillTerminate",
+          "Protection interrupted — WATSafe close requested while armed.",
+          std::nullopt);
+    }
+  }
+
+ private:
+  static bool GetBoolArg(const flutter::EncodableMap* map, const char* key,
+                         bool fallback) {
+    if (map == nullptr) {
+      return fallback;
+    }
+    auto it = map->find(flutter::EncodableValue(key));
+    if (it == map->end()) {
+      return fallback;
+    }
+    if (const auto* b = std::get_if<bool>(&it->second)) {
+      return *b;
+    }
+    return fallback;
+  }
+
+  void HandleMethodCall(
+      const flutter::MethodCall<flutter::EncodableValue>& call,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+    const auto* args = GetArgsMap(call.arguments());
+    const std::string& method = call.method_name();
+
+    if (method == "getCapabilities") {
+      result->Success(flutter::EncodableValue(flutter::EncodableMap{
+          {flutter::EncodableValue("isSupported"),
+           flutter::EncodableValue(true)},
+          {flutter::EncodableValue("supportsClamshellDetection"),
+           flutter::EncodableValue(lid_power_notify_ != nullptr)},
+          {flutter::EncodableValue("supportsSleepWakeNotifications"),
+           flutter::EncodableValue(true)},
+          {flutter::EncodableValue("supportsShutdownLogoutNotifications"),
+           flutter::EncodableValue(true)},
+          {flutter::EncodableValue("supportsQuitInterception"),
+           flutter::EncodableValue(true)},
+          {flutter::EncodableValue("supportsInputInteractionDetection"),
+           flutter::EncodableValue(true)},
+          {flutter::EncodableValue("platformLabel"),
+           flutter::EncodableValue("Windows")},
+      }));
+      return;
+    }
+
+    if (method == "syncProtectionState") {
+      const bool next_armed = GetBoolArg(args, "armed", false);
+      const bool next_input =
+          next_armed && GetBoolArg(args, "monitorInputInteraction", false);
+      if (next_armed && !armed_.load()) {
+        armed_since_ms_.store(CurrentTimeMillis());
+      }
+      armed_.store(next_armed);
+      if (next_input) {
+        StartInputPolling();
+      } else {
+        StopInputPolling();
+      }
+      result->Success();
+      return;
+    }
+
+    if (method == "completeUrgentFlush") {
+      result->Success();
+      return;
+    }
+
+    result->NotImplemented();
+  }
+
+  void StartInputPolling() {
+    if (polling_input_.exchange(true)) {
+      return;
+    }
+    if (input_thread_.joinable()) {
+      input_thread_.join();
+    }
+    input_thread_ = std::thread([this]() {
+      DWORD baseline_tick = 0;
+      LASTINPUTINFO initial_lii{};
+      initial_lii.cbSize = sizeof(LASTINPUTINFO);
+      if (::GetLastInputInfo(&initial_lii)) {
+        baseline_tick = initial_lii.dwTime;
+      }
+      int64_t last_emit_ms = 0;
+      while (polling_input_.load() && armed_.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(550));
+        if (!polling_input_.load() || !armed_.load()) {
+          break;
+        }
+        const int64_t now_ms = CurrentTimeMillis();
+        if (now_ms - armed_since_ms_.load() < 1600) {
+          LASTINPUTINFO settle_lii{};
+          settle_lii.cbSize = sizeof(LASTINPUTINFO);
+          if (::GetLastInputInfo(&settle_lii)) {
+            baseline_tick = settle_lii.dwTime;
+          }
+          continue;
+        }
+        LASTINPUTINFO lii{};
+        lii.cbSize = sizeof(LASTINPUTINFO);
+        if (::GetLastInputInfo(&lii) && lii.dwTime != baseline_tick) {
+          baseline_tick = lii.dwTime;
+          if (now_ms - last_emit_ms >= 4000) {
+            last_emit_ms = now_ms;
+            EmitLifecycleEvent(
+                "userInputDetected",
+                "Keyboard or trackpad interaction detected while armed.",
+                std::nullopt);
+          }
+        }
+      }
+    });
+  }
+
+  void StopInputPolling() {
+    polling_input_.store(false);
+    if (input_thread_.joinable()) {
+      input_thread_.join();
+    }
+  }
+
+  void EmitLifecycleEvent(const std::string& type, const std::string& summary,
+                          std::optional<bool> clamshell_closed) {
+    flutter::EncodableMap payload{
+        {flutter::EncodableValue("type"), flutter::EncodableValue(type)},
+        {flutter::EncodableValue("summary"), flutter::EncodableValue(summary)},
+        {flutter::EncodableValue("timestampMs"),
+         flutter::EncodableValue(CurrentTimeMillis())},
+    };
+    if (clamshell_closed.has_value()) {
+      payload[flutter::EncodableValue("clamshellClosed")] =
+          flutter::EncodableValue(*clamshell_closed);
+    }
+    dispatcher_->Post([this, payload = std::move(payload)]() {
+      if (event_sink_) {
+        event_sink_->Success(flutter::EncodableValue(payload));
+      }
+    });
+  }
+
+  HWND hwnd_ = nullptr;
+  HPOWERNOTIFY lid_power_notify_ = nullptr;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      method_channel_;
+  std::unique_ptr<flutter::EventChannel<flutter::EncodableValue>>
+      event_channel_;
+  std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> event_sink_;
+  std::shared_ptr<MainThreadDispatcher> dispatcher_;
+
+  std::atomic<bool> armed_{false};
+  std::atomic<bool> has_observed_lid_switch_{false};
+  std::atomic<int> last_lid_state_{-1};
+  std::atomic<int64_t> last_lid_close_ms_{0};
+  std::atomic<int64_t> armed_since_ms_{0};
+  std::atomic<bool> polling_input_{false};
+  std::thread input_thread_;
+};
+
 }  // namespace
 
 // ============================================================================
@@ -3102,16 +3398,23 @@ class WindowsPlatformBridges {
         audio_bridge_(messenger, dispatcher_),
         secure_storage_bridge_(messenger),
         accelerometer_bridge_(messenger, dispatcher_),
-        camera_bridge_(messenger, dispatcher_) {}
+        camera_bridge_(messenger, dispatcher_),
+        lifecycle_bridge_(hwnd, messenger, dispatcher_) {}
 
   ~WindowsPlatformBridges() { dispatcher_->Shutdown(); }
 
   void DrainMainThreadTasks() { dispatcher_->DrainTasks(); }
 
-  void OnPowerBroadcast(WPARAM wparam) {
+  bool IsProtectionArmed() const {
+    return lifecycle_bridge_.IsProtectionArmed();
+  }
+
+  void OnPowerBroadcast(WPARAM wparam, LPARAM lparam) {
+    lifecycle_bridge_.OnPowerBroadcast(wparam, lparam);
     if (wparam == PBT_APMSUSPEND) {
-      accelerometer_bridge_.OnSystemSuspend();
-      camera_bridge_.OnSystemSuspend();
+      const bool armed = lifecycle_bridge_.IsProtectionArmed();
+      accelerometer_bridge_.OnSystemSuspend(armed);
+      camera_bridge_.OnSystemSuspend(armed);
     } else if (wparam == PBT_APMRESUMEAUTOMATIC ||
                wparam == PBT_APMRESUMESUSPEND) {
       accelerometer_bridge_.OnSystemResume();
@@ -3119,12 +3422,19 @@ class WindowsPlatformBridges {
     }
   }
 
+  void OnSystemShutdownOrLogoff() {
+    lifecycle_bridge_.OnSystemShutdownOrLogoff();
+  }
+
+  void OnAppCloseAttempted() { lifecycle_bridge_.OnAppCloseAttempted(); }
+
  private:
   std::shared_ptr<MainThreadDispatcher> dispatcher_;
   WindowsAudioAlarmBridge audio_bridge_;
   WindowsSecureStorageBridge secure_storage_bridge_;
   WindowsAccelerometerBridge accelerometer_bridge_;
   WindowsCameraMotionBridge camera_bridge_;
+  WindowsSystemLifecycleBridge lifecycle_bridge_;
 };
 
 // ============================================================================
@@ -3195,7 +3505,16 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     return 0;
   }
   if (message == WM_POWERBROADCAST && bridges_) {
-    bridges_->OnPowerBroadcast(wparam);
+    bridges_->OnPowerBroadcast(wparam, lparam);
+  }
+  if ((message == WM_QUERYENDSESSION || message == WM_ENDSESSION) && bridges_) {
+    bridges_->OnSystemShutdownOrLogoff();
+  }
+  if (message == WM_CLOSE && bridges_ && bridges_->IsProtectionArmed()) {
+    // Minimize instead of silently terminating an armed session, and notify Dart.
+    bridges_->OnAppCloseAttempted();
+    ::ShowWindow(hwnd, SW_MINIMIZE);
+    return 0;
   }
 
   // Give Flutter, including plugins, an opportunity to handle window messages.

@@ -51,7 +51,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
   DetectorType get detectorType => DetectorType.macosCameraSceneMotion;
 
   @override
-  bool get supportsBackgroundMonitoring => false;
+  bool get supportsBackgroundMonitoring => _isMacOS;
 
   @override
   Stream<DetectorEvent> get events => _eventsController.stream;

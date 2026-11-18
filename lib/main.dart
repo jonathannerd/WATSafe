@@ -35,6 +35,7 @@ Future<void> main() async {
     notificationAdapter: services.notifications,
     locationAdapter: services.location,
     localNotificationAdapter: services.localNotifications,
+    systemLifecycleAdapter: services.systemLifecycle,
   );
 
   String? initialPairingPayload;

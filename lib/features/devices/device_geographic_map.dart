@@ -17,6 +17,8 @@ class DeviceMapMarker {
     required this.id,
     required this.label,
     required this.location,
+    this.isProtectedDevice = true,
+    this.isCurrentRequester = false,
     this.isSelected = false,
     this.isAlarming = false,
     this.isOnline = true,
@@ -25,20 +27,77 @@ class DeviceMapMarker {
   final String id;
   final String label;
   final DeviceLocationSnapshot location;
+  final bool isProtectedDevice;
+  final bool isCurrentRequester;
   final bool isSelected;
   final bool isAlarming;
   final bool isOnline;
+
+  String get effectiveLabel {
+    if (isCurrentRequester && !label.toLowerCase().contains('this phone')) {
+      return '$label · This phone';
+    }
+    return label;
+  }
+}
+
+class _MarkerPixelOffset {
+  const _MarkerPixelOffset({required this.offset, required this.coLocated});
+
+  final Offset offset;
+  final bool coLocated;
+}
+
+List<_MarkerPixelOffset> _computeMarkerPixelOffsets(
+  List<DeviceMapMarker> markers,
+) {
+  final assigned = List<bool>.filled(markers.length, false);
+  final result = List<_MarkerPixelOffset>.filled(
+    markers.length,
+    const _MarkerPixelOffset(offset: Offset.zero, coLocated: false),
+  );
+
+  for (var i = 0; i < markers.length; i++) {
+    if (assigned[i]) {
+      continue;
+    }
+    final group = <int>[i];
+    for (var j = i + 1; j < markers.length; j++) {
+      if (markers[i].location.distanceMetersTo(markers[j].location) < 28.0) {
+        group.add(j);
+      }
+    }
+    if (group.length >= 2) {
+      final radius = group.length == 2 ? 22.0 : 26.0;
+      for (var k = 0; k < group.length; k++) {
+        final idx = group[k];
+        final angle = -math.pi / 6.0 + (k * 2.0 * math.pi) / group.length;
+        result[idx] = _MarkerPixelOffset(
+          offset: Offset(
+            math.cos(angle) * radius,
+            math.sin(angle) * radius * 0.65,
+          ),
+          coLocated: true,
+        );
+        assigned[idx] = true;
+      }
+    } else {
+      assigned[i] = true;
+    }
+  }
+  return result;
 }
 
 /// Interactive Web Mercator geographic map widget for viewing authorized
 /// devices, accuracy circles, alarm-time vs latest markers, and filtered
 /// post-alarm location trails.
 ///
-/// Uses license-compliant OpenStreetMap interactive tiles (`$0`, max zoom 18,
-/// explicit `User-Agent` header, visible `© OpenStreetMap contributors`
-/// attribution) and degrades gracefully to a projected Web Mercator coordinate
-/// graticule + meter scale bar when offline or in widget tests. Never plots
-/// missing or invalid `(0, 0)` coordinates.
+/// Uses license-compliant natural light OpenStreetMap interactive tiles (`$0`,
+/// max zoom 18, explicit `User-Agent` header, visible
+/// `© OpenStreetMap contributors` attribution) and degrades gracefully to a
+/// crisp light street-styled Web Mercator coordinate basemap + meter scale bar
+/// when offline or in widget tests. Never plots missing or invalid `(0, 0)`
+/// coordinates.
 class DeviceGeographicMap extends StatefulWidget {
   const DeviceGeographicMap({
     super.key,
@@ -50,7 +109,8 @@ class DeviceGeographicMap extends StatefulWidget {
     this.onSelectMarker,
     this.trackingStateLabel,
     this.trackingStateTone,
-    this.height = 260,
+    this.secondaryBadgeLabel,
+    this.height = 280,
     this.enableNetworkTiles,
     this.centerButtonKey = const Key('center_on_device_button'),
     this.showCenterButtonOverlay = true,
@@ -64,6 +124,7 @@ class DeviceGeographicMap extends StatefulWidget {
   final ValueChanged<String>? onSelectMarker;
   final String? trackingStateLabel;
   final Color? trackingStateTone;
+  final String? secondaryBadgeLabel;
   final double height;
   final bool? enableNetworkTiles;
   final Key centerButtonKey;
@@ -78,6 +139,11 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
   late double _centerLon;
   late double _zoom;
   Offset? _lastFocalPoint;
+  bool _userMovedViewport = false;
+  String _lastMarkerSignature = '';
+
+  List<DeviceMapMarker> get _validMarkers =>
+      widget.markers.where((m) => m.location.isValid).toList(growable: false);
 
   DeviceLocationSnapshot? get _focusLocation {
     if (widget.primaryLocation != null && widget.primaryLocation!.isValid) {
@@ -107,6 +173,51 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
   @override
   void initState() {
     super.initState();
+    _applyInitialOrMultiDeviceBounds();
+  }
+
+  void _applyInitialOrMultiDeviceBounds() {
+    final valid = _validMarkers;
+    _lastMarkerSignature = valid.map((m) => m.id).join('|');
+    if (valid.length >= 2) {
+      var minLat = 90.0;
+      var maxLat = -90.0;
+      var minLon = 180.0;
+      var maxLon = -180.0;
+      for (final m in valid) {
+        minLat = math.min(minLat, m.location.latitude);
+        maxLat = math.max(maxLat, m.location.latitude);
+        minLon = math.min(minLon, m.location.longitude);
+        maxLon = math.max(maxLon, m.location.longitude);
+      }
+      _centerLat = (minLat + maxLat) / 2.0;
+      _centerLon = (minLon + maxLon) / 2.0;
+      final spanMeters =
+          DeviceLocationSnapshot(
+            latitude: minLat,
+            longitude: minLon,
+            capturedAt: valid.first.location.capturedAt,
+          ).distanceMetersTo(
+            DeviceLocationSnapshot(
+              latitude: maxLat,
+              longitude: maxLon,
+              capturedAt: valid.first.location.capturedAt,
+            ),
+          );
+      if (spanMeters < 60) {
+        _zoom = 16.0;
+      } else if (spanMeters < 350) {
+        _zoom = 15.0;
+      } else if (spanMeters < 1500) {
+        _zoom = 13.6;
+      } else if (spanMeters < 8000) {
+        _zoom = 11.8;
+      } else {
+        _zoom = 9.8;
+      }
+      return;
+    }
+
     final initial = _focusLocation;
     _centerLat = initial?.latitude ?? 43.4723;
     _centerLon = initial?.longitude ?? -80.5449;
@@ -116,20 +227,32 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
   @override
   void didUpdateWidget(covariant DeviceGeographicMap oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final oldFocus =
-        oldWidget.primaryLocation ??
-        oldWidget.markers
-            .where((m) => m.id == oldWidget.selectedMarkerId)
-            .map((m) => m.location)
-            .firstOrNull;
-    final nextFocus = _focusLocation;
-    if (nextFocus != null &&
-        (oldFocus == null ||
-            oldWidget.selectedMarkerId != widget.selectedMarkerId ||
-            nextFocus.differsMeaningfullyFrom(oldFocus))) {
-      _centerLat = nextFocus.latitude;
-      _centerLon = nextFocus.longitude;
-      _zoom = _initialZoomFor(nextFocus);
+    final nextSig = _validMarkers.map((m) => m.id).join('|');
+    if (oldWidget.selectedMarkerId != widget.selectedMarkerId) {
+      final selectedTarget = _focusLocation;
+      if (selectedTarget != null) {
+        _centerLat = selectedTarget.latitude;
+        _centerLon = selectedTarget.longitude;
+        _zoom = math.max(_zoom, _initialZoomFor(selectedTarget));
+      }
+      _lastMarkerSignature = nextSig;
+      return;
+    }
+
+    if (!_userMovedViewport && nextSig != _lastMarkerSignature) {
+      _applyInitialOrMultiDeviceBounds();
+      return;
+    }
+
+    if (!_userMovedViewport && widget.markers.isEmpty) {
+      final oldFocus = oldWidget.primaryLocation;
+      final nextFocus = _focusLocation;
+      if (nextFocus != null &&
+          (oldFocus == null || nextFocus.differsMeaningfullyFrom(oldFocus))) {
+        _centerLat = nextFocus.latitude;
+        _centerLon = nextFocus.longitude;
+        _zoom = _initialZoomFor(nextFocus);
+      }
     }
   }
 
@@ -139,24 +262,27 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
     }
     final acc = loc.accuracyMeters ?? (loc.isApproximate ? 180.0 : 25.0);
     if (acc >= 800) {
-      return 12.5;
+      return 12.8;
     }
     if (acc >= 250) {
-      return 14.0;
+      return 14.2;
     }
     if (acc >= 80) {
-      return 15.0;
+      return 15.2;
     }
     return 16.0;
   }
 
   /// Re-centers the map viewport onto the selected or primary device location.
-  void centerOnDevice() {
-    final target = _focusLocation;
+  void centerOnDevice([DeviceLocationSnapshot? explicitTarget]) {
+    final target = (explicitTarget != null && explicitTarget.isValid)
+        ? explicitTarget
+        : _focusLocation;
     if (target == null) {
       return;
     }
     setState(() {
+      _userMovedViewport = false;
       _centerLat = target.latitude;
       _centerLon = target.longitude;
       _zoom = _initialZoomFor(target);
@@ -165,6 +291,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
 
   void _adjustZoom(double delta) {
     setState(() {
+      _userMovedViewport = true;
       _zoom = (_zoom + delta).clamp(3.0, 18.0);
     });
   }
@@ -181,6 +308,9 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
   }
 
   void _handlePanDelta(Offset delta) {
+    if (delta.distanceSquared < 0.25) {
+      return;
+    }
     final scale = 256.0 * math.pow(2.0, _zoom);
     final centerWorld = _WebMercator.project(_centerLat, _centerLon, scale);
     final nextWorld = Offset(
@@ -189,6 +319,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
     );
     final unprojected = _WebMercator.unproject(nextWorld, scale);
     setState(() {
+      _userMovedViewport = true;
       _centerLat = unprojected.$1.clamp(-85.0, 85.0);
       _centerLon = unprojected.$2;
     });
@@ -201,9 +332,11 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
       return Container(
         height: widget.height,
         decoration: BoxDecoration(
-          color: WatSafeTheme.charcoalElevated,
+          color: const Color(0xFFEEF2F6),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: WatSafeTheme.charcoalBorder),
+          border: Border.all(
+            color: const Color(0xFF94A3B8).withValues(alpha: 0.45),
+          ),
         ),
         alignment: Alignment.center,
         padding: const EdgeInsets.all(20),
@@ -212,22 +345,22 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
           children: <Widget>[
             Icon(
               Icons.location_off_outlined,
-              color: WatSafeTheme.warmMuted,
+              color: Color(0xFF475569),
               size: 28,
             ),
             SizedBox(height: 8),
             Text(
               'Location unavailable',
               style: TextStyle(
-                fontWeight: FontWeight.w700,
-                color: WatSafeTheme.warmOffWhite,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF0F172A),
               ),
             ),
             SizedBox(height: 4),
             Text(
               'No valid coordinates have been reported for this device yet.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 12.5, color: WatSafeTheme.warmMuted),
+              style: TextStyle(fontSize: 12.5, color: Color(0xFF475569)),
             ),
           ],
         ),
@@ -251,9 +384,11 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
         key: const Key('device_geographic_map'),
         height: widget.height,
         decoration: BoxDecoration(
-          color: const Color(0xFF151E27),
+          color: const Color(0xFFEEF2F6),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: WatSafeTheme.charcoalBorder),
+          border: Border.all(
+            color: const Color(0xFF94A3B8).withValues(alpha: 0.45),
+          ),
         ),
         child: LayoutBuilder(
           builder: (context, constraints) {
@@ -279,7 +414,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                         _handleMarkerTap(details.localPosition, viewport),
               child: Stack(
                 children: <Widget>[
-                  // 1. Offline-ready Web Mercator graticule basemap
+                  // 1. Offline-ready crisp light street-grid basemap
                   Positioned.fill(
                     child: CustomPaint(
                       painter: _MercatorGraticulePainter(
@@ -290,11 +425,11 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                     ),
                   ),
 
-                  // 2. Interactive OpenStreetMap tile layer when online
+                  // 2. Natural light OpenStreetMap tile layer when online
                   if (_shouldLoadTiles)
                     Positioned.fill(
                       child: Opacity(
-                        opacity: 0.78,
+                        opacity: 0.96,
                         child: _OsmTileLayer(
                           centerLat: _centerLat,
                           centerLon: _centerLon,
@@ -304,7 +439,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                       ),
                     ),
 
-                  // 3. Vector overlay: accuracy circle, filtered trail, alarm-time & latest pins
+                  // 3. Vector overlay: accuracy circle, filtered trail, laptop & phone pins
                   Positioned.fill(
                     child: CustomPaint(
                       painter: _DeviceOverlayPainter(
@@ -316,7 +451,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                             ? validAlarmLoc
                             : null,
                         trail: validTrail,
-                        markers: widget.markers,
+                        markers: _validMarkers,
                         selectedMarkerId: widget.selectedMarkerId,
                       ),
                     ),
@@ -326,7 +461,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                   Positioned(
                     top: 10,
                     left: 10,
-                    right: 56,
+                    right: 58,
                     child: Wrap(
                       spacing: 6,
                       runSpacing: 6,
@@ -339,6 +474,13 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                                 widget.trackingStateTone ??
                                 WatSafeTheme.amberAccent,
                           ),
+                        if (widget.secondaryBadgeLabel != null &&
+                            widget.secondaryBadgeLabel!.trim().isNotEmpty)
+                          _MapBadge(
+                            badgeKey: const Key('map_secondary_badge'),
+                            label: widget.secondaryBadgeLabel!,
+                            dotColor: const Color(0xFF2563EB),
+                          ),
                         if (hasDistinctAlarmOrigin)
                           const _MapBadge(
                             badgeKey: Key('map_alarm_origin_marker_legend'),
@@ -349,7 +491,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                     ),
                   ),
 
-                  // 5. Top-right compact zoom & recenter controls (non-crowded)
+                  // 5. Top-right accessible zoom & recenter controls
                   Positioned(
                     top: 10,
                     right: 10,
@@ -400,16 +542,19 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                         vertical: 3,
                       ),
                       decoration: BoxDecoration(
-                        color: WatSafeTheme.charcoalDeep.withValues(
-                          alpha: 0.84,
-                        ),
+                        color: Colors.white.withValues(alpha: 0.9),
                         borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: const Color(0xFF0F172A)
+                              .withValues(alpha: 0.12),
+                        ),
                       ),
                       child: const Text(
                         '© OpenStreetMap contributors',
                         style: TextStyle(
                           fontSize: 10,
-                          color: WatSafeTheme.warmMuted,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF334155),
                         ),
                       ),
                     ),
@@ -423,26 +568,44 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
     );
   }
 
-  void _handleMarkerTap(Offset localPos, Size viewport) {
+  /// Resolves the screen-space center of each valid marker (including automatic
+  /// co-located marker fan-out) for hit-testing and automated verification.
+  @visibleForTesting
+  Map<String, Offset> computeMarkerScreenPositions(Size viewport) {
+    final valid = _validMarkers;
+    final offsets = _computeMarkerPixelOffsets(valid);
     final scale = 256.0 * math.pow(2.0, _zoom);
     final centerWorld = _WebMercator.project(_centerLat, _centerLon, scale);
-    for (final marker in widget.markers) {
-      if (!marker.location.isValid) {
-        continue;
-      }
+    final out = <String, Offset>{};
+    for (var i = 0; i < valid.length; i++) {
+      final marker = valid[i];
       final markerWorld = _WebMercator.project(
         marker.location.latitude,
         marker.location.longitude,
         scale,
       );
-      final screenPos = Offset(
+      final basePos = Offset(
         viewport.width / 2.0 + (markerWorld.dx - centerWorld.dx),
         viewport.height / 2.0 + (markerWorld.dy - centerWorld.dy),
       );
-      if ((screenPos - localPos).distance <= 24.0) {
-        widget.onSelectMarker?.call(marker.id);
-        return;
+      out[marker.id] = basePos + offsets[i].offset;
+    }
+    return out;
+  }
+
+  void _handleMarkerTap(Offset localPos, Size viewport) {
+    final positions = computeMarkerScreenPositions(viewport);
+    String? bestId;
+    var bestDist = 28.0;
+    positions.forEach((id, screenPos) {
+      final dist = (screenPos - localPos).distance;
+      if (dist <= bestDist) {
+        bestDist = dist;
+        bestId = id;
       }
+    });
+    if (bestId != null) {
+      widget.onSelectMarker?.call(bestId!);
     }
   }
 }
@@ -521,38 +684,14 @@ class _OsmTileLayer extends StatelessWidget {
             top: top,
             width: 256,
             height: 256,
-            child: ColorFiltered(
-              colorFilter: const ColorFilter.matrix(<double>[
-                -0.75,
-                0,
-                0,
-                0,
-                195,
-                0,
-                -0.72,
-                0,
-                0,
-                195,
-                0,
-                0,
-                -0.65,
-                0,
-                205,
-                0,
-                0,
-                0,
-                1,
-                0,
-              ]),
-              child: Image.network(
-                url,
-                headers: const <String, String>{
-                  'User-Agent':
-                      'WATSafe/1.0 (+https://github.com/jonathannerd/WATSafe)',
-                },
-                fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => const SizedBox.shrink(),
-              ),
+            child: Image.network(
+              url,
+              headers: const <String, String>{
+                'User-Agent':
+                    'WATSafe/1.0 (+https://github.com/jonathannerd/WATSafe)',
+              },
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
             ),
           ),
         );
@@ -578,37 +717,65 @@ class _MercatorGraticulePainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(
       Offset.zero & size,
-      Paint()..color = const Color(0xFF16202B),
+      Paint()..color = const Color(0xFFEEF2F6),
     );
-
-    final gridPaint = Paint()
-      ..color = const Color(0xFF233242)
-      ..strokeWidth = 1.0;
-    final majorPaint = Paint()
-      ..color = const Color(0xFF2C3F53)
-      ..strokeWidth = 1.4;
 
     final scale = 256.0 * math.pow(2.0, zoom);
     final centerWorld = _WebMercator.project(centerLat, centerLon, scale);
     const stepPx = 48.0;
-    final startX = -(centerWorld.dx % stepPx);
-    final startY = -(centerWorld.dy % stepPx);
+    final startX = -((centerWorld.dx % stepPx) + stepPx) % stepPx;
+    final startY = -((centerWorld.dy % stepPx) + stepPx) % stepPx;
+
+    final parkPaint = Paint()..color = const Color(0xFFE2F1E8);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(
+          startX + stepPx * 0.14,
+          startY + stepPx * 0.14,
+          stepPx * 1.72,
+          stepPx * 1.2,
+        ),
+        const Radius.circular(6),
+      ),
+      parkPaint,
+    );
+    if (size.width > 180 && size.height > 150) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(
+            size.width - stepPx * 2.1,
+            size.height - stepPx * 1.75,
+            stepPx * 1.45,
+            stepPx * 1.05,
+          ),
+          const Radius.circular(6),
+        ),
+        parkPaint,
+      );
+    }
+
+    final localRoadPaint = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 2.4;
+    final arterialPaint = Paint()
+      ..color = const Color(0xFFCBD5E1)
+      ..strokeWidth = 4.2;
 
     var idx = 0;
-    for (var x = startX; x < size.width; x += stepPx) {
+    for (var x = startX; x < size.width + stepPx; x += stepPx) {
       canvas.drawLine(
         Offset(x, 0),
         Offset(x, size.height),
-        idx % 3 == 0 ? majorPaint : gridPaint,
+        idx % 3 == 0 ? arterialPaint : localRoadPaint,
       );
       idx++;
     }
     idx = 0;
-    for (var y = startY; y < size.height; y += stepPx) {
+    for (var y = startY; y < size.height + stepPx; y += stepPx) {
       canvas.drawLine(
         Offset(0, y),
         Offset(size.width, y),
-        idx % 3 == 0 ? majorPaint : gridPaint,
+        idx % 3 == 0 ? arterialPaint : localRoadPaint,
       );
       idx++;
     }
@@ -674,18 +841,14 @@ class _DeviceOverlayPainter extends CustomPainter {
       canvas.drawPath(
         path,
         Paint()
-          ..color = WatSafeTheme.amberAccent.withValues(alpha: 0.88)
+          ..color = const Color(0xFFD97706)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 3.2
+          ..strokeWidth = 3.5
           ..strokeCap = StrokeCap.round
           ..strokeJoin = StrokeJoin.round,
       );
       for (var i = 1; i < screenPts.length - 1; i++) {
-        canvas.drawCircle(
-          screenPts[i],
-          3.6,
-          Paint()..color = WatSafeTheme.warmOffWhite,
-        );
+        canvas.drawCircle(screenPts[i], 3.8, Paint()..color = Colors.white);
       }
     }
 
@@ -694,93 +857,214 @@ class _DeviceOverlayPainter extends CustomPainter {
       final alarmPos = _toScreen(alarmTimeLocation!, size, scale, centerWorld);
       canvas.drawCircle(
         alarmPos,
-        9,
-        Paint()..color = WatSafeTheme.amberAccent.withValues(alpha: 0.26),
+        9.5,
+        Paint()..color = const Color(0xFFD97706).withValues(alpha: 0.24),
       );
-      canvas.drawCircle(alarmPos, 6, Paint()..color = WatSafeTheme.amberAccent);
       canvas.drawCircle(
         alarmPos,
-        6,
+        6.5,
+        Paint()..color = const Color(0xFFD97706),
+      );
+      canvas.drawCircle(
+        alarmPos,
+        6.5,
         Paint()
-          ..color = WatSafeTheme.warmOffWhite
+          ..color = Colors.white
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.8,
+          ..strokeWidth = 2.0,
       );
     }
 
-    // 3. Draw multi-device markers if supplied, else primaryLocation.
+    // 3. Draw multi-device markers (with distinct laptop vs phone icons + co-located fan-out).
     if (markers.isNotEmpty) {
-      for (final marker in markers) {
-        if (!marker.location.isValid) {
-          continue;
-        }
+      final offsets = _computeMarkerPixelOffsets(markers);
+      for (var i = 0; i < markers.length; i++) {
+        final marker = markers[i];
         final isSelected = marker.id == selectedMarkerId || marker.isSelected;
-        _paintLocationPin(
+        final accent = marker.isAlarming
+            ? WatSafeTheme.alarmCrimson
+            : (marker.isProtectedDevice
+                  ? const Color(0xFF1E8254)
+                  : const Color(0xFF2563EB));
+        _paintDeviceMarker(
           canvas,
           size,
           scale,
           centerWorld,
           marker.location,
-          accent: marker.isAlarming
-              ? WatSafeTheme.alarmCrimson
-              : (marker.isOnline
-                    ? WatSafeTheme.readyEmerald
-                    : WatSafeTheme.amberAccent),
+          pixelOffset: offsets[i],
+          accent: accent,
+          isProtectedDevice: marker.isProtectedDevice,
+          label: marker.effectiveLabel,
           drawAccuracyCircle: isSelected,
           emphasize: isSelected,
         );
       }
     } else if (primaryLocation != null && primaryLocation!.isValid) {
-      _paintLocationPin(
+      _paintDeviceMarker(
         canvas,
         size,
         scale,
         centerWorld,
         primaryLocation!,
+        pixelOffset: const _MarkerPixelOffset(
+          offset: Offset.zero,
+          coLocated: false,
+        ),
         accent: WatSafeTheme.alarmCrimson,
+        isProtectedDevice: true,
+        label: null,
         drawAccuracyCircle: true,
         emphasize: true,
       );
     }
   }
 
-  void _paintLocationPin(
+  void _paintDeviceMarker(
     Canvas canvas,
     Size size,
     double scale,
     Offset centerWorld,
     DeviceLocationSnapshot loc, {
+    required _MarkerPixelOffset pixelOffset,
     required Color accent,
+    required bool isProtectedDevice,
+    required String? label,
     required bool drawAccuracyCircle,
     required bool emphasize,
   }) {
-    final pos = _toScreen(loc, size, scale, centerWorld);
+    final basePos = _toScreen(loc, size, scale, centerWorld);
+    final pinPos = basePos + pixelOffset.offset;
+
     if (drawAccuracyCircle) {
       final meters = loc.accuracyMeters ?? (loc.isApproximate ? 150.0 : 25.0);
       final mpp = _WebMercator.metersPerPixel(loc.latitude, zoom);
-      final radiusPx = (meters / math.max(0.05, mpp)).clamp(14.0, 96.0);
+      final radiusPx = (meters / math.max(0.05, mpp)).clamp(18.0, 92.0);
       canvas.drawCircle(
-        pos,
+        basePos,
         radiusPx,
-        Paint()..color = accent.withValues(alpha: 0.16),
+        Paint()..color = accent.withValues(alpha: 0.14),
       );
       canvas.drawCircle(
-        pos,
+        basePos,
         radiusPx,
         Paint()
-          ..color = accent.withValues(alpha: 0.55)
+          ..color = accent.withValues(alpha: 0.52)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 1.5,
       );
     }
-    final outerRadius = emphasize ? 9.5 : 7.5;
-    final innerRadius = emphasize ? 6.5 : 5.0;
+
+    if (pixelOffset.coLocated) {
+      canvas.drawLine(
+        basePos,
+        pinPos,
+        Paint()
+          ..color = const Color(0xFF0F172A).withValues(alpha: 0.35)
+          ..strokeWidth = 1.5,
+      );
+      canvas.drawCircle(basePos, 3.0, Paint()..color = const Color(0xFF334155));
+    }
+
+    if (emphasize) {
+      canvas.drawCircle(
+        pinPos,
+        19.5,
+        Paint()..color = WatSafeTheme.amberAccent.withValues(alpha: 0.38),
+      );
+    }
+
+    final outerRadius = emphasize ? 15.5 : 14.0;
+    final innerRadius = emphasize ? 13.0 : 11.5;
     canvas.drawCircle(
-      pos,
+      pinPos + const Offset(0, 2),
       outerRadius,
-      Paint()..color = WatSafeTheme.warmOffWhite,
+      Paint()..color = const Color(0xFF0F172A).withValues(alpha: 0.22),
     );
-    canvas.drawCircle(pos, innerRadius, Paint()..color = accent);
+    canvas.drawCircle(pinPos, outerRadius, Paint()..color = Colors.white);
+    canvas.drawCircle(pinPos, innerRadius, Paint()..color = accent);
+
+    // Distinct vector glyph for laptop vs phone inside the marker pin
+    final glyphPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    if (isProtectedDevice) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: pinPos.translate(0, -1.0),
+            width: 11.0,
+            height: 7.2,
+          ),
+          const Radius.circular(1.4),
+        ),
+        glyphPaint,
+      );
+      canvas.drawLine(
+        pinPos.translate(-7.2, 4.4),
+        pinPos.translate(7.2, 4.4),
+        glyphPaint,
+      );
+    } else {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(center: pinPos, width: 7.8, height: 12.2),
+          const Radius.circular(1.8),
+        ),
+        glyphPaint,
+      );
+      canvas.drawCircle(
+        pinPos.translate(0, 3.8),
+        0.9,
+        Paint()..color = Colors.white,
+      );
+    }
+
+    if (label != null && label.trim().isNotEmpty) {
+      final trimmed = label.length > 22 ? '${label.substring(0, 21)}…' : label;
+      final tp = TextPainter(
+        text: TextSpan(
+          text: trimmed,
+          style: const TextStyle(
+            fontSize: 10.5,
+            fontWeight: FontWeight.w700,
+            color: Color(0xFF0F172A),
+          ),
+        ),
+        maxLines: 1,
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: 148);
+      final labelAbove = pixelOffset.coLocated && pixelOffset.offset.dy < -4.0;
+      final labelCenterY = labelAbove
+          ? pinPos.dy - (outerRadius + 11.0)
+          : pinPos.dy + outerRadius + 11.0;
+      final pillRect = RRect.fromRectAndRadius(
+        Rect.fromCenter(
+          center: Offset(pinPos.dx, labelCenterY),
+          width: tp.width + 12.0,
+          height: tp.height + 5.0,
+        ),
+        const Radius.circular(999),
+      );
+      canvas.drawRRect(
+        pillRect,
+        Paint()..color = Colors.white.withValues(alpha: 0.95),
+      );
+      canvas.drawRRect(
+        pillRect,
+        Paint()
+          ..color = const Color(0xFF0F172A).withValues(alpha: 0.16)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0,
+      );
+      tp.paint(
+        canvas,
+        Offset(pinPos.dx - tp.width / 2.0, labelCenterY - tp.height / 2.0),
+      );
+    }
   }
 
   @override
@@ -792,7 +1076,7 @@ class _DeviceOverlayPainter extends CustomPainter {
         oldDelegate.alarmTimeLocation != alarmTimeLocation ||
         oldDelegate.selectedMarkerId != selectedMarkerId ||
         oldDelegate.trail.length != trail.length ||
-        oldDelegate.markers.length != markers.length;
+        oldDelegate.markers != markers;
   }
 }
 
@@ -813,16 +1097,25 @@ class _MapBadge extends StatelessWidget {
       key: badgeKey,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: WatSafeTheme.charcoalDeep.withValues(alpha: 0.88),
+        color: Colors.white.withValues(alpha: 0.94),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: WatSafeTheme.charcoalBorder),
+        border: Border.all(
+          color: const Color(0xFF0F172A).withValues(alpha: 0.16),
+        ),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: const Color(0xFF0F172A).withValues(alpha: 0.1),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           Container(
-            width: 7,
-            height: 7,
+            width: 7.5,
+            height: 7.5,
             decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
           ),
           const SizedBox(width: 6),
@@ -834,7 +1127,7 @@ class _MapBadge extends StatelessWidget {
               style: const TextStyle(
                 fontSize: 11.5,
                 fontWeight: FontWeight.w700,
-                color: WatSafeTheme.warmOffWhite,
+                color: Color(0xFF0F172A),
               ),
             ),
           ),
@@ -860,21 +1153,25 @@ class _MapIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: WatSafeTheme.charcoalDeep.withValues(alpha: 0.9),
+      color: Colors.white.withValues(alpha: 0.95),
+      elevation: 2,
+      shadowColor: const Color(0xFF0F172A).withValues(alpha: 0.2),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: const BorderSide(color: WatSafeTheme.charcoalBorder),
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(
+          color: const Color(0xFF0F172A).withValues(alpha: 0.16),
+        ),
       ),
       child: InkWell(
         key: buttonKey,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(10),
         onTap: onPressed,
         child: Tooltip(
           message: tooltip,
           child: SizedBox(
-            width: 34,
-            height: 34,
-            child: Icon(icon, size: 18, color: WatSafeTheme.warmOffWhite),
+            width: 40,
+            height: 40,
+            child: Icon(icon, size: 19, color: const Color(0xFF0F172A)),
           ),
         ),
       ),
@@ -896,21 +1193,23 @@ class _ScaleBarLabel extends StatelessWidget {
     if (rawMeters >= 1000) {
       label = '${(rawMeters / 1000.0).toStringAsFixed(1)} km';
     } else {
-      label = '${(rawMeters / 10.0).round() * 10} m';
+      label = '${math.max(10, (rawMeters / 10.0).round() * 10)} m';
     }
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: WatSafeTheme.charcoalDeep.withValues(alpha: 0.84),
+        color: Colors.white.withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: WatSafeTheme.charcoalBorder),
+        border: Border.all(
+          color: const Color(0xFF0F172A).withValues(alpha: 0.12),
+        ),
       ),
       child: Text(
         label,
         style: const TextStyle(
           fontSize: 10.5,
-          fontWeight: FontWeight.w600,
-          color: WatSafeTheme.warmOffWhite,
+          fontWeight: FontWeight.w700,
+          color: Color(0xFF0F172A),
         ),
       ),
     );

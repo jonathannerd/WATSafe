@@ -260,6 +260,8 @@ class ProtectionSettings {
     this.onboardingCompleted = false,
     this.deviceDisplayName = '',
     this.shareLocationOnAlarm = true,
+    this.shareCompanionPhoneLocation = false,
+    this.alertOnInputInteraction = false,
     this.permanentRelayEndpointUrl = '',
     this.colorTheme = WatSafeColorTheme.obsidianAmber,
     this.selectedAlarmSoundId = 'builtin_classic_siren',
@@ -289,6 +291,14 @@ class ProtectionSettings {
 
   /// Whether to share this device's location with the paired phone when an alarm triggers.
   final bool shareLocationOnAlarm;
+
+  /// Whether this companion phone explicitly opted in to sharing its own
+  /// active foreground location on the paired Devices map.
+  final bool shareCompanionPhoneLocation;
+
+  /// Optional desktop tamper check: alert when keyboard, trackpad, or mouse
+  /// activity is detected while armed (with a brief PIN-entry grace window).
+  final bool alertOnInputInteraction;
 
   /// User-configured permanent HTTPS relay/companion origin persisted across
   /// normal desktop launches.
@@ -349,6 +359,8 @@ class ProtectionSettings {
     bool? onboardingCompleted,
     String? deviceDisplayName,
     bool? shareLocationOnAlarm,
+    bool? shareCompanionPhoneLocation,
+    bool? alertOnInputInteraction,
     String? permanentRelayEndpointUrl,
     WatSafeColorTheme? colorTheme,
     String? selectedAlarmSoundId,
@@ -366,6 +378,10 @@ class ProtectionSettings {
       onboardingCompleted: onboardingCompleted ?? this.onboardingCompleted,
       deviceDisplayName: deviceDisplayName ?? this.deviceDisplayName,
       shareLocationOnAlarm: shareLocationOnAlarm ?? this.shareLocationOnAlarm,
+      shareCompanionPhoneLocation:
+          shareCompanionPhoneLocation ?? this.shareCompanionPhoneLocation,
+      alertOnInputInteraction:
+          alertOnInputInteraction ?? this.alertOnInputInteraction,
       permanentRelayEndpointUrl:
           permanentRelayEndpointUrl ?? this.permanentRelayEndpointUrl,
       colorTheme: colorTheme ?? this.colorTheme,
@@ -383,6 +399,8 @@ class ProtectionSettings {
       'onboardingCompleted': onboardingCompleted,
       'deviceDisplayName': deviceDisplayName,
       'shareLocationOnAlarm': shareLocationOnAlarm,
+      'shareCompanionPhoneLocation': shareCompanionPhoneLocation,
+      'alertOnInputInteraction': alertOnInputInteraction,
       if (permanentRelayEndpointUrl.trim().isNotEmpty)
         'permanentRelayEndpointUrl': permanentRelayEndpointUrl.trim(),
       'colorTheme': colorTheme.id,
@@ -429,6 +447,10 @@ class ProtectionSettings {
       onboardingCompleted: json['onboardingCompleted'] as bool? ?? false,
       deviceDisplayName: json['deviceDisplayName'] as String? ?? '',
       shareLocationOnAlarm: json['shareLocationOnAlarm'] as bool? ?? true,
+      shareCompanionPhoneLocation:
+          json['shareCompanionPhoneLocation'] as bool? ?? false,
+      alertOnInputInteraction:
+          json['alertOnInputInteraction'] as bool? ?? false,
       permanentRelayEndpointUrl:
           (json['permanentRelayEndpointUrl'] as String? ?? '').trim(),
       colorTheme: WatSafeColorTheme.fromId(json['colorTheme'] as String?),
