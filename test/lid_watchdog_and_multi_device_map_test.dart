@@ -1021,12 +1021,51 @@ void main() {
         closeTo(43.47490, 1e-5),
       );
       expect(p1Entry['locationSharingEnabled'], isTrue);
+      expect(p1Entry['trackingState'], 'live');
       expect(
         (p1Entry['latestLocation'] as Map<String, dynamic>)['latitude'],
         closeTo(43.47542, 1e-5),
       );
       expect(p2Entry['locationStatus'], 'permissionDenied');
       expect(p2Entry['latestLocation'], isNull);
+
+      // After > 90s with no new foreground phone location fix, Phone 1 transitions to "last_known"
+      serverClockUtc = serverClockUtc.add(const Duration(seconds: 95));
+      // Keep Phone 1 online via status ping without sending a new GPS coordinate
+      await _httpJson(
+        client: client,
+        method: 'POST',
+        uri: Uri.parse('$endpoint/v1/companion/status'),
+        bearerToken: phone1Token,
+        body: const <String, Object?>{
+          'platform': 'iOS Home Screen Web App',
+          'httpsReady': true,
+          'homeScreenInstalled': true,
+          'notificationPermission': 'granted',
+          'pushSubscribed': true,
+          'notificationsEnabled': true,
+          'notificationChannel': 'web_push',
+        },
+      );
+      final afterStalePhone = await _httpJson(
+        client: client,
+        method: 'GET',
+        uri: Uri.parse('$endpoint/v1/devices/locations'),
+        bearerToken: phone1Token,
+      );
+      final p1Stale = (afterStalePhone.json['devices'] as List<dynamic>)
+          .cast<Map<String, dynamic>>()
+          .singleWhere((d) => d['deviceId'] == phone1Id);
+      expect(
+        p1Stale['trackingState'],
+        'last_known',
+        reason:
+            'Phone location must become Last known once updates stop for > 90s',
+      );
+      expect(
+        (p1Stale['statusExplanation'] as String).toLowerCase(),
+        contains('last known'),
+      );
 
       // Turning off sharing via DELETE immediately removes Phone 1's stored location
       final stopShare = await _httpJson(
@@ -1239,7 +1278,21 @@ void main() {
         );
         expect(ageText.data?.toLowerCase(), contains('just now'));
 
-        // Coordinates are tucked behind expandable disclosure until tapped
+        // Tapping directly on the co-located phone marker on the map selects the phone,
+        // and tapping back on the laptop marker re-selects the laptop!
+        final mapTopLeft = tester.getTopLeft(mapFinder);
+        await tester.tapAt(mapTopLeft + screenPositions[phone1Id]!);
+        await tester.pumpAndSettle();
+        expect(find.textContaining('43.47493, -80.53301'), findsNothing);
+        await tester.ensureVisible(find.text('Coordinates'));
+        await tester.pumpAndSettle();
+
+        final updatedPositions = mapState.computeMarkerScreenPositions(mapSize);
+        await tester.ensureVisible(mapFinder);
+        await tester.pumpAndSettle();
+        final refreshedTopLeft = tester.getTopLeft(mapFinder);
+        await tester.tapAt(refreshedTopLeft + updatedPositions[hostDeviceId]!);
+        await tester.pumpAndSettle();
         expect(
           find.byKey(const Key('devices_coordinates_disclosure')),
           findsOneWidget,
@@ -1335,7 +1388,7 @@ void main() {
               uri: Uri.parse('$endpoint/v1/health'),
             );
             expect(resp.statusCode, 200);
-            expect(resp.json['swVersion'], '2026.11.17-v5');
+            expect(resp.json['swVersion'], '2026.11.18-v6');
             expect(resp.json['watchdogTimeoutSeconds'], 45);
 
             final pwaReq = await client.getUrl(
@@ -1357,6 +1410,8 @@ void main() {
             expect(html, contains('Share this phone’s location'));
             expect(html, contains('coords-disclosure'));
             expect(html, contains('/v1/companion/location'));
+            expect(html, contains('isFreshLivePhoneCoord'));
+            expect(html, contains('consumePendingNotificationIncident'));
             expect(html, isNot(contains('styles/dark')));
           } finally {
             client.close(force: true);
@@ -1364,5 +1419,269 @@ void main() {
         });
       },
     );
+
+    test('7. Out-of-order pre-sleep alert deduplication, unverified hostArmed:false tamper immunity, motion-to-sleep flush chaining, and PIN disarm native cleanup', () async {
+      final endpoint = 'http://127.0.0.1:$relayPort';
+      final client = HttpClient();
+      addTearDown(() => client.close(force: true));
+
+      // --- A. Out-of-order pre-sleep alert arriving BEFORE initial arming heartbeat + unverified hostArmed:false ---
+      final initResp = await _httpJson(
+        client: client,
+        method: 'POST',
+        uri: Uri.parse('$endpoint/v1/pairing/initiate'),
+        body: const <String, Object?>{'hostDisplayName': 'Race Test MacBook'},
+      );
+      final hostToken = initResp.json['hostToken'] as String;
+      final pairResp = await _httpJson(
+        client: client,
+        method: 'POST',
+        uri: Uri.parse('$endpoint/v1/pairing/complete'),
+        body: <String, Object?>{
+          'pairingCode': initResp.json['pairingCode'],
+          'displayName': 'Race Test iPhone',
+          'platform': 'iOS Home Screen Web App',
+          'notificationsEnabled': true,
+        },
+      );
+      final companionToken = pairResp.json['companionToken'] as String;
+      await _registerCompanionWebPush(
+        client: client,
+        endpoint: endpoint,
+        companionToken: companionToken,
+      );
+
+      // Urgent lid-close alert arrives FIRST (before initial /v1/host/heartbeat)
+      final urgentResp = await _httpJson(
+        client: client,
+        method: 'POST',
+        uri: Uri.parse('$endpoint/v1/incidents:report'),
+        bearerToken: hostToken,
+        body: <String, Object?>{
+          'incidentId': 'inc_race_1',
+          'sessionId': 'ep_race_1',
+          'kind': 'protectionInterrupted',
+          'detectorType': 'macos_camera_scene_motion',
+          'triggeredAtUtc': serverClockUtc.toIso8601String(),
+          'triggerSummary':
+              'Protection interrupted — laptop lid closed while armed.',
+        },
+      );
+      expect(urgentResp.statusCode, 200);
+      expect(recordedPushEnvelopes, hasLength(1));
+
+      // Delayed arming heartbeat for the SAME episode arrives 40ms later
+      final delayedBeat = await _httpJson(
+        client: client,
+        method: 'POST',
+        uri: Uri.parse('$endpoint/v1/host/heartbeat'),
+        bearerToken: hostToken,
+        body: const <String, Object?>{
+          'hostDisplayName': 'Race Test MacBook',
+          'hostProtectionState': 'armed',
+          'hostArmed': true,
+          'hostArmedSessionId': 'ep_race_1',
+        },
+      );
+      expect(delayedBeat.statusCode, 200);
+      expect(delayedBeat.json['hostArmed'], isTrue);
+
+      // 55s later while asleep: 0 duplicate watchdog alerts for ep_race_1!
+      serverClockUtc = serverClockUtc.add(const Duration(seconds: 55));
+      expect(
+        await relayServer.sweepArmedHeartbeatWatchdog(serverClockUtc),
+        0,
+        reason: 'Delayed arming heartbeat must not re-arm duplicate watchdog alert after pre-sleep alert succeeded',
+      );
+      expect(recordedPushEnvelopes, hasLength(1));
+
+      // Start a brand-new armed episode ep_race_2, then send an UNVERIFIED hostArmed:false (no disarmVerified:true)
+      final ep2Beat = await _httpJson(
+        client: client,
+        method: 'POST',
+        uri: Uri.parse('$endpoint/v1/host/heartbeat'),
+        bearerToken: hostToken,
+        body: const <String, Object?>{
+          'hostDisplayName': 'Race Test MacBook',
+          'hostProtectionState': 'armed',
+          'hostArmed': true,
+          'hostArmedSessionId': 'ep_race_2',
+        },
+      );
+      expect(ep2Beat.json['hostArmed'], isTrue);
+
+      final unverifiedOff = await _httpJson(
+        client: client,
+        method: 'POST',
+        uri: Uri.parse('$endpoint/v1/host/heartbeat'),
+        bearerToken: hostToken,
+        body: const <String, Object?>{
+          'hostDisplayName': 'Race Test MacBook',
+          'hostProtectionState': 'off',
+          'hostArmed': false,
+        },
+      );
+      expect(
+        unverifiedOff.json['hostArmed'],
+        isTrue,
+        reason: 'Unverified hostArmed:false without disarmVerified:true must never clear armed watchdog state',
+      );
+
+      // 50s later -> watchdog fires 1 alert for ep_race_2!
+      serverClockUtc = serverClockUtc.add(const Duration(seconds: 50));
+      expect(await relayServer.sweepArmedHeartbeatWatchdog(serverClockUtc), 1);
+      expect(recordedPushEnvelopes, hasLength(2));
+
+      // --- B. Camera motion followed immediately by sleep flushToken + PIN disarm native cleanup ---
+      final detector = FakeMotionDetector(
+        type: DetectorType.macosCameraSceneMotion,
+      );
+      final audio = FakeAudioAlarmAdapter();
+      final lifecycle = FakeSystemLifecycleService();
+      final slowSendCompleter = Completer<NotificationDispatchResult>();
+      final slowNotifAdapter = _ControllableUrgentNotificationAdapter(
+        onSend: (_) => slowSendCompleter.future,
+      );
+      final pinService = PinSecurityService(
+        storage: InMemorySecurePinStorage(),
+        pbkdf2Iterations: 500,
+      );
+      await pinService.setupInitialPin(pin: '246810', confirmPin: '246810');
+
+      final controller = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.macosCameraSceneMotion: detector,
+        },
+        audioAdapter: audio,
+        pinService: pinService,
+        incidentStorage: InMemoryIncidentStorage(),
+        settingsStorage: InMemorySettingsStorage(
+          const ProtectionSettings(
+            selectedDetector: DetectorType.macosCameraSceneMotion,
+            armingCountdownSeconds: 1,
+            onboardingCompleted: true,
+          ),
+        ),
+        notificationAdapter: slowNotifAdapter,
+        systemLifecycleAdapter: lifecycle,
+      );
+      addTearDown(() async {
+        controller.dispose();
+        await detector.dispose();
+        await lifecycle.dispose();
+      });
+
+      await controller.initialize();
+      await controller.startArming();
+      await controller.handleCountdownTickForSession(
+        controller.activeSessionId!,
+      );
+      expect(controller.state, ProtectionState.armed);
+      expect(lifecycle.lastSyncedArmed, isTrue);
+
+      // Lid swinging shut triggers camera motion at T=0ms
+      detector.emit(
+        DetectorEvent(
+          eventId: 'swing_1',
+          sessionId: controller.activeSessionId!,
+          detectorType: DetectorType.macosCameraSceneMotion,
+          eventType: DetectorEventType.motionTriggered,
+          timestamp: DateTime.now(),
+          summary: 'Sustained movement detected across frame.',
+          motionScore: 0.72,
+          threshold: 0.25,
+          consecutiveAboveThresholdFrames: 4,
+          coherentBlocks: 9,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(controller.state, ProtectionState.alarming);
+      expect(audio.isPlaying, isTrue);
+
+      // Lid clicks shut 30ms later while sendIncidentAlert is still in flight -> sleep flushToken must WAIT!
+      lifecycle.emit(
+        SystemLifecycleEvent(
+          type: SystemLifecycleEventType.systemWillSleep,
+          timestamp: DateTime.now(),
+          summary: 'Mac entering sleep',
+          clamshellClosed: true,
+          flushToken: 'sleep_after_motion_1',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(
+        lifecycle.completedFlushTokens,
+        isNot(contains('sleep_after_motion_1')),
+        reason: 'IOAllowPowerChange flushToken must wait for in-flight motion alert HTTP POST to finish',
+      );
+
+      slowSendCompleter.complete(
+        const NotificationDispatchResult(
+          delivered: true,
+          capabilityStatus: CapabilityStatus.ready,
+          message: 'Push accepted',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      expect(lifecycle.completedFlushTokens, contains('sleep_after_motion_1'));
+      expect(controller.incidents, hasLength(1));
+
+      // Disarming with valid PIN from ProtectionState.alarming stops siren AND clears native isProtectionArmed!
+      final disarmRes = await controller.verifyAndDisarm('246810');
+      expect(disarmRes.verified, isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(controller.state, ProtectionState.disarmed);
+      expect(audio.isPlaying, isFalse);
+      expect(
+        lifecycle.lastSyncedArmed,
+        isFalse,
+        reason: 'PIN disarm from alarming must immediately clear native lifecycle isProtectionArmed',
+      );
+
+      // Closing lid after PIN disarm produces zero alerts and releases flushToken immediately
+      lifecycle.emit(
+        SystemLifecycleEvent(
+          type: SystemLifecycleEventType.lidClosed,
+          timestamp: DateTime.now(),
+          summary: 'Normal disarmed lid close',
+          clamshellClosed: true,
+          flushToken: 'disarmed_lid_token',
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(controller.state, ProtectionState.disarmed);
+      expect(audio.isPlaying, isFalse);
+      expect(controller.incidents, hasLength(1));
+      expect(lifecycle.completedFlushTokens, contains('disarmed_lid_token'));
+    });
   });
+}
+
+class _ControllableUrgentNotificationAdapter
+    implements RemoteNotificationAdapter {
+  _ControllableUrgentNotificationAdapter({required this.onSend});
+
+  final Future<NotificationDispatchResult> Function(IncidentRecord incident)
+  onSend;
+
+  @override
+  Future<NotificationServiceStatus> getStatus() async {
+    return const NotificationServiceStatus(
+      capabilityStatus: CapabilityStatus.ready,
+      summary: 'Ready',
+      detail: '1 paired phone',
+    );
+  }
+
+  @override
+  Future<List<PairedDeviceSummary>> listPairedDevices() async {
+    return const <PairedDeviceSummary>[];
+  }
+
+  @override
+  Future<NotificationDispatchResult> sendIncidentAlert(
+    IncidentRecord incident,
+  ) {
+    return onSend(incident);
+  }
 }

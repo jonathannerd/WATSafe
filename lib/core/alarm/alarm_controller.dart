@@ -249,6 +249,13 @@ class AlarmController extends ChangeNotifier {
               final effectiveSharing =
                   _settings.shareCompanionPhoneLocation ||
                   entry.locationSharingEnabled;
+              final isFreshLivePhone =
+                  effectiveLoc != null &&
+                  !effectiveLoc.isLastKnown &&
+                  effectiveSharing &&
+                  entry.online &&
+                  now.difference(effectiveLoc.capturedAt) <=
+                      const Duration(seconds: 90);
               return AuthorizedDeviceLocationSummary(
                 deviceId: entry.deviceId,
                 displayName: entry.displayName,
@@ -264,7 +271,9 @@ class AlarmController extends ChangeNotifier {
                 readableLocationSummary: entry.readableLocationSummary,
                 isAlarming: false,
                 trackingState: effectiveLoc != null
-                    ? (entry.trackingState == 'live' ? 'live' : 'last_known')
+                    ? (isFreshLivePhone && entry.trackingState == 'live'
+                          ? 'live'
+                          : 'last_known')
                     : 'unavailable',
                 latestLocation: effectiveLoc,
                 locationStatus: effectiveLoc != null
@@ -281,10 +290,36 @@ class AlarmController extends ChangeNotifier {
             })
             .toList(growable: false);
       }
-      // Merge fresher local protected-device state on the host itself.
+      // Merge fresher local protected-device state on the host itself and
+      // downgrade any cached companion phone coordinate older than 90s to last_known.
       return _authorizedDeviceLocations
           .map((entry) {
             if (!entry.isProtectedDevice) {
+              final compLoc = entry.latestLocation;
+              if (compLoc != null &&
+                  entry.trackingState == 'live' &&
+                  (compLoc.isLastKnown ||
+                      now.difference(compLoc.capturedAt) >
+                          const Duration(seconds: 90))) {
+                return AuthorizedDeviceLocationSummary(
+                  deviceId: entry.deviceId,
+                  displayName: entry.displayName,
+                  role: entry.role,
+                  platform: entry.platform,
+                  online: entry.online,
+                  connectionStatusLabel: entry.connectionStatusLabel,
+                  protectionStatusLabel: entry.protectionStatusLabel,
+                  isCurrentRequester: entry.isCurrentRequester,
+                  locationSharingEnabled: entry.locationSharingEnabled,
+                  readableLocationSummary: entry.readableLocationSummary,
+                  isAlarming: entry.isAlarming,
+                  trackingState: 'last_known',
+                  latestLocation: compLoc,
+                  locationStatus: entry.locationStatus,
+                  statusExplanation: entry.statusExplanation,
+                  lastSeenAt: entry.lastSeenAt,
+                );
+              }
               return entry;
             }
             final localLoc = _activeIncident?.location ?? _hostLatestLocation;
@@ -3572,6 +3607,8 @@ class AlarmController extends ChangeNotifier {
       }
     }
 
+    final motionAlertCompleter = Completer<void>();
+    _inFlightUrgentAlertFuture = motionAlertCompleter.future;
     try {
       latestIncident = _findIncidentById(incident.id) ?? latestIncident;
       final dispatchResult = await _notificationAdapter.sendIncidentAlert(
@@ -3618,6 +3655,13 @@ class AlarmController extends ChangeNotifier {
         _activeIncident = latestIncident;
       }
       _replaceIncidentInMemory(latestIncident);
+    } finally {
+      if (!motionAlertCompleter.isCompleted) {
+        motionAlertCompleter.complete();
+      }
+      if (identical(_inFlightUrgentAlertFuture, motionAlertCompleter.future)) {
+        _inFlightUrgentAlertFuture = null;
+      }
     }
 
     if (warnings.isNotEmpty &&
@@ -3645,8 +3689,11 @@ class AlarmController extends ChangeNotifier {
   }) {
     unawaited(
       _systemLifecycleAdapter.syncProtectionState(
-        armed: armed || _state == ProtectionState.alarming,
-        monitorInputInteraction: armed && _settings.alertOnInputInteraction,
+        armed: disarmVerified
+            ? false
+            : (armed || _state == ProtectionState.alarming),
+        monitorInputInteraction:
+            !disarmVerified && armed && _settings.alertOnInputInteraction,
       ),
     );
     final mutable = _notificationAdapter;

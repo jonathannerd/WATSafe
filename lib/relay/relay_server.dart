@@ -1824,7 +1824,13 @@ class InMemoryRelayStore implements RelayStore {
           ? <AlertLocationData>[location]
           : const <AlertLocationData>[],
       locationStatus: locationStatus,
-      locationTrackingState: location != null ? 'live' : 'last_known',
+      locationTrackingState:
+          (location == null ||
+              location.isLastKnown ||
+              kind == 'protectionInterrupted' ||
+              kind == 'detectorFailureDuringMonitoring')
+          ? 'last_known'
+          : 'live',
     );
     list.add(created);
     return (alert: created, deduplicated: false);
@@ -3866,7 +3872,13 @@ class PostgresRelayStore implements RelayStore {
         final trailJson = location != null
             ? jsonEncode(<Map<String, Object?>>[location.toJson()])
             : null;
-        final initialTrackingState = location != null ? 'live' : 'last_known';
+        final initialTrackingState =
+            (location == null ||
+                location.isLastKnown ||
+                kind == 'protectionInterrupted' ||
+                kind == 'detectorFailureDuringMonitoring')
+            ? 'last_known'
+            : 'live';
 
         await tx.execute(
           Sql.named('''
@@ -4434,7 +4446,7 @@ class WatSafeRelayServer {
     );
   }
 
-  static const String companionSwVersion = '2026.11.17-v5';
+  static const String companionSwVersion = '2026.11.18-v6';
   static const int locationRetentionDays = 7;
   static const Duration boundedAlarmTrackingMaxTtl = Duration(minutes: 15);
   static const String _codeAlphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -6648,7 +6660,11 @@ class WatSafeRelayServer {
           session.hostReconnectedAtUtc = nowUtc;
         }
 
-        if (disarmVerified || reqArmed == false) {
+        // Only an explicit verified PIN disarm (or arming cancellation before
+        // entering armed state) may clear server-side armed watchdog tracking.
+        // Unverified `hostArmed: false` payloads (e.g., an out-of-order pre-arm
+        // poll or unauthenticated app restart) must never silently disarm.
+        if (disarmVerified) {
           session.hostArmed = false;
           session.hostArmedSessionId = null;
           session.hostArmedAtUtc = null;
@@ -6667,8 +6683,10 @@ class WatSafeRelayServer {
             session.hostArmed = true;
             session.hostArmedSessionId = nextArmedId;
             session.hostArmedAtUtc = nowUtc;
-            session.watchdogAlertSentForSession = null;
-            session.watchdogAlertSentAtUtc = null;
+            if (session.watchdogAlertSentForSession != nextArmedId) {
+              session.watchdogAlertSentForSession = null;
+              session.watchdogAlertSentAtUtc = null;
+            }
             session.hostReconnectedAtUtc = null;
           }
         }
@@ -6976,16 +6994,29 @@ class WatSafeRelayServer {
             );
           }
           // Deduplicate server-side heartbeat watchdog if the laptop already
-          // succeeded in sending an interruption or alarm alert for this episode.
-          if (session.hostArmed &&
-              (reportedKind == 'protectionInterrupted' ||
-                  reportedKind == 'realDetectorTrigger' ||
-                  reportedKind == 'detectorFailureDuringMonitoring')) {
+          // succeeded in sending an interruption or alarm alert for this episode
+          // (including when the urgent alert arrives ahead of the initial
+          // arming heartbeat).
+          if (reportedKind == 'protectionInterrupted' ||
+              reportedKind == 'realDetectorTrigger' ||
+              reportedKind == 'detectorFailureDuringMonitoring') {
+            final reportedEpId = (body['sessionId'] as String?)?.trim();
             final armedKey =
                 (session.hostArmedSessionId != null &&
                     session.hostArmedSessionId!.trim().isNotEmpty)
                 ? session.hostArmedSessionId!.trim()
-                : 'armed_${session.pairingSessionId}';
+                : ((reportedEpId != null &&
+                          reportedEpId.isNotEmpty &&
+                          reportedEpId != 'unknown_session')
+                      ? reportedEpId
+                      : 'armed_${session.pairingSessionId}');
+            if (!session.hostArmed &&
+                (reportedKind == 'protectionInterrupted' ||
+                    reportedKind == 'realDetectorTrigger')) {
+              session.hostArmed = true;
+              session.hostArmedSessionId = armedKey;
+              session.hostArmedAtUtc ??= nowUtc;
+            }
             session.watchdogAlertSentForSession = armedKey;
             session.watchdogAlertSentAtUtc = nowUtc;
           }

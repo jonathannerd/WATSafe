@@ -2084,7 +2084,7 @@ class ConfigurableRemoteNotificationService
         url: '$_relayEndpointUrl/v1/incidents:report',
         headers: _bearerHeaders(_hostToken!),
         body: payload,
-        timeout: const Duration(milliseconds: 1400),
+        timeout: const Duration(milliseconds: 3800),
       );
       Map<String, Object?>? responseJson;
       if (postResult.isSuccess && postResult.body.isNotEmpty) {

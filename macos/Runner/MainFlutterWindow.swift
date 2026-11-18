@@ -739,6 +739,14 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
             return
           }
           self.stopCaptureOnQueue()
+          if MacOSSystemLifecycleBridge.readAppleClamshellClosed() == true,
+             let lifecycle = MacOSSystemLifecycleBridge.shared,
+             lifecycle.isProtectionArmed {
+            DispatchQueue.main.async {
+              lifecycle.pollClamshellStateChange(source: "avcapture_clamshell_disconnect")
+            }
+            return
+          }
           self.emitEvent([
             "sessionId": activeId,
             "eventType": "detectorFailed",
@@ -2367,8 +2375,9 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
         flushToken: token
       )
 
-      // Bounded 1.6s failsafe so WATSafe never stalls macOS power management.
-      DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1600)) { [weak self] in
+      // Bounded 4.2s failsafe (well within macOS's 30s IOKit sleep window;
+      // resolves immediately once the urgent HTTPS push finishes).
+      DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(4200)) { [weak self] in
         self?.resolveUrgentFlush(token: token)
       }
 
@@ -2399,7 +2408,7 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
       clamshellClosed: Self.readAppleClamshellClosed(),
       flushToken: token
     )
-    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(1500)) { [weak self] in
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(3200)) { [weak self] in
       self?.resolveUrgentFlush(token: token)
     }
     return .terminateLater

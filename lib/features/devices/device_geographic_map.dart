@@ -49,8 +49,9 @@ class _MarkerPixelOffset {
 }
 
 List<_MarkerPixelOffset> _computeMarkerPixelOffsets(
-  List<DeviceMapMarker> markers,
-) {
+  List<DeviceMapMarker> markers, {
+  double zoom = 15.6,
+}) {
   final assigned = List<bool>.filled(markers.length, false);
   final result = List<_MarkerPixelOffset>.filled(
     markers.length,
@@ -61,9 +62,15 @@ List<_MarkerPixelOffset> _computeMarkerPixelOffsets(
     if (assigned[i]) {
       continue;
     }
+    final refLatRad = markers[i].location.latitude * math.pi / 180.0;
+    final metersPerPixel = math.max(
+      0.05,
+      (156543.03 * math.cos(refLatRad)) / math.pow(2.0, zoom),
+    );
     final group = <int>[i];
     for (var j = i + 1; j < markers.length; j++) {
-      if (markers[i].location.distanceMetersTo(markers[j].location) < 28.0) {
+      final distM = markers[i].location.distanceMetersTo(markers[j].location);
+      if (distM < 28.0 || (distM / metersPerPixel) < 44.0) {
         group.add(j);
       }
     }
@@ -573,7 +580,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
   @visibleForTesting
   Map<String, Offset> computeMarkerScreenPositions(Size viewport) {
     final valid = _validMarkers;
-    final offsets = _computeMarkerPixelOffsets(valid);
+    final offsets = _computeMarkerPixelOffsets(valid, zoom: _zoom);
     final scale = 256.0 * math.pow(2.0, _zoom);
     final centerWorld = _WebMercator.project(_centerLat, _centerLon, scale);
     final out = <String, Offset>{};
@@ -877,7 +884,7 @@ class _DeviceOverlayPainter extends CustomPainter {
 
     // 3. Draw multi-device markers (with distinct laptop vs phone icons + co-located fan-out).
     if (markers.isNotEmpty) {
-      final offsets = _computeMarkerPixelOffsets(markers);
+      final offsets = _computeMarkerPixelOffsets(markers, zoom: zoom);
       for (var i = 0; i < markers.length; i++) {
         final marker = markers[i];
         final isSelected = marker.id == selectedMarkerId || marker.isSelected;
