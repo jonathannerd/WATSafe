@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:web/web.dart' as web;
 
 import '../../core/contracts/platform_contracts.dart';
+import '../../core/models/settings_models.dart';
 
 /// Decodes the bundled siren asset when the user taps Arm or Test Alarm and
 /// guards asynchronous startup with a monotonic `_playbackRequest` counter so
@@ -111,4 +112,15 @@ class BrowserAlarmAudio implements AudioAlarmAdapter {
   Future<void> setVolume(double volume) async {
     _gain?.gain.value = volume.clamp(0.0, 1.0);
   }
+
+  @override
+  Future<void> configureAlarmSound({
+    required String soundId,
+    CustomAlarmSound? customSound,
+  }) async {
+    _siren = null;
+  }
+
+  @override
+  Future<String?> pickCustomAudioFilePath() async => null;
 }

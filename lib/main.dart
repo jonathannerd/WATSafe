@@ -108,14 +108,22 @@ class WatSafeApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'WATSafe',
-      debugShowCheckedModeBanner: false,
-      theme: WatSafeTheme.darkTheme(),
-      home: WatSafeShell(
-        controller: controller,
-        initialPairingPayload: initialPairingPayload,
-      ),
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final activeTheme = WatSafeTheme.themeFor(
+          controller.settings.colorTheme,
+        );
+        return MaterialApp(
+          title: 'WATSafe',
+          debugShowCheckedModeBanner: false,
+          theme: activeTheme,
+          home: WatSafeShell(
+            controller: controller,
+            initialPairingPayload: initialPairingPayload,
+          ),
+        );
+      },
     );
   }
 }

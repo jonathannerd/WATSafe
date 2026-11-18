@@ -30,6 +30,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _currentPinController = TextEditingController();
   final TextEditingController _newPinController = TextEditingController();
   final TextEditingController _confirmPinController = TextEditingController();
+  final TextEditingController _customSoundNameController =
+      TextEditingController();
+  final TextEditingController _customSoundFilePathController =
+      TextEditingController();
 
   String? _pinMessage;
   bool _pinSuccess = false;
@@ -39,6 +43,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _permanentUrlIsError = false;
   String? _advancedNote;
   String? _locationHistoryNote;
+  CustomAlarmWavePattern _customWavePattern =
+      CustomAlarmWavePattern.alternatingSiren;
+  double _customPrimaryFreqHz = 960.0;
+  double _customSecondaryFreqHz = 1440.0;
+  double _customModulationRateHz = 3.5;
+  String? _customSoundFeedback;
+  bool _customSoundSuccess = false;
 
   @override
   void initState() {
@@ -72,6 +83,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _currentPinController.dispose();
     _newPinController.dispose();
     _confirmPinController.dispose();
+    _customSoundNameController.dispose();
+    _customSoundFilePathController.dispose();
     super.dispose();
   }
 
@@ -115,6 +128,76 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _currentPinController.clear();
         _newPinController.clear();
         _confirmPinController.clear();
+      }
+    });
+  }
+
+  Future<void> _handleBrowseCustomWav() async {
+    final picked = await widget.controller.browseCustomAudioFilePath();
+    if (!mounted || picked == null) {
+      return;
+    }
+    setState(() {
+      _customSoundFilePathController.text = picked;
+      if (_customSoundNameController.text.trim().isEmpty) {
+        final normalized = picked.replaceAll('\\', '/');
+        final fileName = normalized.split('/').last;
+        _customSoundNameController.text = fileName.replaceAll(
+          RegExp(r'\.wav$', caseSensitive: false),
+          '',
+        );
+      }
+    });
+  }
+
+  Future<void> _handleImportCustomWav() async {
+    final added = await widget.controller.importCustomWavAlarmSound(
+      name: _customSoundNameController.text,
+      filePath: _customSoundFilePathController.text,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      if (added != null) {
+        _customSoundSuccess = true;
+        _customSoundFeedback =
+            'Added & selected custom WAV alarm "${added.name}".';
+        _customSoundNameController.clear();
+        _customSoundFilePathController.clear();
+      } else {
+        _customSoundSuccess = false;
+        _customSoundFeedback =
+            widget.controller.warningMessage ??
+            'Could not import custom WAV file.';
+      }
+    });
+  }
+
+  Future<void> _handleAddSynthesizedCustomSound() async {
+    final name = _customSoundNameController.text.trim().isEmpty
+        ? 'Custom ${_customWavePattern.displayName}'
+        : _customSoundNameController.text.trim();
+    final added = await widget.controller.addCustomSynthesizedAlarmSound(
+      name: name,
+      pattern: _customWavePattern,
+      primaryFrequencyHz: _customPrimaryFreqHz,
+      secondaryFrequencyHz: _customSecondaryFreqHz,
+      modulationRateHz: _customModulationRateHz,
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      if (added != null) {
+        _customSoundSuccess = true;
+        _customSoundFeedback = 'Added & selected custom alarm "${added.name}".';
+        _customSoundNameController.clear();
+      } else {
+        _customSoundSuccess = false;
+        _customSoundFeedback =
+            widget.controller.warningMessage ??
+            'Could not create custom alarm sound.';
       }
     });
   }
@@ -216,6 +299,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 settings.alarmVolume,
                 isLockedByProtection,
               ),
+              const SizedBox(height: 16),
+
+              // 2b. Appearance & Color Themes
+              _buildColorThemesCard(context, controller, settings),
+              const SizedBox(height: 16),
+
+              // 2c. Alarm Noises & Custom Alarm Sounds
+              _buildAlarmSoundsCard(context, controller, settings),
               const SizedBox(height: 16),
 
               // 3. Notifications & Location Permissions
@@ -522,6 +613,470 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildColorThemesCard(
+    BuildContext context,
+    AlarmController controller,
+    ProtectionSettings settings,
+  ) {
+    final activeTheme = settings.colorTheme;
+    return Card(
+      key: const Key('color_theme_selector_card'),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Icon(Icons.palette_outlined, color: WatSafeTheme.amberAccent),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Appearance & Color Themes',
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Choose a color theme for the WATSafe interface. Your selection applies immediately and persists across restarts.',
+              style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13.5),
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: WatSafeColorTheme.values
+                  .map((themeItem) {
+                    final palette = WatSafeTheme.paletteFor(themeItem);
+                    final isSelected = themeItem == activeTheme;
+                    return InkWell(
+                      key: Key('theme_option_${themeItem.id}'),
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => controller.selectColorTheme(themeItem),
+                      child: Container(
+                        width: 200,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: palette.surfaceElevated,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isSelected
+                                ? palette.accentPrimary
+                                : palette.borderColor,
+                            width: isSelected ? 2.0 : 1.0,
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Row(
+                              children: <Widget>[
+                                _swatchCircle(
+                                  palette.backgroundDeep,
+                                  palette.borderColor,
+                                ),
+                                const SizedBox(width: 5),
+                                _swatchCircle(
+                                  palette.accentPrimary,
+                                  palette.borderColor,
+                                ),
+                                const SizedBox(width: 5),
+                                _swatchCircle(
+                                  palette.readyColor,
+                                  palette.borderColor,
+                                ),
+                                const Spacer(),
+                                if (isSelected)
+                                  Icon(
+                                    Icons.check_circle_rounded,
+                                    size: 18,
+                                    color: palette.accentPrimary,
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              themeItem.displayName,
+                              style: TextStyle(
+                                color: palette.textPrimary,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                              ),
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              themeItem.description,
+                              style: TextStyle(
+                                color: palette.textMuted,
+                                fontSize: 11.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  })
+                  .toList(growable: false),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _swatchCircle(Color fill, Color border) {
+    return Container(
+      width: 16,
+      height: 16,
+      decoration: BoxDecoration(
+        color: fill,
+        shape: BoxShape.circle,
+        border: Border.all(color: border, width: 1),
+      ),
+    );
+  }
+
+  Widget _buildAlarmSoundsCard(
+    BuildContext context,
+    AlarmController controller,
+    ProtectionSettings settings,
+  ) {
+    final allOptions = settings.allAlarmSoundOptions;
+    final selectedOption = settings.selectedAlarmSoundOption;
+    return Card(
+      key: const Key('alarm_sounds_selector_card'),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Icon(
+                  Icons.notifications_active_outlined,
+                  color: WatSafeTheme.amberAccent,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Alarm Noises & Custom Alarm Sounds',
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  key: const Key('preview_alarm_sound_button'),
+                  onPressed: controller.isTestAlarmRunning
+                      ? controller.stopTestAlarm
+                      : controller.previewSelectedAlarmSound,
+                  icon: Icon(
+                    controller.isTestAlarmRunning
+                        ? Icons.stop_rounded
+                        : Icons.play_arrow_rounded,
+                    size: 18,
+                  ),
+                  label: Text(
+                    controller.isTestAlarmRunning
+                        ? 'Stop Preview'
+                        : 'Preview Selected',
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Select from built-in deterrents or add your own custom alarm sounds (.wav audio files or custom-synthesized frequency patterns).',
+              style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13.5),
+            ),
+            const SizedBox(height: 14),
+            ...allOptions.map((option) {
+              final isSelected = option.id == selectedOption.id;
+              return Container(
+                key: Key('alarm_sound_option_${option.id}'),
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? WatSafeTheme.amberAccent.withValues(alpha: 0.14)
+                      : WatSafeTheme.charcoalElevated,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: isSelected
+                        ? WatSafeTheme.amberAccent
+                        : WatSafeTheme.charcoalBorder,
+                    width: isSelected ? 1.6 : 1.0,
+                  ),
+                ),
+                child: Material(
+                  color: Colors.transparent,
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 2,
+                    ),
+                    onTap: () => controller.selectAlarmSound(option.id),
+                    leading: Icon(
+                      isSelected
+                          ? Icons.radio_button_checked_rounded
+                          : Icons.radio_button_off_rounded,
+                      color: isSelected
+                          ? WatSafeTheme.amberAccent
+                          : WatSafeTheme.warmMuted,
+                    ),
+                    title: Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Text(
+                            option.displayName,
+                            style: TextStyle(
+                              fontWeight: isSelected
+                                  ? FontWeight.w700
+                                  : FontWeight.w600,
+                              fontSize: 13.5,
+                            ),
+                          ),
+                        ),
+                        if (option.isCustom)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: WatSafeTheme.infoSteel.withValues(
+                                alpha: 0.16,
+                              ),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              'CUSTOM',
+                              style: TextStyle(
+                                color: WatSafeTheme.infoSteel,
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    subtitle: Text(
+                      option.description,
+                      style: TextStyle(
+                        color: WatSafeTheme.warmMuted,
+                        fontSize: 12,
+                      ),
+                    ),
+                    trailing: option.isCustom
+                        ? IconButton(
+                            key: Key('delete_custom_sound_${option.id}'),
+                            tooltip: 'Remove custom sound',
+                            icon: Icon(
+                              Icons.delete_outline_rounded,
+                              color: WatSafeTheme.alarmCrimson,
+                              size: 20,
+                            ),
+                            onPressed: () =>
+                                controller.removeCustomAlarmSound(option.id),
+                          )
+                        : null,
+                  ),
+                ),
+              );
+            }),
+            const Divider(),
+            Text(
+              'Add Custom Alarm Sound',
+              style: Theme.of(context).textTheme.titleSmall
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              key: const Key('custom_sound_name_input'),
+              controller: _customSoundNameController,
+              decoration: const InputDecoration(
+                labelText: 'Custom Alarm Name',
+                hintText: 'e.g. Lab Bench Klaxon or My Custom Siren',
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Option A: Import a Custom .WAV Audio File',
+              style: TextStyle(
+                color: WatSafeTheme.warmOffWhite,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextField(
+                    key: const Key('custom_wav_path_input'),
+                    controller: _customSoundFilePathController,
+                    decoration: const InputDecoration(
+                      labelText: 'Custom .wav file path',
+                      hintText: r'C:\Sounds\my_alarm.wav',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  key: const Key('browse_custom_wav_button'),
+                  onPressed: _handleBrowseCustomWav,
+                  icon: const Icon(Icons.folder_open_rounded, size: 18),
+                  label: const Text('Browse'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  key: const Key('import_custom_wav_button'),
+                  onPressed: _handleImportCustomWav,
+                  icon: const Icon(Icons.file_upload_outlined, size: 18),
+                  label: const Text('Add WAV'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Option B: Synthesize a Custom Alarm Tone',
+              style: TextStyle(
+                color: WatSafeTheme.warmOffWhite,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 8),
+            DropdownButtonFormField<CustomAlarmWavePattern>(
+              key: const Key('custom_pattern_dropdown'),
+              initialValue: _customWavePattern,
+              decoration: const InputDecoration(labelText: 'Waveform Pattern'),
+              items: CustomAlarmWavePattern.values
+                  .map(
+                    (pattern) => DropdownMenuItem<CustomAlarmWavePattern>(
+                      value: pattern,
+                      child: Text(pattern.displayName),
+                    ),
+                  )
+                  .toList(growable: false),
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() {
+                    _customWavePattern = value;
+                  });
+                }
+              },
+            ),
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: <Widget>[
+                const Text('Primary Tone Frequency'),
+                Text(
+                  '${_customPrimaryFreqHz.round()} Hz',
+                  style: TextStyle(
+                    color: WatSafeTheme.amberAccent,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            Slider(
+              key: const Key('custom_primary_freq_slider'),
+              value: _customPrimaryFreqHz,
+              min: 200.0,
+              max: 3200.0,
+              divisions: 60,
+              activeColor: WatSafeTheme.amberAccent,
+              onChanged: (value) {
+                setState(() {
+                  _customPrimaryFreqHz = value;
+                });
+              },
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: <Widget>[
+                const Text('Secondary Tone Frequency'),
+                Text(
+                  '${_customSecondaryFreqHz.round()} Hz',
+                  style: TextStyle(
+                    color: WatSafeTheme.amberAccent,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            Slider(
+              key: const Key('custom_secondary_freq_slider'),
+              value: _customSecondaryFreqHz,
+              min: 200.0,
+              max: 3200.0,
+              divisions: 60,
+              activeColor: WatSafeTheme.amberAccent,
+              onChanged: (value) {
+                setState(() {
+                  _customSecondaryFreqHz = value;
+                });
+              },
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: <Widget>[
+                const Text('Modulation / Pulse Speed'),
+                Text(
+                  '${_customModulationRateHz.toStringAsFixed(1)} Hz',
+                  style: TextStyle(
+                    color: WatSafeTheme.amberAccent,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            Slider(
+              key: const Key('custom_mod_rate_slider'),
+              value: _customModulationRateHz,
+              min: 1.0,
+              max: 12.0,
+              divisions: 22,
+              activeColor: WatSafeTheme.amberAccent,
+              onChanged: (value) {
+                setState(() {
+                  _customModulationRateHz = value;
+                });
+              },
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.icon(
+                key: const Key('add_custom_synth_sound_button'),
+                onPressed: _handleAddSynthesizedCustomSound,
+                icon: const Icon(Icons.add_alert_rounded, size: 18),
+                label: const Text('Add Custom Synthesized Alarm'),
+              ),
+            ),
+            if (_customSoundFeedback != null) ...<Widget>[
+              const SizedBox(height: 10),
+              Text(
+                _customSoundFeedback!,
+                key: const Key('custom_sound_feedback_text'),
+                style: TextStyle(
+                  color: _customSoundSuccess
+                      ? WatSafeTheme.readyEmerald
+                      : WatSafeTheme.alarmCrimson,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
+            ],
           ],
         ),
       ),

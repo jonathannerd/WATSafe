@@ -1055,4 +1055,226 @@ void main() {
           : false,
     );
   });
+
+  group('Color Themes, Built-In Alarm Noises, & Custom Alarm Sounds', () {
+    test('Waveform synthesizer generates valid RIFF/WAVE bytes for all built-in and custom patterns', () {
+      for (final builtIn in BuiltInAlarmSound.values) {
+        final bytes = AlarmWaveformSynthesizer.generateBuiltInWav(builtIn);
+        expect(AlarmWaveformSynthesizer.isValidWavBytes(bytes), isTrue);
+        expect(bytes.length, greaterThan(44100));
+      }
+
+      for (final pattern in CustomAlarmWavePattern.values) {
+        final custom = CustomAlarmSound(
+          id: 'test_${pattern.name}',
+          name: 'Test ${pattern.displayName}',
+          pattern: pattern,
+          primaryFrequencyHz: 750.0,
+          secondaryFrequencyHz: 1550.0,
+          modulationRateHz: 5.0,
+        );
+        final bytes = AlarmWaveformSynthesizer.generateCustomWav(custom);
+        expect(AlarmWaveformSynthesizer.isValidWavBytes(bytes), isTrue);
+        expect(bytes.length, greaterThan(44100));
+      }
+    });
+
+    test('Controller selects color themes, switches built-in alarm sounds, adds synthesized and WAV custom sounds, and persists settings', () async {
+      final fakeDetector = FakeMotionDetector(
+        type: DetectorType.windowsCameraSceneMotion,
+      );
+      final fakeAudio = FakeAudioAlarmAdapter();
+      final pinService = PinSecurityService(
+        storage: InMemorySecurePinStorage(),
+        pbkdf2Iterations: 500,
+      );
+      await pinService.setupInitialPin(pin: '123456', confirmPin: '123456');
+
+      final settingsStorage = InMemorySettingsStorage(
+        const ProtectionSettings(
+          selectedDetector: DetectorType.windowsCameraSceneMotion,
+          onboardingCompleted: true,
+        ),
+      );
+
+      final controller = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.windowsCameraSceneMotion: fakeDetector,
+        },
+        audioAdapter: fakeAudio,
+        pinService: pinService,
+        incidentStorage: InMemoryIncidentStorage(),
+        settingsStorage: settingsStorage,
+        notificationAdapter: const UnconfiguredRemoteNotificationService(),
+      );
+
+      await controller.initialize();
+      expect(controller.settings.colorTheme, WatSafeColorTheme.obsidianAmber);
+      expect(
+        controller.settings.selectedAlarmSoundId,
+        BuiltInAlarmSound.classicSiren.id,
+      );
+
+      // 1. Switch color themes
+      for (final theme in WatSafeColorTheme.values) {
+        await controller.selectColorTheme(theme);
+        expect(controller.settings.colorTheme, theme);
+      }
+
+      // 2. Switch built-in alarm noises
+      await controller.selectAlarmSound(BuiltInAlarmSound.piercingKlaxon.id);
+      expect(
+        controller.settings.selectedAlarmSoundId,
+        BuiltInAlarmSound.piercingKlaxon.id,
+      );
+      expect(fakeAudio.selectedSoundId, BuiltInAlarmSound.piercingKlaxon.id);
+
+      // 3. Add a custom synthesized alarm sound
+      final customSynth = await controller.addCustomSynthesizedAlarmSound(
+        name: 'Cyber Staccato Siren',
+        pattern: CustomAlarmWavePattern.rapidStaccato,
+        primaryFrequencyHz: 1100.0,
+        secondaryFrequencyHz: 1900.0,
+        modulationRateHz: 7.0,
+      );
+      expect(customSynth, isNotNull);
+      expect(controller.settings.customAlarmSounds, hasLength(1));
+      expect(controller.settings.selectedAlarmSoundId, customSynth!.id);
+      expect(fakeAudio.selectedSoundId, customSynth.id);
+      expect(fakeAudio.selectedCustomSound?.name, 'Cyber Staccato Siren');
+
+      // 4. Import a custom .wav file from disk
+      final tempDir = await Directory.systemTemp.createTemp(
+        'watsafe_custom_wav_test_',
+      );
+      try {
+        final wavFile = File('${tempDir.path}/custom_klaxon.wav');
+        final wavBytes = AlarmWaveformSynthesizer.generateBuiltInWav(
+          BuiltInAlarmSound.industrialHorn,
+        );
+        await wavFile.writeAsBytes(wavBytes, flush: true);
+
+        final importedWav = await controller.importCustomWavAlarmSound(
+          name: 'Imported Lab Horn',
+          filePath: wavFile.path,
+        );
+        expect(importedWav, isNotNull);
+        expect(importedWav!.isFileBased, isTrue);
+        expect(controller.settings.customAlarmSounds, hasLength(2));
+        expect(controller.settings.selectedAlarmSoundId, importedWav.id);
+        expect(fakeAudio.selectedSoundId, importedWav.id);
+
+        // Verify round-trip JSON persistence of theme + custom sounds
+        final reloaded = ProtectionSettings.fromJson(
+          controller.settings.toJson(),
+        );
+        expect(reloaded.colorTheme, WatSafeColorTheme.arcticDaylight);
+        expect(reloaded.selectedAlarmSoundId, importedWav.id);
+        expect(reloaded.customAlarmSounds, hasLength(2));
+        expect(reloaded.customAlarmSounds.last.name, 'Imported Lab Horn');
+
+        // 5. Remove active custom sound -> falls back to classicSiren
+        await controller.removeCustomAlarmSound(importedWav.id);
+        expect(controller.settings.customAlarmSounds, hasLength(1));
+        expect(
+          controller.settings.selectedAlarmSoundId,
+          BuiltInAlarmSound.classicSiren.id,
+        );
+      } finally {
+        await tempDir.delete(recursive: true);
+      }
+
+      controller.dispose();
+      await fakeDetector.dispose();
+    });
+
+    testWidgets(
+      'SettingsScreen UI switches Color Themes and adds/previews/deletes Custom Alarm Sounds',
+      (WidgetTester tester) async {
+        await tester.binding.setSurfaceSize(const Size(1200, 950));
+
+        final fakeDetector = FakeMotionDetector(
+          type: DetectorType.windowsCameraSceneMotion,
+        );
+        final fakeAudio = FakeAudioAlarmAdapter();
+        final pinService = PinSecurityService(
+          storage: InMemorySecurePinStorage(),
+          pbkdf2Iterations: 500,
+        );
+        await pinService.setupInitialPin(pin: '123456', confirmPin: '123456');
+
+        final controller = AlarmController(
+          detectors: <DetectorType, MotionDetectorAdapter>{
+            DetectorType.windowsCameraSceneMotion: fakeDetector,
+          },
+          audioAdapter: fakeAudio,
+          pinService: pinService,
+          incidentStorage: InMemoryIncidentStorage(),
+          settingsStorage: InMemorySettingsStorage(
+            const ProtectionSettings(
+              selectedDetector: DetectorType.windowsCameraSceneMotion,
+              onboardingCompleted: true,
+            ),
+          ),
+          notificationAdapter: const UnconfiguredRemoteNotificationService(),
+        );
+
+        await controller.initialize();
+        await tester.pumpWidget(WatSafeApp(controller: controller));
+        await tester.pumpAndSettle();
+
+        // Navigate to Settings tab
+        await tester.tap(find.text('Settings').first);
+        await tester.pumpAndSettle();
+
+        final cyberThemeCard = find.byKey(
+          Key('theme_option_${WatSafeColorTheme.cyberSentinel.id}'),
+        );
+        await tester.ensureVisible(cyberThemeCard);
+        await tester.pumpAndSettle();
+        await tester.tap(cyberThemeCard);
+        await tester.pumpAndSettle();
+
+        expect(controller.settings.colorTheme, WatSafeColorTheme.cyberSentinel);
+
+        // Select a built-in alarm sound
+        final temporalBellTile = find.byKey(
+          Key('alarm_sound_option_${BuiltInAlarmSound.temporalBell.id}'),
+        );
+        await tester.ensureVisible(temporalBellTile);
+        await tester.pumpAndSettle();
+        await tester.tap(temporalBellTile);
+        await tester.pumpAndSettle();
+
+        expect(
+          controller.settings.selectedAlarmSoundId,
+          BuiltInAlarmSound.temporalBell.id,
+        );
+
+        // Create a custom synthesized alarm sound via the Settings UI
+        final nameInput = find.byKey(const Key('custom_sound_name_input'));
+        await tester.ensureVisible(nameInput);
+        await tester.pumpAndSettle();
+        await tester.enterText(nameInput, 'My Ultrasonic Pulse');
+
+        final addSynthBtn = find.byKey(
+          const Key('add_custom_synth_sound_button'),
+        );
+        await tester.ensureVisible(addSynthBtn);
+        await tester.pumpAndSettle();
+        await tester.tap(addSynthBtn);
+        await tester.pumpAndSettle();
+
+        expect(controller.settings.customAlarmSounds, hasLength(1));
+        expect(
+          controller.settings.customAlarmSounds.first.name,
+          'My Ultrasonic Pulse',
+        );
+        expect(find.text('My Ultrasonic Pulse'), findsOneWidget);
+
+        controller.dispose();
+        await fakeDetector.dispose();
+      },
+    );
+  });
 }
