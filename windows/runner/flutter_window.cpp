@@ -3512,6 +3512,7 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
   if (message == WM_CLOSE && bridges_ && bridges_->IsProtectionArmed()) {
     // Minimize instead of silently terminating an armed session, and notify Dart.
+    bridges_->OnAppCloseAttempted();
     ::ShowWindow(hwnd, SW_MINIMIZE);
     return 0;
   }

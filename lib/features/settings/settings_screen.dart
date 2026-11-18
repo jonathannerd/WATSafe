@@ -787,19 +787,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Row(
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: <Widget>[
-                Icon(
-                  Icons.notifications_active_outlined,
-                  color: WatSafeTheme.amberAccent,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Alarm Noises & Custom Alarm Sounds',
-                    style: Theme.of(context).textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                  ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(
+                      Icons.notifications_active_outlined,
+                      color: WatSafeTheme.amberAccent,
+                    ),
+                    const SizedBox(width: 10),
+                    Flexible(
+                      child: Text(
+                        'Alarm Noises & Custom Alarm Sounds',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
                 ),
                 OutlinedButton.icon(
                   key: const Key('preview_alarm_sound_button'),
@@ -944,33 +953,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             const SizedBox(height: 8),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: TextField(
-                    key: const Key('custom_wav_path_input'),
-                    controller: _customSoundFilePathController,
-                    decoration: const InputDecoration(
-                      labelText: 'Custom .wav file path',
-                      hintText: r'C:\Sounds\my_alarm.wav',
-                    ),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final wavInput = TextField(
+                  key: const Key('custom_wav_path_input'),
+                  controller: _customSoundFilePathController,
+                  decoration: const InputDecoration(
+                    labelText: 'Custom .wav file path',
+                    hintText: r'C:\Sounds\my_alarm.wav',
                   ),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
+                );
+                final browseBtn = OutlinedButton.icon(
                   key: const Key('browse_custom_wav_button'),
                   onPressed: _handleBrowseCustomWav,
                   icon: const Icon(Icons.folder_open_rounded, size: 18),
                   label: const Text('Browse'),
-                ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
+                );
+                final importBtn = FilledButton.icon(
                   key: const Key('import_custom_wav_button'),
                   onPressed: _handleImportCustomWav,
                   icon: const Icon(Icons.file_upload_outlined, size: 18),
                   label: const Text('Add WAV'),
-                ),
-              ],
+                );
+                if (constraints.maxWidth < 460) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      wavInput,
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: <Widget>[browseBtn, importBtn],
+                      ),
+                    ],
+                  );
+                }
+                return Row(
+                  children: <Widget>[
+                    Expanded(child: wavInput),
+                    const SizedBox(width: 8),
+                    browseBtn,
+                    const SizedBox(width: 8),
+                    importBtn,
+                  ],
+                );
+              },
             ),
             const SizedBox(height: 16),
             Text(
@@ -984,13 +1012,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 8),
             DropdownButtonFormField<CustomAlarmWavePattern>(
               key: const Key('custom_pattern_dropdown'),
+              isExpanded: true,
               initialValue: _customWavePattern,
               decoration: const InputDecoration(labelText: 'Waveform Pattern'),
               items: CustomAlarmWavePattern.values
                   .map(
                     (pattern) => DropdownMenuItem<CustomAlarmWavePattern>(
                       value: pattern,
-                      child: Text(pattern.displayName),
+                      child: Text(
+                        pattern.displayName,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   )
                   .toList(growable: false),
@@ -1006,7 +1038,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                const Text('Primary Tone Frequency'),
+                const Expanded(child: Text('Primary Tone Frequency')),
+                const SizedBox(width: 8),
                 Text(
                   '${_customPrimaryFreqHz.round()} Hz',
                   style: TextStyle(
@@ -1032,7 +1065,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                const Text('Secondary Tone Frequency'),
+                const Expanded(child: Text('Secondary Tone Frequency')),
+                const SizedBox(width: 8),
                 Text(
                   '${_customSecondaryFreqHz.round()} Hz',
                   style: TextStyle(
@@ -1058,7 +1092,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                const Text('Modulation / Pulse Speed'),
+                const Expanded(child: Text('Modulation / Pulse Speed')),
+                const SizedBox(width: 8),
                 Text(
                   '${_customModulationRateHz.toStringAsFixed(1)} Hz',
                   style: TextStyle(
