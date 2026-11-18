@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
+import '../../services/audio_alarm_service.dart';
 import '../../services/local_notification_service.dart';
 import '../../services/location_service.dart';
 import '../../services/pin_security_service.dart';
@@ -741,6 +743,8 @@ class AlarmController extends ChangeNotifier {
         _detectors.isNotEmpty) {
       _settings = _settings.copyWith(selectedDetector: _detectors.keys.first);
     }
+
+    await _syncAudioAdapterSound();
 
     try {
       _hasPinConfigured = await _pinService.hasConfiguredPin();
@@ -1720,6 +1724,166 @@ class AlarmController extends ChangeNotifier {
       }
     }
     notifyListeners();
+  }
+
+  /// Selects a UI color theme and persists the preference.
+  Future<void> selectColorTheme(WatSafeColorTheme colorTheme) async {
+    _settings = _settings.copyWith(colorTheme: colorTheme);
+    await _persistSettingsSafely();
+    notifyListeners();
+  }
+
+  /// Selects an alarm sound (built-in or custom) and updates the audio adapter.
+  Future<void> selectAlarmSound(String soundId) async {
+    _settings = _settings.copyWith(selectedAlarmSoundId: soundId);
+    await _persistSettingsSafely();
+    await _syncAudioAdapterSound();
+    notifyListeners();
+  }
+
+  /// Adds a custom synthesized alarm sound and selects it as active.
+  Future<CustomAlarmSound?> addCustomSynthesizedAlarmSound({
+    required String name,
+    required CustomAlarmWavePattern pattern,
+    required double primaryFrequencyHz,
+    required double secondaryFrequencyHz,
+    required double modulationRateHz,
+  }) async {
+    final trimmedName = name.trim();
+    if (trimmedName.isEmpty) {
+      _warningMessage = 'Enter a name for your custom alarm sound.';
+      notifyListeners();
+      return null;
+    }
+
+    final custom = CustomAlarmSound(
+      id: 'custom_synth_${_clock().millisecondsSinceEpoch}_${_settings.customAlarmSounds.length + 1}',
+      name: trimmedName,
+      pattern: pattern,
+      primaryFrequencyHz: primaryFrequencyHz.clamp(200.0, 3200.0),
+      secondaryFrequencyHz: secondaryFrequencyHz.clamp(200.0, 3200.0),
+      modulationRateHz: modulationRateHz.clamp(0.5, 12.0),
+    );
+
+    final updatedList = <CustomAlarmSound>[
+      ..._settings.customAlarmSounds,
+      custom,
+    ];
+    _settings = _settings.copyWith(
+      customAlarmSounds: updatedList,
+      selectedAlarmSoundId: custom.id,
+    );
+    _warningMessage = null;
+    await _persistSettingsSafely();
+    await _syncAudioAdapterSound();
+    notifyListeners();
+    return custom;
+  }
+
+  /// Opens the native OS file picker (if supported) to choose a `.wav` file.
+  Future<String?> browseCustomAudioFilePath() async {
+    return _audioAdapter.pickCustomAudioFilePath();
+  }
+
+  /// Adds a custom `.wav` file alarm sound after validating the file exists and
+  /// has a valid RIFF/WAVE header.
+  Future<CustomAlarmSound?> importCustomWavAlarmSound({
+    required String name,
+    required String filePath,
+  }) async {
+    final trimmedPath = filePath.trim();
+    if (trimmedPath.isEmpty) {
+      _warningMessage = 'Select or enter a valid .wav audio file path.';
+      notifyListeners();
+      return null;
+    }
+
+    final file = File(trimmedPath);
+    if (!await file.exists()) {
+      _warningMessage = 'Audio file not found at "$trimmedPath".';
+      notifyListeners();
+      return null;
+    }
+
+    try {
+      final bytes = await file.readAsBytes();
+      if (!AlarmWaveformSynthesizer.isValidWavBytes(bytes)) {
+        _warningMessage = 'Selected file is not a valid uncompressed RIFF/WAVE (.wav) audio file.';
+        notifyListeners();
+        return null;
+      }
+    } catch (error) {
+      _warningMessage = 'Could not read custom audio file: $error';
+      notifyListeners();
+      return null;
+    }
+
+    final normalized = trimmedPath.replaceAll('\\', '/');
+    final fileName = normalized.split('/').last;
+    final fallbackName = fileName.replaceAll(
+      RegExp(r'\.wav$', caseSensitive: false),
+      '',
+    );
+    final effectiveName = name.trim().isNotEmpty ? name.trim() : fallbackName;
+
+    final custom = CustomAlarmSound(
+      id: 'custom_wav_${_clock().millisecondsSinceEpoch}_${_settings.customAlarmSounds.length + 1}',
+      name: effectiveName,
+      filePath: trimmedPath,
+    );
+
+    final updatedList = <CustomAlarmSound>[
+      ..._settings.customAlarmSounds,
+      custom,
+    ];
+    _settings = _settings.copyWith(
+      customAlarmSounds: updatedList,
+      selectedAlarmSoundId: custom.id,
+    );
+    _warningMessage = null;
+    await _persistSettingsSafely();
+    await _syncAudioAdapterSound();
+    notifyListeners();
+    return custom;
+  }
+
+  /// Deletes a user-added custom alarm sound and reverts selection to the
+  /// default siren if the deleted sound was selected.
+  Future<void> removeCustomAlarmSound(String customSoundId) async {
+    final updatedList = _settings.customAlarmSounds
+        .where((s) => s.id != customSoundId)
+        .toList(growable: false);
+    final nextSelectedId = _settings.selectedAlarmSoundId == customSoundId
+        ? BuiltInAlarmSound.classicSiren.id
+        : _settings.selectedAlarmSoundId;
+    _settings = _settings.copyWith(
+      customAlarmSounds: updatedList,
+      selectedAlarmSoundId: nextSelectedId,
+    );
+    await _persistSettingsSafely();
+    await _syncAudioAdapterSound();
+    notifyListeners();
+  }
+
+  /// Plays a short 3-second preview of the currently selected alarm sound.
+  Future<void> previewSelectedAlarmSound() async {
+    if (_state == ProtectionState.alarming) {
+      return;
+    }
+    await _syncAudioAdapterSound();
+    await startTestAlarm();
+  }
+
+  Future<void> _syncAudioAdapterSound() async {
+    final option = _settings.selectedAlarmSoundOption;
+    try {
+      await _audioAdapter.configureAlarmSound(
+        soundId: option.id,
+        customSound: option.customSound,
+      );
+    } catch (_) {
+      // Non-fatal
+    }
   }
 
   /// Verifies detector readiness and starts the arming countdown.

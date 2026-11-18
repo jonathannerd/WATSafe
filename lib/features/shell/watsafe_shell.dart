@@ -214,15 +214,15 @@ class _WatSafeShellState extends State<WatSafeShell>
                       indicatorColor: WatSafeTheme.amberAccent.withValues(
                         alpha: 0.22,
                       ),
-                      selectedIconTheme: const IconThemeData(
+                      selectedIconTheme: IconThemeData(
                         color: WatSafeTheme.amberAccent,
                       ),
-                      selectedLabelTextStyle: const TextStyle(
+                      selectedLabelTextStyle: TextStyle(
                         color: WatSafeTheme.amberAccent,
                         fontWeight: FontWeight.w700,
                         fontSize: 12.5,
                       ),
-                      unselectedLabelTextStyle: const TextStyle(
+                      unselectedLabelTextStyle: TextStyle(
                         color: WatSafeTheme.warmMuted,
                         fontSize: 12.5,
                       ),
