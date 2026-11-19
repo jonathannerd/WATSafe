@@ -639,8 +639,18 @@ void main() {
             motionScore: 0.91,
           ),
         );
-        // Allow async push + async location attachment to complete
-        await Future<void>.delayed(const Duration(milliseconds: 200));
+        // Allow async Web Push encryption + async location attachment to complete reliably on shared CI runners.
+        for (var i = 0; i < 60; i++) {
+          final active = reopenedController.activeIncident;
+          if (capturedPushes.isNotEmpty &&
+              active != null &&
+              active.remoteNotificationAttempted &&
+              active.location != null) {
+            break;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
 
         expect(reopenedController.state, ProtectionState.alarming);
         final triggeredIncident = reopenedController.activeIncident!;
