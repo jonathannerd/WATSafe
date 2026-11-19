@@ -445,6 +445,15 @@ void main() {
       expect(revokedFnSource, isNot(contains('IDB_APPEARANCE_KEY')));
       expect(html, isNot(contains('removeItem(APPEARANCE_STORAGE_KEY)')));
       expect(html, isNot(contains('delete(IDB_APPEARANCE_KEY)')));
+
+      // Verify Dockerfile copies the shared pure-Dart theme catalog for standalone cloud builds.
+      final dockerfile = await File('Dockerfile').readAsString();
+      expect(
+        dockerfile,
+        contains(
+          'COPY lib/core/models/theme_palette_catalog.dart ./lib/core/models/theme_palette_catalog.dart',
+        ),
+      );
     });
   });
 }
