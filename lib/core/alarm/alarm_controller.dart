@@ -143,6 +143,8 @@ class AlarmController extends ChangeNotifier {
   DetectorEvent? _lastTelemetryEvent;
   IncidentRecord? _activeIncident;
   List<IncidentRecord> _incidents = const <IncidentRecord>[];
+  int _incidentHistoryGeneration = 0;
+  final Set<Future<void>> _inFlightIncidentWrites = <Future<void>>{};
 
   String _statusMessage = 'Starting WATSafe…';
   String? _warningMessage;
@@ -2846,8 +2848,9 @@ class AlarmController extends ChangeNotifier {
       );
       _activeIncident = null;
       _replaceIncidentInMemory(resolved);
+      notifyListeners();
       try {
-        await _incidentStorage.updateIncident(resolved);
+        await _updateIncidentSafely(resolved, rethrowOnError: true);
       } catch (_) {
         _warningMessage =
             'Disarmed, though local activity history could not be saved.';
@@ -2926,11 +2929,7 @@ class AlarmController extends ChangeNotifier {
       }
     }
 
-    try {
-      await _incidentStorage.saveIncident(testIncident);
-    } catch (_) {
-      // Non-fatal
-    }
+    await _saveIncidentSafely(testIncident);
 
     if (!_isTestAlarmRunning || testGeneration != _alarmGeneration) {
       return true;
@@ -3040,9 +3039,10 @@ class AlarmController extends ChangeNotifier {
     if (_state == ProtectionState.alarming) {
       return;
     }
+    ++_incidentHistoryGeneration;
     _incidents = const <IncidentRecord>[];
     try {
-      await _incidentStorage.clearIncidents();
+      await _drainAndClearIncidentStorage();
     } catch (_) {
       _warningMessage = 'Could not clear activity history.';
     }
@@ -3804,13 +3804,21 @@ class AlarmController extends ChangeNotifier {
       }
     }
 
+    final historyGen = _incidentHistoryGeneration;
     var latestIncident = _findIncidentById(incident.id) ?? incident;
-    try {
-      await _incidentStorage.saveIncident(latestIncident);
-    } catch (_) {
-      if (alarmGeneration == _alarmGeneration) {
-        warnings.add('Local incident save failed.');
+    if (historyGen == _incidentHistoryGeneration &&
+        _findIncidentById(incident.id) != null) {
+      try {
+        await _saveIncidentSafely(latestIncident, rethrowOnError: true);
+      } catch (_) {
+        if (alarmGeneration == _alarmGeneration) {
+          warnings.add('Local incident save failed.');
+        }
       }
+    }
+
+    if (historyGen != _incidentHistoryGeneration || _isDisposed) {
+      return;
     }
 
     final motionAlertCompleter = Completer<void>();
@@ -3820,6 +3828,11 @@ class AlarmController extends ChangeNotifier {
       final dispatchResult = await _notificationAdapter.sendIncidentAlert(
         latestIncident,
       );
+      if (historyGen != _incidentHistoryGeneration ||
+          _isDisposed ||
+          _findIncidentById(incident.id) == null) {
+        return;
+      }
       latestIncident = (_findIncidentById(incident.id) ?? latestIncident)
           .copyWith(
             remoteNotificationAttempted: true,
@@ -3829,7 +3842,7 @@ class AlarmController extends ChangeNotifier {
         _activeIncident = latestIncident;
       }
       _replaceIncidentInMemory(latestIncident);
-      await _incidentStorage.updateIncident(latestIncident);
+      await _updateIncidentSafely(latestIncident);
 
       // If async location finished right before or during initial report, push
       // a location update too so the relay event definitely has it attached.
@@ -4381,19 +4394,77 @@ class AlarmController extends ChangeNotifier {
         .toList(growable: false);
   }
 
-  Future<void> _saveIncidentSafely(IncidentRecord incident) async {
+  Future<void> _trackIncidentStorageWrite(Future<void> Function() writeOp) {
+    late final Future<void> tracked;
+    tracked = () async {
+      try {
+        await writeOp();
+      } finally {
+        _inFlightIncidentWrites.remove(tracked);
+      }
+    }();
+    _inFlightIncidentWrites.add(tracked);
+    return tracked;
+  }
+
+  Future<void> _drainAndClearIncidentStorage() async {
+    if (_inFlightIncidentWrites.isNotEmpty) {
+      await Future.wait(
+        _inFlightIncidentWrites.map((f) => f.catchError((_) {})),
+      );
+    }
+    await _incidentStorage.clearIncidents();
+  }
+
+  Future<void> _saveIncidentSafely(
+    IncidentRecord incident, {
+    bool rethrowOnError = false,
+  }) async {
+    final expectedGeneration = _incidentHistoryGeneration;
+    if (_isDisposed ||
+        expectedGeneration != _incidentHistoryGeneration ||
+        _findIncidentById(incident.id) == null) {
+      return;
+    }
     try {
-      await _incidentStorage.saveIncident(incident);
+      await _trackIncidentStorageWrite(() async {
+        if (_isDisposed ||
+            expectedGeneration != _incidentHistoryGeneration ||
+            _findIncidentById(incident.id) == null) {
+          return;
+        }
+        await _incidentStorage.saveIncident(incident);
+      });
     } catch (_) {
-      // Non-fatal
+      if (rethrowOnError) {
+        rethrow;
+      }
     }
   }
 
-  Future<void> _updateIncidentSafely(IncidentRecord incident) async {
+  Future<void> _updateIncidentSafely(
+    IncidentRecord incident, {
+    bool rethrowOnError = false,
+  }) async {
+    final expectedGeneration = _incidentHistoryGeneration;
+    if (_isDisposed ||
+        expectedGeneration != _incidentHistoryGeneration ||
+        _findIncidentById(incident.id) == null) {
+      return;
+    }
     try {
-      await _incidentStorage.updateIncident(incident);
+      await _trackIncidentStorageWrite(() async {
+        if (_isDisposed ||
+            expectedGeneration != _incidentHistoryGeneration ||
+            _findIncidentById(incident.id) == null) {
+          return;
+        }
+        await _incidentStorage.updateIncident(incident);
+      });
     } catch (_) {
-      // Non-fatal
+      if (rethrowOnError) {
+        rethrow;
+      }
     }
   }
 
@@ -4449,6 +4520,9 @@ class AlarmController extends ChangeNotifier {
 
     ++_alarmGeneration;
     ++_lifecycleGeneration;
+    ++_incidentHistoryGeneration;
+    _incidents = const <IncidentRecord>[];
+    _activeIncident = null;
     _cancelCountdownTimer();
     _stopRegularLocationSchedule();
     _stopPostAlarmLocationTracking(markIncidentStopped: false);
@@ -4488,7 +4562,7 @@ class AlarmController extends ChangeNotifier {
     await _pinService.clearPinForInstallationReset();
     _hasPinConfigured = false;
 
-    await _incidentStorage.clearIncidents();
+    await _drainAndClearIncidentStorage();
     _incidents = const <IncidentRecord>[];
     _activeIncident = null;
     _hostLatestLocation = null;
@@ -4536,6 +4610,9 @@ class AlarmController extends ChangeNotifier {
     _isDisposed = true;
     ++_alarmGeneration;
     ++_lifecycleGeneration;
+    ++_incidentHistoryGeneration;
+    _incidents = const <IncidentRecord>[];
+    _activeIncident = null;
     _cancelCountdownTimer();
     _stopRegularLocationSchedule();
     _stopPostAlarmLocationTracking(markIncidentStopped: false);
