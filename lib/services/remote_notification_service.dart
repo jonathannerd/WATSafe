@@ -110,6 +110,7 @@ class ConfigurableRemoteNotificationService
       StreamController<Map<String, Object?>>.broadcast();
 
   VoidCallback? _onStateChanged;
+  VoidCallback? _onHostLocationRefreshRequested;
   String? _relayEndpointUrl;
   List<PairedDeviceSummary> _devices;
   List<PairedDeviceActionRecord> _actions = <PairedDeviceActionRecord>[];
@@ -295,6 +296,11 @@ class ConfigurableRemoteNotificationService
   @override
   set onStateChanged(VoidCallback? callback) {
     _onStateChanged = callback;
+  }
+
+  @override
+  set onHostLocationRefreshRequested(VoidCallback? callback) {
+    _onHostLocationRefreshRequested = callback;
   }
 
   Map<String, String> _bearerHeaders(String token) {
@@ -1028,6 +1034,9 @@ class ConfigurableRemoteNotificationService
 
     try {
       final decoded = jsonDecode(response.body) as Map<String, Object?>;
+      if (decoded['locationRefreshRequested'] == true) {
+        _onHostLocationRefreshRequested?.call();
+      }
       final rawList = decoded['devices'] as List<Object?>? ?? const <Object?>[];
       final existingById = <String, PairedDeviceSummary>{
         for (final item in _devices) item.deviceId: item,
@@ -1612,7 +1621,7 @@ class ConfigurableRemoteNotificationService
 
   @override
   Future<List<AuthorizedDeviceLocationSummary>>
-  fetchAuthorizedDevicesLocations() async {
+  fetchAuthorizedDevicesLocations({bool requestHostRefresh = false}) async {
     await _ensureLoaded();
     final token = (_companionSession.isConnected && _companionToken != null)
         ? _companionToken
@@ -1623,9 +1632,10 @@ class ConfigurableRemoteNotificationService
     if (token == null || token.isEmpty || url == null || url.isEmpty) {
       return const <AuthorizedDeviceLocationSummary>[];
     }
+    final query = requestHostRefresh ? '?requestRefresh=1' : '';
     final response = await sendRelayJsonRequest(
       method: 'GET',
-      url: '$url/v1/devices/locations',
+      url: '$url/v1/devices/locations$query',
       headers: _bearerHeaders(token),
       timeout: _httpTimeout,
     );

@@ -113,9 +113,14 @@ class _WatSafeShellState extends State<WatSafeShell>
     return ListenableBuilder(
       listenable: widget.controller,
       builder: (context, _) {
+        final palette = WatSafeTheme.of(context);
+
         if (!widget.controller.isInitialized) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+          return Scaffold(
+            backgroundColor: palette.backgroundDeep,
+            body: Center(
+              child: CircularProgressIndicator(color: palette.accentPrimary),
+            ),
           );
         }
 
@@ -144,6 +149,7 @@ class _WatSafeShellState extends State<WatSafeShell>
 
         if (widget.controller.state == ProtectionState.alarming) {
           return Scaffold(
+            backgroundColor: palette.backgroundDeep,
             body: SafeArea(
               child: ActiveAlarmScreen(controller: widget.controller),
             ),
@@ -151,7 +157,7 @@ class _WatSafeShellState extends State<WatSafeShell>
         }
 
         final state = widget.controller.state;
-        final stateColor = WatSafeTheme.colorForProtectionState(state);
+        final stateColor = WatSafeTheme.colorForProtectionState(state, palette);
 
         final pages = <Widget>[
           HomeScreen(controller: widget.controller),
@@ -167,18 +173,24 @@ class _WatSafeShellState extends State<WatSafeShell>
             final useRail = constraints.maxWidth >= 760;
 
             return Scaffold(
+              backgroundColor: palette.backgroundDeep,
               appBar: AppBar(
+                backgroundColor: palette.sidebarBackground,
+                foregroundColor: palette.textPrimary,
                 title: Row(
                   children: <Widget>[
                     WatSafeShieldGraphic(
-                      accentColor: stateColor,
+                      accentColor: state == ProtectionState.disarmed
+                          ? palette.accentPrimary
+                          : stateColor,
                       size: 30,
                       isActiveWave: state.isProtected,
                     ),
                     const SizedBox(width: 10),
-                    const Text(
+                    Text(
                       'WATSafe',
                       style: TextStyle(
+                        color: palette.textPrimary,
                         fontWeight: FontWeight.w800,
                         letterSpacing: 0.3,
                       ),
@@ -199,8 +211,9 @@ class _WatSafeShellState extends State<WatSafeShell>
                 bottom: PreferredSize(
                   preferredSize: const Size.fromHeight(1),
                   child: Container(
+                    key: const Key('app_header_divider'),
                     height: 1,
-                    color: WatSafeTheme.charcoalBorder,
+                    color: palette.sidebarBorder,
                   ),
                 ),
               ),
@@ -208,22 +221,37 @@ class _WatSafeShellState extends State<WatSafeShell>
                 children: <Widget>[
                   if (useRail) ...<Widget>[
                     NavigationRail(
-                      backgroundColor: WatSafeTheme.charcoalDeep,
+                      key: const Key('desktop_navigation_rail'),
+                      backgroundColor: palette.sidebarBackground,
                       selectedIndex: safeIndex,
                       labelType: NavigationRailLabelType.all,
-                      indicatorColor: WatSafeTheme.amberAccent.withValues(
-                        alpha: 0.22,
+                      useIndicator: true,
+                      indicatorColor: palette.sidebarIndicator,
+                      indicatorShape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: BorderSide(
+                          color: palette.accentPrimary.withValues(
+                            alpha: palette.isDark ? 0.50 : 0.38,
+                          ),
+                          width: 1,
+                        ),
                       ),
                       selectedIconTheme: IconThemeData(
-                        color: WatSafeTheme.amberAccent,
+                        color: palette.accentPrimary,
+                        size: 23,
+                      ),
+                      unselectedIconTheme: IconThemeData(
+                        color: palette.textMuted,
+                        size: 22,
                       ),
                       selectedLabelTextStyle: TextStyle(
-                        color: WatSafeTheme.amberAccent,
+                        color: palette.accentPrimary,
                         fontWeight: FontWeight.w700,
                         fontSize: 12.5,
                       ),
                       unselectedLabelTextStyle: TextStyle(
-                        color: WatSafeTheme.warmMuted,
+                        color: palette.textMuted,
+                        fontWeight: FontWeight.w500,
                         fontSize: 12.5,
                       ),
                       onDestinationSelected: (idx) {
@@ -254,7 +282,12 @@ class _WatSafeShellState extends State<WatSafeShell>
                         ),
                       ],
                     ),
-                    const VerticalDivider(width: 1, thickness: 1),
+                    VerticalDivider(
+                      key: const Key('desktop_sidebar_divider'),
+                      width: 1,
+                      thickness: 1,
+                      color: palette.sidebarBorder,
+                    ),
                   ],
                   Expanded(
                     child: Column(
@@ -283,39 +316,45 @@ class _WatSafeShellState extends State<WatSafeShell>
               ),
               bottomNavigationBar: useRail
                   ? null
-                  : NavigationBar(
-                      backgroundColor: WatSafeTheme.charcoalSurface,
-                      indicatorColor: WatSafeTheme.amberAccent.withValues(
-                        alpha: 0.22,
+                  : Container(
+                      decoration: BoxDecoration(
+                        border: Border(
+                          top: BorderSide(color: palette.sidebarBorder),
+                        ),
                       ),
-                      selectedIndex: safeIndex,
-                      onDestinationSelected: (idx) {
-                        setState(() {
-                          _selectedIndex = idx;
-                        });
-                      },
-                      destinations: const <NavigationDestination>[
-                        NavigationDestination(
-                          icon: Icon(Icons.shield_outlined),
-                          selectedIcon: Icon(Icons.shield_rounded),
-                          label: 'Home',
-                        ),
-                        NavigationDestination(
-                          icon: Icon(Icons.map_outlined),
-                          selectedIcon: Icon(Icons.map_rounded),
-                          label: 'Devices',
-                        ),
-                        NavigationDestination(
-                          icon: Icon(Icons.notifications_none_rounded),
-                          selectedIcon: Icon(Icons.notifications_rounded),
-                          label: 'Activity',
-                        ),
-                        NavigationDestination(
-                          icon: Icon(Icons.settings_outlined),
-                          selectedIcon: Icon(Icons.settings_rounded),
-                          label: 'Settings',
-                        ),
-                      ],
+                      child: NavigationBar(
+                        key: const Key('compact_navigation_bar'),
+                        backgroundColor: palette.sidebarBackground,
+                        indicatorColor: palette.sidebarIndicator,
+                        selectedIndex: safeIndex,
+                        onDestinationSelected: (idx) {
+                          setState(() {
+                            _selectedIndex = idx;
+                          });
+                        },
+                        destinations: const <NavigationDestination>[
+                          NavigationDestination(
+                            icon: Icon(Icons.shield_outlined),
+                            selectedIcon: Icon(Icons.shield_rounded),
+                            label: 'Home',
+                          ),
+                          NavigationDestination(
+                            icon: Icon(Icons.map_outlined),
+                            selectedIcon: Icon(Icons.map_rounded),
+                            label: 'Devices',
+                          ),
+                          NavigationDestination(
+                            icon: Icon(Icons.notifications_none_rounded),
+                            selectedIcon: Icon(Icons.notifications_rounded),
+                            label: 'Activity',
+                          ),
+                          NavigationDestination(
+                            icon: Icon(Icons.settings_outlined),
+                            selectedIcon: Icon(Icons.settings_rounded),
+                            label: 'Settings',
+                          ),
+                        ],
+                      ),
                     ),
             );
           },
@@ -336,11 +375,10 @@ class _ForegroundCompanionBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final alert = controller.latestUnacknowledgedCompanionAlert!;
     final deviceName = alert.hostDisplayName ?? 'Your Laptop';
-    final bannerColor = alert.isTest
-        ? WatSafeTheme.infoSteel
-        : WatSafeTheme.alarmCrimson;
+    final bannerColor = alert.isTest ? palette.infoColor : palette.alarmColor;
 
     return Material(
       color: bannerColor,

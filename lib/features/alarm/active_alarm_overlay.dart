@@ -82,13 +82,14 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final incident = widget.controller.activeIncident;
     final lockout = widget.controller.remainingPinLockout;
     final isLocked = lockout > Duration.zero;
     final lockoutSec = (lockout.inMilliseconds / 1000).ceil();
 
     return Container(
-      color: WatSafeTheme.charcoalDeep,
+      color: palette.backgroundDeep,
       child: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
@@ -97,19 +98,16 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
             child: Card(
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(18),
-                side: const BorderSide(
-                  color: WatSafeTheme.alarmCrimson,
-                  width: 2,
-                ),
+                side: BorderSide(color: palette.alarmColor, width: 2),
               ),
               child: Padding(
                 padding: const EdgeInsets.all(26),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: <Widget>[
-                    const Center(
+                    Center(
                       child: WatSafeShieldGraphic(
-                        accentColor: WatSafeTheme.alarmCrimson,
+                        accentColor: palette.alarmColor,
                         size: 64,
                         isActiveWave: true,
                       ),
@@ -123,13 +121,13 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                           vertical: 5,
                         ),
                         decoration: BoxDecoration(
-                          color: WatSafeTheme.alarmCrimson,
+                          color: palette.alarmColor,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: const Text(
                           'Alarm triggered',
                           style: TextStyle(
-                            color: WatSafeTheme.warmOffWhite,
+                            color: Colors.white,
                             fontSize: 12.5,
                             fontWeight: FontWeight.w800,
                           ),
@@ -143,7 +141,7 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         fontWeight: FontWeight.w800,
-                        color: WatSafeTheme.warmOffWhite,
+                        color: palette.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 6),
@@ -152,8 +150,8 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                           ? '${incident.deviceName ?? widget.controller.effectiveDeviceName} • ${_formatTimestamp(incident.triggeredAt)}'
                           : widget.controller.effectiveDeviceName,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: WatSafeTheme.warmMuted,
+                      style: TextStyle(
+                        color: palette.textMuted,
                         fontSize: 13.5,
                       ),
                     ),
@@ -198,8 +196,8 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                             ? 'Too many incorrect attempts. Try again in $lockoutSec second${lockoutSec == 1 ? '' : 's'}.'
                             : _feedbackMessage!,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: WatSafeTheme.amberAccent,
+                        style: TextStyle(
+                          color: palette.warningColor,
                           fontWeight: FontWeight.w600,
                           fontSize: 13.5,
                         ),
@@ -209,8 +207,8 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
                     FilledButton.icon(
                       key: const Key('alarm_disarm_button'),
                       style: FilledButton.styleFrom(
-                        backgroundColor: WatSafeTheme.alarmCrimson,
-                        foregroundColor: WatSafeTheme.warmOffWhite,
+                        backgroundColor: palette.alarmColor,
+                        foregroundColor: Colors.white,
                       ),
                       onPressed: (isLocked || _isVerifying)
                           ? null

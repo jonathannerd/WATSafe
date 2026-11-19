@@ -284,6 +284,11 @@ class CameraMotionFrameEvaluation {
     this.rigidCoherence = 0.0,
     this.loomingRejected = false,
     this.oscillationRejected = false,
+    this.cameraObstructed = false,
+    this.obstructionJustTriggered = false,
+    this.obstructionKind,
+    this.isObstructedAtCalibration = false,
+    this.consecutiveObstructedFrames = 0,
   });
 
   final bool isCalibrating;
@@ -305,6 +310,26 @@ class CameraMotionFrameEvaluation {
   final double rigidCoherence;
   final bool loomingRejected;
   final bool oscillationRejected;
+
+  /// True when sustained loss of usable camera visibility (palm/hand against
+  /// lens, dark/opaque cover, or bright washout/glare) has met the confirmation
+  /// window after an unobstructed armed baseline was established.
+  final bool cameraObstructed;
+
+  /// True on the exact confirmation frame when [cameraObstructed] transitions
+  /// from `false` to `true`.
+  final bool obstructionJustTriggered;
+
+  /// Active or candidate obstruction classification (`dark`, `bright_glare`,
+  /// `opaque_cover`, or `texture_collapse`).
+  final String? obstructionKind;
+
+  /// True when the camera was already blocked or pitch-dark at the moment
+  /// startup calibration completed.
+  final bool isObstructedAtCalibration;
+
+  /// Consecutive post-calibration frames matching an obstruction signature.
+  final int consecutiveObstructedFrames;
 }
 
 class _FlowCoherenceStats {
@@ -355,8 +380,14 @@ class CameraMotionAnalyzer {
     this.gridHeight = 48,
     this.calibrationDuration = const Duration(milliseconds: 1500),
     this.persistenceFramesRequired = 3,
+    this.obstructionConfirmationFrames = defaultObstructionConfirmationFrames,
     double motionThreshold = 0.095,
   }) : _motionThreshold = motionThreshold.clamp(0.02, 0.50);
+
+  /// Documented confirmation window (`10` frames ≈ `1.25s` at 8 fps) before a
+  /// covered/washed-out webcam fires a tamper alarm, preventing brief hand waves
+  /// (`2–6` frames) or single dropped/glare frames from false-alarming.
+  static const int defaultObstructionConfirmationFrames = 10;
 
   static const int _blocksX = 4;
   static const int _blocksY = 4;
@@ -367,6 +398,7 @@ class CameraMotionAnalyzer {
   final int gridHeight;
   final Duration calibrationDuration;
   final int persistenceFramesRequired;
+  final int obstructionConfirmationFrames;
 
   double _motionThreshold;
   Float32List? _referenceGrid;
@@ -380,14 +412,25 @@ class CameraMotionAnalyzer {
   DateTime? _calibrationStart;
   bool _isCalibrationDone = false;
   bool _isInputDegraded = false;
+  bool _isCameraObstructed = false;
+  bool _isObstructedAtCalibration = false;
+  bool _wasUnobstructedDuringSession = false;
+  String? _lastObstructionKind;
+  int _baselineTexturedBlocks = 0;
+  double _baselineMeanGrad = 0.0;
   int _processedFrames = 0;
   int _consecutiveAboveThreshold = 0;
   int _consecutivePoorInputFrames = 0;
+  int _consecutiveObstructedFrames = 0;
+  int _unobstructedFrameStreak = 0;
 
   double get motionThreshold => _motionThreshold;
   bool get isCalibrationDone => _isCalibrationDone;
   bool get isInputDegraded => _isInputDegraded;
+  bool get isCameraObstructed => _isCameraObstructed;
+  bool get isObstructedAtCalibration => _isObstructedAtCalibration;
   int get consecutiveAboveThreshold => _consecutiveAboveThreshold;
+  int get consecutiveObstructedFrames => _consecutiveObstructedFrames;
 
   void updateThreshold(double threshold) {
     _motionThreshold = threshold.clamp(0.02, 0.50);
@@ -406,9 +449,69 @@ class CameraMotionAnalyzer {
     _calibrationStart = null;
     _isCalibrationDone = false;
     _isInputDegraded = false;
+    _isCameraObstructed = false;
+    _isObstructedAtCalibration = false;
+    _wasUnobstructedDuringSession = false;
+    _lastObstructionKind = null;
+    _baselineTexturedBlocks = 0;
+    _baselineMeanGrad = 0.0;
     _processedFrames = 0;
     _consecutiveAboveThreshold = 0;
     _consecutivePoorInputFrames = 0;
+    _consecutiveObstructedFrames = 0;
+    _unobstructedFrameStreak = 0;
+  }
+
+  void _captureBaselineTextureProfile(Float32List grid) {
+    final blockGradSum = Float64List(_totalBlocks);
+    final blockGradCount = Int32List(_totalBlocks);
+    for (var gy = 0; gy + 1 < gridHeight; gy++) {
+      final by = math.min(_blocksY - 1, (gy * _blocksY) ~/ gridHeight);
+      for (var gx = 0; gx + 1 < gridWidth; gx++) {
+        final bx = math.min(_blocksX - 1, (gx * _blocksX) ~/ gridWidth);
+        final bIdx = by * _blocksX + bx;
+        final i = gy * gridWidth + gx;
+        final v = grid[i];
+        final gxDiff = (v - grid[i + 1]).abs();
+        final gyDiff = (v - grid[i + gridWidth]).abs();
+        blockGradSum[bIdx] += 0.5 * (gxDiff + gyDiff);
+        blockGradCount[bIdx] += 1;
+      }
+    }
+    var textured = 0;
+    var gradSumAll = 0.0;
+    var activeBlocks = 0;
+    for (var b = 0; b < _totalBlocks; b++) {
+      if (blockGradCount[b] <= 0) {
+        continue;
+      }
+      final g = blockGradSum[b] / blockGradCount[b];
+      gradSumAll += g;
+      activeBlocks += 1;
+      if (g >= 3.2) {
+        textured += 1;
+      }
+    }
+    _baselineTexturedBlocks = textured;
+    _baselineMeanGrad = activeBlocks > 0 ? (gradSumAll / activeBlocks) : 0.0;
+  }
+
+  String? _classifyBaselineObstruction({
+    required double normalizedLuminance,
+    required double normalizedDeviation,
+  }) {
+    if (normalizedLuminance < 0.032) {
+      return 'dark';
+    }
+    if (normalizedLuminance > 0.92 &&
+        normalizedDeviation < 0.065 &&
+        _baselineTexturedBlocks <= 1) {
+      return 'bright_glare';
+    }
+    if (normalizedDeviation < 0.012 && _baselineTexturedBlocks == 0) {
+      return 'opaque_cover';
+    }
+    return null;
   }
 
   /// Processes a downsampled `gridWidth x gridHeight` grayscale frame (`0..255`).
@@ -494,6 +597,24 @@ class CameraMotionAnalyzer {
       final elapsed = timestamp.difference(_calibrationStart ?? timestamp);
       if (elapsed >= calibrationDuration && _processedFrames >= 4) {
         _isCalibrationDone = true;
+        _captureBaselineTextureProfile(reference);
+        final initialObstruction = _classifyBaselineObstruction(
+          normalizedLuminance: normalizedLuminance,
+          normalizedDeviation: normalizedDeviation,
+        );
+        if (initialObstruction != null) {
+          _isObstructedAtCalibration = true;
+          _wasUnobstructedDuringSession = false;
+          _lastObstructionKind = initialObstruction;
+          if (!_isInputDegraded) {
+            _isInputDegraded = true;
+            poorInputJustChanged = true;
+          }
+        } else {
+          _isObstructedAtCalibration = false;
+          _wasUnobstructedDuringSession = true;
+          _lastObstructionKind = null;
+        }
         _recentGrids
           ..clear()
           ..add(Float32List.fromList(reference));
@@ -509,10 +630,12 @@ class CameraMotionAnalyzer {
           normalizedLuminance: normalizedLuminance,
           consecutiveAboveThreshold: 0,
           triggered: false,
-          texturedReferenceBlocks: 0,
+          texturedReferenceBlocks: _baselineTexturedBlocks,
           anchoredTexturedBlocks: 0,
           activeQuadrants: 0,
           coherentTranslatedBlocks: 0,
+          obstructionKind: _lastObstructionKind,
+          isObstructedAtCalibration: _isObstructedAtCalibration,
         );
       }
       return CameraMotionFrameEvaluation(
@@ -672,11 +795,17 @@ class CameraMotionAnalyzer {
     final activeBlockThreshold = math.max(0.024, _motionThreshold * 0.48);
 
     var texturedRefBlocks = 0;
+    var texturedCurrBlocks = 0;
     var anchoredTexturedBlocks = 0;
     var texturedPerimeterBlocks = 0;
     var anchoredPerimeterBlocks = 0;
     var activeMovingBlocks = 0;
+    var displacedOrChangedBlocks = 0;
     var texturedRefScoreSum = 0.0;
+    var currGradSumAll = 0.0;
+    var currGradBlocksCount = 0;
+    var refMeanSumAll = 0.0;
+    var refMeanBlocksCount = 0;
 
     final dxList = <double>[];
     final dyList = <double>[];
@@ -710,6 +839,19 @@ class CameraMotionAnalyzer {
         final currGrad = blockGradCount[b] > 0
             ? (blockCurrGradSum[b] / blockGradCount[b])
             : 0.0;
+        if (blockGradCount[b] > 0) {
+          currGradSumAll += currGrad;
+          currGradBlocksCount += 1;
+          if (currGrad >= 3.2) {
+            texturedCurrBlocks += 1;
+          }
+        }
+        refMeanSumAll += blockRefMean[b];
+        refMeanBlocksCount += 1;
+        if (refScore >= staticBlockThreshold ||
+            (blockCurrMean[b] - blockRefMean[b]).abs() >= 14.0) {
+          displacedOrChangedBlocks += 1;
+        }
         final isTextured = meanGrad >= 3.2;
         final isPerimeter =
             bx == 0 || bx == (_blocksX - 1) || by == 0 || by == (_blocksY - 1);
@@ -883,6 +1025,97 @@ class CameraMotionAnalyzer {
     final rawSceneScore = rawDiffSum / (count * 255.0);
     final fullSceneStructScore = normRefDiffSum / (count * 255.0);
     final meanStepScore = normStepDiffSum / (count * 255.0);
+    final meanCurrGrad = currGradBlocksCount > 0
+        ? (currGradSumAll / currGradBlocksCount)
+        : 0.0;
+    final refGlobalMean = refMeanBlocksCount > 0
+        ? (refMeanSumAll / refMeanBlocksCount)
+        : currMean;
+
+    // Multi-signal webcam obstruction classification:
+    //   1. 'dark' — near-zero brightness (shutter, dark cover, black tape).
+    //   2. 'bright_glare' — bright washout/flashlight glare with collapsed edges.
+    //   3. 'opaque_cover' — flat opaque object/card with collapsed contrast/edges.
+    //   4. 'texture_collapse' — close palm/hand/cloth over lens (mid-tone blurry
+    //      skin or fabric with shading/vignette: non-black, non-zero deviation,
+    //      sudden total loss of anchored landmarks and spatial edge detail).
+    String? candidateObstruction;
+    if (normalizedLuminance < 0.032) {
+      candidateObstruction = 'dark';
+    } else if ((normalizedLuminance > 0.92 &&
+            normalizedDeviation < 0.065 &&
+            texturedCurrBlocks <= 1) ||
+        (normalizedLuminance > 0.86 &&
+            anchoredTexturedBlocks == 0 &&
+            texturedCurrBlocks == 0 &&
+            (currMean - refGlobalMean).abs() >= 45.0)) {
+      candidateObstruction = 'bright_glare';
+    } else if (normalizedDeviation < 0.012 &&
+        texturedCurrBlocks == 0 &&
+        (texturedRefBlocks == 0 || anchoredTexturedBlocks == 0)) {
+      candidateObstruction = 'opaque_cover';
+    } else if (_baselineTexturedBlocks >= 2 &&
+        anchoredTexturedBlocks == 0 &&
+        texturedCurrBlocks <= 1 &&
+        (texturedCurrBlocks == 0 || _baselineTexturedBlocks >= 5) &&
+        meanCurrGrad < math.min(2.35, _baselineMeanGrad * 0.42) &&
+        coherentTranslatedBlocks <= 1 &&
+        (rawSceneScore >= 0.045 ||
+            fullSceneStructScore >= 0.032 ||
+            displacedOrChangedBlocks >= 11)) {
+      candidateObstruction = 'texture_collapse';
+    }
+
+    var obstructionJustTriggered = false;
+    if (candidateObstruction != null) {
+      _unobstructedFrameStreak = 0;
+      _lastObstructionKind = candidateObstruction;
+      if (_wasUnobstructedDuringSession) {
+        _consecutiveObstructedFrames += 1;
+        if (_consecutiveObstructedFrames >= 6 && !_isInputDegraded) {
+          _isInputDegraded = true;
+          poorInputJustChanged = true;
+        }
+        if (_consecutiveObstructedFrames >= obstructionConfirmationFrames &&
+            !_isCameraObstructed) {
+          _isCameraObstructed = true;
+          obstructionJustTriggered = true;
+          if (!_isInputDegraded) {
+            _isInputDegraded = true;
+            poorInputJustChanged = true;
+          }
+        }
+      } else if (!_isInputDegraded) {
+        _isInputDegraded = true;
+        poorInputJustChanged = true;
+      }
+    } else {
+      _consecutiveObstructedFrames = 0;
+      _unobstructedFrameStreak += 1;
+      if (!_wasUnobstructedDuringSession && _unobstructedFrameStreak >= 3) {
+        _wasUnobstructedDuringSession = true;
+        _isObstructedAtCalibration = false;
+        for (var i = 0; i < count; i++) {
+          reference[i] = currentGrid[i];
+        }
+        _captureBaselineTextureProfile(reference);
+      }
+      if (_isCameraObstructed && _unobstructedFrameStreak >= 2) {
+        _isCameraObstructed = false;
+        _lastObstructionKind = null;
+      } else if (!_isCameraObstructed && !_isInputDegraded) {
+        _lastObstructionKind = null;
+      }
+      if (_isInputDegraded &&
+          _unobstructedFrameStreak >= 2 &&
+          normalizedLuminance >= 0.04 &&
+          normalizedDeviation >= 0.012) {
+        _isInputDegraded = false;
+        poorInputJustChanged = true;
+        _lastObstructionKind = null;
+      }
+    }
+
     final texturedStructScore = texturedRefBlocks > 0
         ? (texturedRefScoreSum / texturedRefBlocks)
         : fullSceneStructScore;
@@ -950,8 +1183,10 @@ class CameraMotionAnalyzer {
         (activeMovingBlocks <= 2 || meanStepScore < 0.009);
 
     double egoWeight;
-    if (isLightingTransient || _isInputDegraded) {
-      egoWeight = 0.10;
+    if (candidateObstruction != null ||
+        isLightingTransient ||
+        _isInputDegraded) {
+      egoWeight = 0.08;
     } else if (hasStrongStaticAnchors) {
       egoWeight = 0.14;
     } else if (loomingRejected) {
@@ -1026,37 +1261,48 @@ class CameraMotionAnalyzer {
     //    - Stationary changes that have settled for >= 4 frames gently adapt
     //      so someone sitting down in front of the laptop becomes the new
     //      clean stationary baseline instead of holding reference diff high.
-    final baseAdaptRate = isLightingTransient ? 0.30 : 0.06;
-    if (motionScore >= _motionThreshold) {
-      _consecutiveAboveThreshold += 1;
+    if (candidateObstruction != null) {
+      // Freeze stationary reference adaptation while an obstruction candidate is
+      // covering the lens so a palm, sticky note, or glare never overwrites the
+      // calibrated room baseline, and do not accumulate movement triggers.
+      _consecutiveAboveThreshold = 0;
+      motionScore = math.min(motionScore, _motionThreshold * 0.45);
       for (var i = 0; i < count; i++) {
-        reference[i] = (0.98 * reference[i]) + (0.02 * currentGrid[i]);
         previous[i] = currentGrid[i];
       }
     } else {
-      _consecutiveAboveThreshold = 0;
-      for (var gy = 0; gy < gridHeight; gy++) {
-        final by = math.min(_blocksY - 1, (gy * _blocksY) ~/ gridHeight);
-        for (var gx = 0; gx < gridWidth; gx++) {
-          final bx = math.min(_blocksX - 1, (gx * _blocksX) ~/ gridWidth);
-          final bIdx = by * _blocksX + bx;
-          final pxCount = blockPixelCount[bIdx];
-          final blockRefScore = pxCount > 0
-              ? (blockRefDiffSum[bIdx] / (pxCount * 255.0))
-              : 0.0;
-          final double alpha;
-          if (_settledBlockStreak[bIdx] >= 4 && isScenePresentlyStill) {
-            alpha = 0.16;
-          } else if (hasStrongStaticAnchors &&
-              blockRefScore >= staticBlockThreshold) {
-            alpha = 0.01;
-          } else {
-            alpha = baseAdaptRate;
-          }
-          final i = gy * gridWidth + gx;
-          reference[i] =
-              ((1.0 - alpha) * reference[i]) + (alpha * currentGrid[i]);
+      final baseAdaptRate = isLightingTransient ? 0.30 : 0.06;
+      if (motionScore >= _motionThreshold) {
+        _consecutiveAboveThreshold += 1;
+        for (var i = 0; i < count; i++) {
+          reference[i] = (0.98 * reference[i]) + (0.02 * currentGrid[i]);
           previous[i] = currentGrid[i];
+        }
+      } else {
+        _consecutiveAboveThreshold = 0;
+        for (var gy = 0; gy < gridHeight; gy++) {
+          final by = math.min(_blocksY - 1, (gy * _blocksY) ~/ gridHeight);
+          for (var gx = 0; gx < gridWidth; gx++) {
+            final bx = math.min(_blocksX - 1, (gx * _blocksX) ~/ gridWidth);
+            final bIdx = by * _blocksX + bx;
+            final pxCount = blockPixelCount[bIdx];
+            final blockRefScore = pxCount > 0
+                ? (blockRefDiffSum[bIdx] / (pxCount * 255.0))
+                : 0.0;
+            final double alpha;
+            if (_settledBlockStreak[bIdx] >= 4 && isScenePresentlyStill) {
+              alpha = 0.16;
+            } else if (hasStrongStaticAnchors &&
+                blockRefScore >= staticBlockThreshold) {
+              alpha = 0.01;
+            } else {
+              alpha = baseAdaptRate;
+            }
+            final i = gy * gridWidth + gx;
+            reference[i] =
+                ((1.0 - alpha) * reference[i]) + (alpha * currentGrid[i]);
+            previous[i] = currentGrid[i];
+          }
         }
       }
     }
@@ -1097,6 +1343,11 @@ class CameraMotionAnalyzer {
       ),
       loomingRejected: loomingRejected,
       oscillationRejected: oscillationRejected,
+      cameraObstructed: _isCameraObstructed,
+      obstructionJustTriggered: obstructionJustTriggered,
+      obstructionKind: _lastObstructionKind,
+      isObstructedAtCalibration: _isObstructedAtCalibration,
+      consecutiveObstructedFrames: _consecutiveObstructedFrames,
     );
   }
 

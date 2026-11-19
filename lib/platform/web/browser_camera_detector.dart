@@ -24,7 +24,6 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
   Completer<DetectorStartResult>? _calibration;
   DateTime? _lastFrameAt;
   CameraMotionAnalyzer? _analyzer;
-  int _darkFrames = 0;
   int _eventNumber = 0;
 
   late final JSFunction _visibilityChanged = ((web.Event _) {
@@ -289,17 +288,6 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
       if (sampled == null) {
         return;
       }
-      if (sampled.normalizedLuminance < 0.025) {
-        if (++_darkFrames >= 12) {
-          _stopWithEvent(
-            DetectorEventType.detectorFailed,
-            'Webcam image is too dark or covered. Uncover camera or add light and arm again.',
-          );
-          return;
-        }
-      } else {
-        _darkFrames = 0;
-      }
       _processSampledFrame(sampled, now);
     } catch (_) {
       _stopWithEvent(
@@ -321,19 +309,46 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
       if (eval.calibrationJustCompleted) {
         _emit(
           DetectorEventType.calibrationCompleted,
-          'Webcam baseline calibrated. Coherent camera-motion monitoring active.',
+          eval.isObstructedAtCalibration
+              ? 'Camera appears covered or too dark. Uncover the webcam for visual motion detection — lid and connection alerts remain active.'
+              : 'Webcam baseline calibrated. Coherent camera-motion monitoring active.',
           score: 0.0,
           luminance: eval.normalizedLuminance,
           consecutive: 0,
+          obstructionKind: eval.obstructionKind,
         );
+        if (eval.isObstructedAtCalibration) {
+          _emit(
+            DetectorEventType.poorInputWarning,
+            'Camera appears covered or too dark. Uncover the webcam for visual motion detection — lid and connection alerts remain active.',
+            luminance: eval.normalizedLuminance,
+            obstructionKind: eval.obstructionKind,
+          );
+        }
         calibration.complete(
-          const DetectorStartResult(
+          DetectorStartResult(
             started: true,
-            status: CapabilityStatus.ready,
-            message: 'Webcam is actively delivering frames and monitoring.',
+            status: eval.isObstructedAtCalibration
+                ? CapabilityStatus.degraded
+                : CapabilityStatus.ready,
+            message: eval.isObstructedAtCalibration
+                ? 'Camera appears covered or too dark. Uncover the webcam for visual motion detection.'
+                : 'Webcam is actively delivering frames and monitoring.',
           ),
         );
       }
+      return;
+    }
+
+    if (eval.obstructionJustTriggered) {
+      _emit(
+        DetectorEventType.cameraObstructed,
+        'Camera blocked — webcam view obstructed while armed.',
+        score: eval.motionScore,
+        luminance: eval.normalizedLuminance,
+        consecutive: eval.consecutiveObstructedFrames,
+        obstructionKind: eval.obstructionKind,
+      );
       return;
     }
 
@@ -343,9 +358,12 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
             ? DetectorEventType.poorInputWarning
             : DetectorEventType.inputRecovered,
         eval.isPoorInput
-            ? 'Low light or covered webcam lens detected.'
+            ? (eval.isObstructedAtCalibration
+                  ? 'Camera appears covered or too dark. Uncover the webcam for visual motion detection — lid and connection alerts remain active.'
+                  : 'Low light or covered webcam lens detected.')
             : 'Webcam lighting and scene contrast restored.',
         luminance: eval.normalizedLuminance,
+        obstructionKind: eval.obstructionKind,
       );
     }
 
@@ -363,6 +381,7 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
       anchoredBlocks: eval.anchoredTexturedBlocks,
       slowDriftScore: eval.slowDriftScore,
       loomingRejected: eval.loomingRejected,
+      obstructionKind: eval.obstructionKind,
     );
   }
 
@@ -376,6 +395,7 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
     int? anchoredBlocks,
     double? slowDriftScore,
     bool? loomingRejected,
+    String? obstructionKind,
   }) {
     final config = _config;
     if (config == null) {
@@ -397,6 +417,7 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
         anchoredBlocks: anchoredBlocks,
         slowDriftScore: slowDriftScore,
         loomingRejected: loomingRejected,
+        obstructionKind: obstructionKind,
       ),
     );
   }
@@ -468,7 +489,6 @@ class BrowserCameraDetector implements MotionDetectorAdapter {
     _lastFrameAt = null;
     _analyzer?.reset();
     _analyzer = null;
-    _darkFrames = 0;
   }
 
   void _stopTracks(web.MediaStream stream) {

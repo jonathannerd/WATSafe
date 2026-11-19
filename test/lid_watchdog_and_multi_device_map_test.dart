@@ -1237,8 +1237,12 @@ void main() {
         await tester.pumpWidget(WatSafeApp(controller: controller));
         await tester.pumpAndSettle();
 
-        // Home pre-arming sleep/lid notice is present
-        expect(find.byKey(const Key('home_sleep_lid_notice')), findsOneWidget);
+        // Home simplified: bulky pre-arming sleep/lid notice removed, expandable Protection details present
+        expect(find.byKey(const Key('home_sleep_lid_notice')), findsNothing);
+        expect(
+          find.byKey(const Key('home_protection_details_tile')),
+          findsOneWidget,
+        );
 
         await tester.tap(find.text('Devices'));
         await tester.pumpAndSettle();
@@ -1388,7 +1392,7 @@ void main() {
               uri: Uri.parse('$endpoint/v1/health'),
             );
             expect(resp.statusCode, 200);
-            expect(resp.json['swVersion'], '2026.11.18-v6');
+            expect(resp.json['swVersion'], '2026.11.18-v8');
             expect(resp.json['watchdogTimeoutSeconds'], 45);
 
             final pwaReq = await client.getUrl(
@@ -1407,7 +1411,7 @@ void main() {
               contains('https://tiles.openfreemap.org/styles/liberty'),
             );
             expect(html, contains('device-chip-bar'));
-            expect(html, contains('Share this phone’s location'));
+            expect(html, contains('Share phone location'));
             expect(html, contains('coords-disclosure'));
             expect(html, contains('/v1/companion/location'));
             expect(html, contains('isFreshLivePhoneCoord'));

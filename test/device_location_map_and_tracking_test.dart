@@ -783,7 +783,7 @@ void main() {
           findsOneWidget,
         );
         expect(find.text('Center on device'), findsOneWidget);
-        expect(find.text('Open in Maps'), findsOneWidget);
+        expect(find.text('Open in Maps'), findsNothing);
         expect(tester.takeException(), isNull);
 
         // --- B. iPhone 13 viewport (390x844): Devices screen remains clean and readable with zero overflow ---
@@ -791,7 +791,7 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byType(DeviceGeographicMap), findsOneWidget);
         expect(find.text('Center on device'), findsOneWidget);
-        expect(find.text('Open in Maps'), findsOneWidget);
+        expect(find.text('Open in Maps'), findsNothing);
         expect(tester.takeException(), isNull);
 
         // --- C. Trigger an alarm with distinct alarm-time & latest locations, return to Home, then tap notification ---
@@ -853,7 +853,7 @@ void main() {
           find.byKey(const Key('incident_center_on_device_button')),
           findsOneWidget,
         );
-        expect(find.byKey(const Key('open_in_maps_button')), findsOneWidget);
+        expect(find.byKey(const Key('open_in_maps_button')), findsNothing);
 
         // --- D. Verify Companion PWA HTML & Service Worker serve Devices map, attribution & notification routing ---
         await tester.runAsync(() async {
@@ -872,7 +872,7 @@ void main() {
             expect(pwaHtml, contains('/v1/devices/locations'));
             expect(pwaHtml, contains('/v1/location-history'));
             expect(pwaHtml, contains('Center on device'));
-            expect(pwaHtml, contains('Open in Maps'));
+            expect(pwaHtml, isNot(contains('Open in Maps')));
 
             final swReq = await client.getUrl(Uri.parse('$endpoint/sw.js'));
             final swResp = await swReq.close();

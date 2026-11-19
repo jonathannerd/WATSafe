@@ -78,10 +78,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final locPerm = widget.controller.locationPermissionStatus;
     final locGranted = locPerm == PermissionStatus.granted;
 
     return Scaffold(
+      backgroundColor: palette.backgroundDeep,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -96,23 +98,23 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       key: const Key('onboarding_preview_banner'),
                       padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
-                        color: WatSafeTheme.amberAccent.withValues(alpha: 0.14),
+                        color: palette.accentPrimary.withValues(alpha: 0.14),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: WatSafeTheme.amberAccent),
+                        border: Border.all(color: palette.accentPrimary),
                       ),
                       child: Row(
                         children: <Widget>[
-                          const Icon(
+                          Icon(
                             Icons.visibility_rounded,
-                            color: WatSafeTheme.amberAccent,
+                            color: palette.accentPrimary,
                             size: 20,
                           ),
                           const SizedBox(width: 10),
-                          const Expanded(
+                          Expanded(
                             child: Text(
                               'Previewing onboarding — your saved PIN, phone pairing, settings, and Activity history remain untouched.',
                               style: TextStyle(
-                                color: WatSafeTheme.warmOffWhite,
+                                color: palette.textPrimary,
                                 fontSize: 13,
                                 height: 1.35,
                               ),
@@ -129,9 +131,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     ),
                     const SizedBox(height: 20),
                   ],
-                  const Center(
+                  Center(
                     child: WatSafeShieldGraphic(
-                      accentColor: WatSafeTheme.amberAccent,
+                      accentColor: palette.accentPrimary,
                       size: 64,
                       isActiveWave: true,
                     ),
@@ -142,15 +144,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.w800,
-                      color: WatSafeTheme.warmOffWhite,
+                      color: palette.textPrimary,
                     ),
                   ),
                   const SizedBox(height: 8),
-                  const Text(
+                  Text(
                     'Name this device and create a PIN so only you can turn protection off.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      color: WatSafeTheme.warmMuted,
+                      color: palette.textMuted,
                       fontSize: 14.5,
                       height: 1.4,
                     ),
@@ -221,11 +223,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             Container(
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
-                                color: WatSafeTheme.charcoalElevated,
+                                color: palette.surfaceElevated,
                                 borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: WatSafeTheme.charcoalBorder,
-                                ),
+                                border: Border.all(color: palette.borderColor),
                               ),
                               child: Row(
                                 children: <Widget>[
@@ -234,16 +234,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                                         ? Icons.check_circle_rounded
                                         : Icons.location_on_outlined,
                                     color: locGranted
-                                        ? WatSafeTheme.readyEmerald
-                                        : WatSafeTheme.amberAccent,
+                                        ? palette.readyColor
+                                        : palette.accentPrimary,
                                     size: 20,
                                   ),
                                   const SizedBox(width: 10),
-                                  const Expanded(
+                                  Expanded(
                                     child: Text(
                                       'Allow location access so WATSafe can share where this device is with your paired phone if an alarm triggers.',
                                       style: TextStyle(
-                                        color: WatSafeTheme.warmMuted,
+                                        color: palette.textMuted,
                                         fontSize: 12.5,
                                         height: 1.35,
                                       ),
@@ -270,18 +270,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             Container(
                               padding: const EdgeInsets.all(12),
                               decoration: BoxDecoration(
-                                color: WatSafeTheme.alarmCrimson.withValues(
+                                color: palette.alarmColor.withValues(
                                   alpha: 0.15,
                                 ),
                                 borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: WatSafeTheme.alarmCrimson,
-                                ),
+                                border: Border.all(color: palette.alarmColor),
                               ),
                               child: Text(
                                 _errorMessage!,
-                                style: const TextStyle(
-                                  color: WatSafeTheme.warmOffWhite,
+                                style: TextStyle(
+                                  color: palette.textPrimary,
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),

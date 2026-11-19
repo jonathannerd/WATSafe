@@ -81,8 +81,11 @@ void main() {
       expect(find.text('Activity'), findsOneWidget);
       expect(find.text('Settings'), findsOneWidget);
 
-      // Navigate to Settings and run the 5-second local siren test
+      // Navigate to Settings -> Alarm and run the 5-second local siren test
       await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byKey(const Key('settings_category_alarm')));
       await tester.pumpAndSettle();
 
       final startTestFinder = find.byKey(const Key('start_test_alarm_button'));

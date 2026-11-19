@@ -23,15 +23,25 @@ Future<void> main() async {
 
   final services = platform.createAppServices();
 
+  final settingsStorage = _PlatformDefaultSettingsDecorator(
+    services.settings,
+    services.defaultDetector,
+  );
+  try {
+    final initialSettings = await settingsStorage.loadSettings().timeout(
+      const Duration(milliseconds: 250),
+    );
+    WatSafeTheme.primeColorTheme(initialSettings.colorTheme);
+  } catch (_) {
+    // Fall back to default theme if storage read times out.
+  }
+
   final controller = AlarmController(
     detectors: services.detectors,
     audioAdapter: services.audio,
     pinService: PinSecurityService(storage: services.pinStorage),
     incidentStorage: services.incidents,
-    settingsStorage: _PlatformDefaultSettingsDecorator(
-      services.settings,
-      services.defaultDetector,
-    ),
+    settingsStorage: settingsStorage,
     notificationAdapter: services.notifications,
     locationAdapter: services.location,
     localNotificationAdapter: services.localNotifications,

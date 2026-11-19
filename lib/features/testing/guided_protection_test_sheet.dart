@@ -17,7 +17,7 @@ Future<void> showGuidedProtectionTestSheet(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      backgroundColor: WatSafeTheme.charcoalSurface,
+      backgroundColor: WatSafeTheme.of(context).surfaceCard,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
       ),
@@ -62,6 +62,7 @@ class _GuidedProtectionTestSheetState
     return ListenableBuilder(
       listenable: widget.controller,
       builder: (context, _) {
+        final palette = WatSafeTheme.of(context);
         final phase = widget.controller.guidedTestPhase;
         final falseCount = widget.controller.guidedTestFalseTriggers;
         final pickupDetected = widget.controller.guidedTestPickupDetected;
@@ -81,9 +82,9 @@ class _GuidedProtectionTestSheetState
                 children: <Widget>[
                   Row(
                     children: <Widget>[
-                      const Icon(
+                      Icon(
                         Icons.verified_user_outlined,
-                        color: WatSafeTheme.amberAccent,
+                        color: palette.accentPrimary,
                       ),
                       const SizedBox(width: 10),
                       Expanded(
@@ -104,36 +105,36 @@ class _GuidedProtectionTestSheetState
                   const SizedBox(height: 6),
                   Text(
                     'Silent check (${preset.title} preset) — no siren will sound and no phone alert will be sent.',
-                    style: const TextStyle(
-                      color: WatSafeTheme.warmMuted,
-                      fontSize: 13.5,
-                    ),
+                    style: TextStyle(color: palette.textMuted, fontSize: 13.5),
                   ),
                   const SizedBox(height: 18),
                   if (_starting || phase == 'calibrating')
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 28),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 28),
                       child: Column(
                         children: <Widget>[
-                          CircularProgressIndicator(),
-                          SizedBox(height: 12),
+                          CircularProgressIndicator(
+                            color: palette.accentPrimary,
+                          ),
+                          const SizedBox(height: 12),
                           Text(
                             'Calibrating baseline — keep your device still for a moment…',
                             textAlign: TextAlign.center,
-                            style: TextStyle(color: WatSafeTheme.warmMuted),
+                            style: TextStyle(color: palette.textMuted),
                           ),
                         ],
                       ),
                     )
                   else if (phase == 'failed')
-                    _buildFailedCard(context)
+                    _buildFailedCard(context, palette)
                   else if (phase == 'completed' || pickupDetected)
-                    _buildCompletedCard(context, falseCount, latency)
+                    _buildCompletedCard(context, palette, falseCount, latency)
                   else if (phase == 'lift_check')
-                    _buildLiftStepCard(context, telemetry?.motionScore)
+                    _buildLiftStepCard(context, palette, telemetry?.motionScore)
                   else
                     _buildPasserbyStepCard(
                       context,
+                      palette,
                       falseCount,
                       telemetry?.motionScore,
                     ),
@@ -148,34 +149,38 @@ class _GuidedProtectionTestSheetState
 
   Widget _buildPasserbyStepCard(
     BuildContext context,
+    WatSafePalette palette,
     int falseCount,
     double? liveScore,
   ) {
     final passedCleanly = falseCount == 0;
+    final statusColor = passedCleanly
+        ? palette.readyColor
+        : palette.warningColor;
     return Container(
       key: const Key('guided_test_passerby_card'),
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: WatSafeTheme.charcoalElevated,
+        color: palette.surfaceElevated,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: WatSafeTheme.charcoalBorder),
+        border: Border.all(color: palette.borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          const Text(
+          Text(
             'Step 1 of 2 • Everyday scene activity',
             style: TextStyle(
-              color: WatSafeTheme.amberAccent,
+              color: palette.accentPrimary,
               fontWeight: FontWeight.w700,
               fontSize: 12.5,
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             'Leave this device resting still on your desk. Walk behind it, lean toward the screen, or wave a hand briefly in front of the camera.',
             style: TextStyle(
-              color: WatSafeTheme.warmOffWhite,
+              color: palette.textPrimary,
               fontSize: 14.5,
               height: 1.4,
             ),
@@ -184,11 +189,7 @@ class _GuidedProtectionTestSheetState
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
-              color:
-                  (passedCleanly
-                          ? WatSafeTheme.readyEmerald
-                          : WatSafeTheme.amberAccent)
-                      .withValues(alpha: 0.14),
+              color: statusColor.withValues(alpha: 0.14),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Row(
@@ -197,9 +198,7 @@ class _GuidedProtectionTestSheetState
                   passedCleanly
                       ? Icons.check_circle_rounded
                       : Icons.info_outline_rounded,
-                  color: passedCleanly
-                      ? WatSafeTheme.readyEmerald
-                      : WatSafeTheme.amberAccent,
+                  color: statusColor,
                   size: 20,
                 ),
                 const SizedBox(width: 10),
@@ -208,7 +207,8 @@ class _GuidedProtectionTestSheetState
                     passedCleanly
                         ? 'No false alarms triggered so far'
                         : '$falseCount trigger${falseCount == 1 ? '' : 's'} detected — consider switching sensitivity to "Fewer false alarms" in Settings if the device stayed still.',
-                    style: const TextStyle(
+                    style: TextStyle(
+                      color: palette.textPrimary,
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                     ),
@@ -224,8 +224,8 @@ class _GuidedProtectionTestSheetState
               child: LinearProgressIndicator(
                 minHeight: 6,
                 value: (liveScore * 3.0).clamp(0.0, 1.0),
-                backgroundColor: WatSafeTheme.charcoalDeep,
-                color: WatSafeTheme.readyEmerald,
+                backgroundColor: palette.backgroundDeep,
+                color: palette.readyColor,
               ),
             ),
           ],
@@ -241,31 +241,35 @@ class _GuidedProtectionTestSheetState
     );
   }
 
-  Widget _buildLiftStepCard(BuildContext context, double? liveScore) {
+  Widget _buildLiftStepCard(
+    BuildContext context,
+    WatSafePalette palette,
+    double? liveScore,
+  ) {
     return Container(
       key: const Key('guided_test_lift_card'),
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: WatSafeTheme.charcoalElevated,
+        color: palette.surfaceElevated,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: WatSafeTheme.amberAccent),
+        border: Border.all(color: palette.accentPrimary),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          const Text(
+          Text(
             'Step 2 of 2 • Pickup & tilt check',
             style: TextStyle(
-              color: WatSafeTheme.amberAccent,
+              color: palette.accentPrimary,
               fontWeight: FontWeight.w700,
               fontSize: 12.5,
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             'Now gently lift, tilt, or slide this device across the table as if someone were picking it up.',
             style: TextStyle(
-              color: WatSafeTheme.warmOffWhite,
+              color: palette.textPrimary,
               fontSize: 14.5,
               height: 1.4,
             ),
@@ -278,14 +282,14 @@ class _GuidedProtectionTestSheetState
               value: liveScore != null
                   ? (liveScore * 3.5).clamp(0.05, 1.0)
                   : null,
-              backgroundColor: WatSafeTheme.charcoalDeep,
-              color: WatSafeTheme.amberAccent,
+              backgroundColor: palette.backgroundDeep,
+              color: palette.accentPrimary,
             ),
           ),
           const SizedBox(height: 10),
-          const Text(
+          Text(
             'Waiting for device movement…',
-            style: TextStyle(fontSize: 13, color: WatSafeTheme.warmMuted),
+            style: TextStyle(fontSize: 13, color: palette.textMuted),
           ),
         ],
       ),
@@ -294,6 +298,7 @@ class _GuidedProtectionTestSheetState
 
   Widget _buildCompletedCard(
     BuildContext context,
+    WatSafePalette palette,
     int falseCount,
     Duration? latency,
   ) {
@@ -304,29 +309,24 @@ class _GuidedProtectionTestSheetState
       key: const Key('guided_test_completed_card'),
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: WatSafeTheme.readyEmerald.withValues(alpha: 0.14),
+        color: palette.readyColor.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: WatSafeTheme.readyEmerald.withValues(alpha: 0.6),
-        ),
+        border: Border.all(color: palette.readyColor.withValues(alpha: 0.6)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          const Row(
+          Row(
             children: <Widget>[
-              Icon(
-                Icons.check_circle_rounded,
-                color: WatSafeTheme.readyEmerald,
-              ),
-              SizedBox(width: 10),
+              Icon(Icons.check_circle_rounded, color: palette.readyColor),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
                   'Pickup detected cleanly',
                   style: TextStyle(
                     fontWeight: FontWeight.w800,
                     fontSize: 16,
-                    color: WatSafeTheme.warmOffWhite,
+                    color: palette.textPrimary,
                   ),
                 ),
               ),
@@ -336,8 +336,8 @@ class _GuidedProtectionTestSheetState
           Text(
             '${secs != null ? "Device movement was recognized in ${secs}s. " : ""}'
             '${falseCount == 0 ? "Everyday scene motion triggered 0 false alarms." : "Scene check recorded $falseCount trigger${falseCount == 1 ? '' : 's'}."}',
-            style: const TextStyle(
-              color: WatSafeTheme.warmOffWhite,
+            style: TextStyle(
+              color: palette.textPrimary,
               fontSize: 13.5,
               height: 1.4,
             ),
@@ -370,13 +370,13 @@ class _GuidedProtectionTestSheetState
     );
   }
 
-  Widget _buildFailedCard(BuildContext context) {
+  Widget _buildFailedCard(BuildContext context, WatSafePalette palette) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: WatSafeTheme.charcoalElevated,
+        color: palette.surfaceElevated,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: WatSafeTheme.charcoalBorder),
+        border: Border.all(color: palette.borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -384,7 +384,7 @@ class _GuidedProtectionTestSheetState
           Text(
             widget.controller.warningMessage ??
                 'Could not start motion detection for the guided test.',
-            style: const TextStyle(color: WatSafeTheme.warmOffWhite),
+            style: TextStyle(color: palette.textPrimary),
           ),
           const SizedBox(height: 14),
           FilledButton(

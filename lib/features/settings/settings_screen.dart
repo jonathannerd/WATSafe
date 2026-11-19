@@ -5,19 +5,38 @@ import '../../core/alarm/alarm_controller.dart';
 import '../../core/alarm/alarm_state.dart';
 import '../../core/models/detector_models.dart';
 import '../../core/models/settings_models.dart';
+import '../pairing/phone_pairing_sheet.dart';
 import '../testing/guided_protection_test_sheet.dart';
 import '../theme/watsafe_theme.dart';
 
-/// Clean user-facing Settings screen for:
-/// - Device name (used during phone pairing & alerts)
-/// - Motion detection method (where multiple are supported), sensitivity, arming delay, & siren volume
-/// - Notification and location permissions & location-on-alarm sharing
-/// - Changing the security PIN
-/// - Collapsed Advanced disclosure for technical service overrides & history clearing
+/// Categorized Settings hub with 7 short-labeled categories and dedicated
+/// category pages with clear Back navigation:
+/// 1. Protection
+/// 2. Alarm
+/// 3. Devices & notifications
+/// 4. Location & privacy
+/// 5. PIN & security
+/// 6. Appearance
+/// 7. Advanced & help
+enum SettingsCategory {
+  protection,
+  alarm,
+  devices,
+  location,
+  pin,
+  appearance,
+  advanced,
+}
+
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, required this.controller});
+  const SettingsScreen({
+    super.key,
+    required this.controller,
+    this.initialCategory,
+  });
 
   final AlarmController controller;
+  final SettingsCategory? initialCategory;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -35,6 +54,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _customSoundFilePathController =
       TextEditingController();
 
+  SettingsCategory? _activeCategory;
   String? _pinMessage;
   bool _pinSuccess = false;
   bool _isUpdatingPin = false;
@@ -54,6 +74,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _activeCategory = widget.initialCategory;
     widget.controller.addListener(_onControllerUpdated);
     _deviceNameController = TextEditingController(
       text: widget.controller.effectiveDeviceName,
@@ -86,6 +107,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _customSoundNameController.dispose();
     _customSoundFilePathController.dispose();
     super.dispose();
+  }
+
+  void _openCategory(SettingsCategory category) {
+    setState(() {
+      _activeCategory = category;
+    });
+  }
+
+  void _returnToCategoryList() {
+    setState(() {
+      _activeCategory = null;
+    });
   }
 
   Future<void> _saveDeviceName() async {
@@ -204,6 +237,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    WatSafeTheme.of(context);
     final controller = widget.controller;
     final settings = controller.settings;
     final isLockedByProtection =
@@ -212,138 +246,228 @@ class _SettingsScreenState extends State<SettingsScreen> {
         controller.state == ProtectionState.alarming ||
         controller.state == ProtectionState.paused;
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 680),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Text(
-                'Settings',
-                style: Theme.of(context).textTheme.headlineSmall
-                    ?.copyWith(fontWeight: FontWeight.w800),
-              ),
-              const SizedBox(height: 6),
-              const Text(
-                'Manage how WATSafe protects this device, shares location, and verifies your PIN.',
-                style: TextStyle(color: WatSafeTheme.warmMuted),
-              ),
-              const SizedBox(height: 20),
-
-              // 1. Device Identity
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: <Widget>[
-                      Text(
-                        'This device',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700),
-                      ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        'Shown when pairing your phone and in alarm notifications.',
-                        style: TextStyle(
-                          color: WatSafeTheme.warmMuted,
-                          fontSize: 13.5,
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      Row(
-                        children: <Widget>[
-                          Expanded(
-                            child: TextField(
-                              key: const Key('settings_device_name_input'),
-                              controller: _deviceNameController,
-                              decoration: const InputDecoration(
-                                labelText: 'Device name',
-                                hintText: 'Jonathan’s MacBook',
-                              ),
-                              onSubmitted: (_) => _saveDeviceName(),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          OutlinedButton(
-                            key: const Key('save_device_name_button'),
-                            onPressed: _saveDeviceName,
-                            child: const Text('Save'),
-                          ),
-                        ],
-                      ),
-                      if (_deviceNameSavedNote != null) ...<Widget>[
-                        const SizedBox(height: 8),
-                        Text(
-                          _deviceNameSavedNote!,
-                          style: const TextStyle(
-                            color: WatSafeTheme.readyEmerald,
-                            fontSize: 12.5,
-                          ),
-                        ),
-                      ],
-                    ],
+    return PopScope(
+      canPop: _activeCategory == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _activeCategory != null) {
+          _returnToCategoryList();
+        }
+      },
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 680),
+            child: _activeCategory == null
+                ? _buildCategoryIndex(context, controller, settings)
+                : _buildCategoryDetail(
+                    context,
+                    _activeCategory!,
+                    controller,
+                    settings,
+                    isLockedByProtection,
                   ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // 2. Motion Detection & Siren
-              _buildMotionAndSirenCard(
-                context,
-                controller,
-                settings.motionSensitivity,
-                settings.armingCountdownSeconds,
-                settings.alarmVolume,
-                isLockedByProtection,
-              ),
-              const SizedBox(height: 16),
-
-              // 2b. Appearance & Color Themes
-              _buildColorThemesCard(context, controller, settings),
-              const SizedBox(height: 16),
-
-              // 2c. Alarm Noises & Custom Alarm Sounds
-              _buildAlarmSoundsCard(context, controller, settings),
-              const SizedBox(height: 16),
-
-              // 3. Notifications & Location Permissions
-              _buildPermissionsCard(context, controller),
-              const SizedBox(height: 16),
-
-              // 4. Permanent Phone Companion Address & One-Time Migration
-              if (controller.canManagePairing) ...<Widget>[
-                _buildPermanentCompanionCard(context, controller),
-                const SizedBox(height: 16),
-              ],
-
-              // 5. Change PIN
-              _buildChangePinCard(context),
-              const SizedBox(height: 16),
-
-              // 6. Collapsed Advanced Section (relay override & clear history out of normal flow)
-              _buildAdvancedSection(context, controller, isLockedByProtection),
-            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _buildMotionAndSirenCard(
+  Widget _buildCategoryIndex(
     BuildContext context,
     AlarmController controller,
-    double sensitivity,
-    int countdownSeconds,
-    double alarmVolume,
+    ProtectionSettings settings,
+  ) {
+    final methodLabel = controller.selectedDetectorType.userFacingMethodName;
+    final pairedPhone = controller.pairedDevices.firstOrNull;
+    final devicesSubtitle = pairedPhone != null
+        ? '${controller.effectiveDeviceName} · ${pairedPhone.displayName}'
+        : '${controller.effectiveDeviceName} · No phone paired';
+    final locPerm = controller.locationPermissionStatus;
+    final shareLocation = settings.shareLocationOnAlarm;
+    final locationSubtitle = !shareLocation
+        ? 'Off'
+        : (locPerm == PermissionStatus.granted
+              ? 'On · Every 4 min while open'
+              : 'Permission needed');
+
+    return Column(
+      key: const Key('settings_category_list'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Text(
+          'Settings',
+          style: Theme.of(context).textTheme.headlineSmall
+              ?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 16),
+        Card(
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: <Widget>[
+              _SettingsCategoryRow(
+                tileKey: const Key('settings_category_protection'),
+                icon: Icons.shield_outlined,
+                title: 'Protection',
+                subtitle:
+                    '$methodLabel · ${settings.sensitivityPreset.title} · ${settings.armingCountdownSeconds}s delay',
+                onTap: () => _openCategory(SettingsCategory.protection),
+              ),
+              const Divider(height: 1, indent: 56),
+              _SettingsCategoryRow(
+                tileKey: const Key('settings_category_alarm'),
+                icon: Icons.volume_up_outlined,
+                title: 'Alarm',
+                subtitle:
+                    '${settings.selectedAlarmSoundOption.displayName} · ${(settings.alarmVolume * 100).round()}% volume',
+                onTap: () => _openCategory(SettingsCategory.alarm),
+              ),
+              const Divider(height: 1, indent: 56),
+              _SettingsCategoryRow(
+                tileKey: const Key('settings_category_devices'),
+                icon: Icons.devices_rounded,
+                title: 'Devices & notifications',
+                subtitle: devicesSubtitle,
+                onTap: () => _openCategory(SettingsCategory.devices),
+              ),
+              const Divider(height: 1, indent: 56),
+              _SettingsCategoryRow(
+                tileKey: const Key('settings_category_location'),
+                icon: Icons.location_on_outlined,
+                title: 'Location & privacy',
+                subtitle: locationSubtitle,
+                onTap: () => _openCategory(SettingsCategory.location),
+              ),
+              const Divider(height: 1, indent: 56),
+              _SettingsCategoryRow(
+                tileKey: const Key('settings_category_pin'),
+                icon: Icons.lock_outline_rounded,
+                title: 'PIN & security',
+                subtitle: '6+ digit security PIN',
+                onTap: () => _openCategory(SettingsCategory.pin),
+              ),
+              const Divider(height: 1, indent: 56),
+              _SettingsCategoryRow(
+                tileKey: const Key('settings_category_appearance'),
+                icon: Icons.palette_outlined,
+                title: 'Appearance',
+                subtitle: settings.colorTheme.displayName,
+                onTap: () => _openCategory(SettingsCategory.appearance),
+              ),
+              const Divider(height: 1, indent: 56),
+              _SettingsCategoryRow(
+                tileKey: const Key('settings_category_advanced'),
+                icon: Icons.tune_rounded,
+                title: 'Advanced & help',
+                subtitle: 'Diagnostics, service address, and activity reset',
+                onTap: () => _openCategory(SettingsCategory.advanced),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCategoryDetail(
+    BuildContext context,
+    SettingsCategory category,
+    AlarmController controller,
+    ProtectionSettings settings,
     bool isLockedByProtection,
   ) {
+    final categoryTitle = switch (category) {
+      SettingsCategory.protection => 'Protection',
+      SettingsCategory.alarm => 'Alarm',
+      SettingsCategory.devices => 'Devices & notifications',
+      SettingsCategory.location => 'Location & privacy',
+      SettingsCategory.pin => 'PIN & security',
+      SettingsCategory.appearance => 'Appearance',
+      SettingsCategory.advanced => 'Advanced & help',
+    };
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            TextButton.icon(
+              key: const Key('settings_category_back_button'),
+              onPressed: _returnToCategoryList,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+              ),
+              icon: const Icon(Icons.arrow_back_rounded, size: 19),
+              label: const Text('Settings'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          categoryTitle,
+          style: Theme.of(context).textTheme.headlineSmall
+              ?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 16),
+        ...switch (category) {
+          SettingsCategory.protection => <Widget>[
+            _buildProtectionCategoryCard(
+              context,
+              controller,
+              settings.armingCountdownSeconds,
+              isLockedByProtection,
+            ),
+          ],
+          SettingsCategory.alarm => <Widget>[
+            _buildSirenVolumeAndTestCard(
+              controller,
+              settings.alarmVolume,
+              isLockedByProtection,
+            ),
+            const SizedBox(height: 16),
+            _buildAlarmSoundsCard(context, controller, settings),
+          ],
+          SettingsCategory.devices => <Widget>[
+            _buildDeviceIdentityCard(context),
+            const SizedBox(height: 16),
+            _buildPairedDevicesAndNotificationsCard(context, controller),
+            if (controller.canManagePairing) ...<Widget>[
+              const SizedBox(height: 16),
+              _buildPermanentCompanionCard(context, controller),
+            ],
+          ],
+          SettingsCategory.location => <Widget>[
+            _buildLocationAndPrivacyCard(context, controller),
+          ],
+          SettingsCategory.pin => <Widget>[_buildChangePinCard(context)],
+          SettingsCategory.appearance => <Widget>[
+            _buildColorThemesCard(context, controller, settings),
+          ],
+          SettingsCategory.advanced => <Widget>[
+            _buildAdvancedCategoryCards(
+              context,
+              controller,
+              isLockedByProtection,
+            ),
+          ],
+        },
+      ],
+    );
+  }
+
+  Widget _buildProtectionCategoryCard(
+    BuildContext context,
+    AlarmController controller,
+    int countdownSeconds,
+    bool isLockedByProtection,
+  ) {
+    final palette = WatSafeTheme.of(context);
     final hostOptions = controller.availableHostDetectors;
-    // Deduplicate options that share the same plain-language method label if needed,
-    // while keeping every distinct selectable method on this host.
     final showMethodPicker = hostOptions.length > 1;
+    final usesCamera = controller.selectedDetectorType.usesCamera;
 
     return Card(
       child: Padding(
@@ -351,16 +475,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Text(
-              'Motion detection & siren',
-              style: Theme.of(context).textTheme.titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 14),
             if (showMethodPicker) ...<Widget>[
               const Text(
-                'Detection method',
-                style: TextStyle(fontWeight: FontWeight.w600),
+                'Sensor',
+                style: TextStyle(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 8),
               ...hostOptions.map((type) {
@@ -415,7 +533,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   cap != null && !cap.canArm
                                       ? cap.summary
                                       : type.userFacingDescription,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 12.5,
                                     color: WatSafeTheme.warmMuted,
                                   ),
@@ -424,7 +542,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ),
                           if (selected)
-                            const Icon(
+                            Icon(
                               Icons.check_circle_rounded,
                               color: WatSafeTheme.amberAccent,
                             ),
@@ -438,7 +556,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ],
             const Text(
               'Sensitivity',
-              style: TextStyle(fontWeight: FontWeight.w600),
+              style: TextStyle(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             ...MotionSensitivityPreset.values.map((preset) {
@@ -455,7 +573,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 14,
-                      vertical: 12,
+                      vertical: 11,
                     ),
                     decoration: BoxDecoration(
                       color: isSelected
@@ -477,7 +595,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             isSelected
                                 ? Icons.radio_button_checked_rounded
                                 : Icons.radio_button_off_rounded,
-                            size: 20,
+                            size: 19,
                             color: isSelected
                                 ? WatSafeTheme.amberAccent
                                 : WatSafeTheme.warmMuted,
@@ -492,13 +610,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 preset.title,
                                 style: const TextStyle(
                                   fontWeight: FontWeight.w700,
-                                  fontSize: 14.5,
+                                  fontSize: 14,
                                 ),
                               ),
                               const SizedBox(height: 2),
                               Text(
                                 preset.description,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 12.5,
                                   color: WatSafeTheme.warmMuted,
                                   height: 1.35,
@@ -513,21 +631,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               );
             }),
-            if (controller.selectedDetectorType.usesCamera) ...<Widget>[
-              const SizedBox(height: 4),
-              const Text(
-                'Camera protection infers device movement from shifts across the background scene rather than built-in motion sensors. Keep the camera uncovered in a lit room so passersby can be separated from someone lifting your device.',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: WatSafeTheme.warmSubtle,
-                  height: 1.35,
-                ),
-              ),
-            ],
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
             const Text(
               'Arming delay',
-              style: TextStyle(fontWeight: FontWeight.w600),
+              style: TextStyle(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 8),
             Wrap(
@@ -538,11 +645,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 return ChoiceChip(
                   label: Text('${seconds}s'),
                   selected: selected,
-                  selectedColor: WatSafeTheme.amberAccent,
+                  selectedColor: palette.accentPrimary,
                   labelStyle: TextStyle(
                     color: selected
-                        ? WatSafeTheme.charcoalDeep
-                        : WatSafeTheme.warmOffWhite,
+                        ? palette.onAccentColor
+                        : palette.textPrimary,
                     fontWeight: FontWeight.w700,
                   ),
                   onSelected: isLockedByProtection
@@ -553,20 +660,103 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 );
               }).toList(),
             ),
-            const SizedBox(height: 18),
+            if (!controller.isCompanionMode && usesCamera) ...<Widget>[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 14),
+                child: Divider(height: 1),
+              ),
+              SwitchListTile(
+                key: const Key('alert_on_camera_obstruction_switch'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: WatSafeTheme.amberAccent,
+                title: const Text(
+                  'Camera obstruction alarm',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: Text(
+                  'Sounds siren and alerts your phone if the camera is covered while armed.',
+                  style: TextStyle(
+                    color: WatSafeTheme.warmMuted,
+                    fontSize: 12.5,
+                    height: 1.35,
+                  ),
+                ),
+                value: controller.settings.alertOnCameraObstruction,
+                onChanged: isLockedByProtection
+                    ? null
+                    : controller.updateAlertOnCameraObstruction,
+              ),
+            ],
+            if (!controller.isCompanionMode &&
+                controller.isInputInteractionDetectionSupported) ...<Widget>[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Divider(height: 1),
+              ),
+              SwitchListTile(
+                key: const Key('alert_on_input_interaction_switch'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: WatSafeTheme.amberAccent,
+                title: const Text(
+                  'Keyboard & trackpad alert',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: Text(
+                  'Starts an 8s PIN window when keys or trackpad are used while armed.',
+                  style: TextStyle(
+                    color: WatSafeTheme.warmMuted,
+                    fontSize: 12.5,
+                    height: 1.35,
+                  ),
+                ),
+                value: controller.settings.alertOnInputInteraction,
+                onChanged: isLockedByProtection
+                    ? null
+                    : controller.updateAlertOnInputInteraction,
+              ),
+            ],
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                key: const Key('settings_guided_test_button'),
+                onPressed: isLockedByProtection
+                    ? null
+                    : () => showGuidedProtectionTestSheet(context, controller),
+                icon: const Icon(Icons.verified_user_outlined, size: 18),
+                label: const Text('Guided protection test'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSirenVolumeAndTestCard(
+    AlarmController controller,
+    double alarmVolume,
+    bool isLockedByProtection,
+  ) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
                 const Expanded(
                   child: Text(
                     'Siren volume',
-                    style: TextStyle(fontWeight: FontWeight.w600),
+                    style: TextStyle(fontWeight: FontWeight.w700),
                   ),
                 ),
                 const SizedBox(width: 8),
                 Text(
                   '${(alarmVolume * 100).round()}%',
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: WatSafeTheme.amberAccent,
                     fontWeight: FontWeight.w700,
                   ),
@@ -582,65 +772,310 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onChanged: (value) =>
                   controller.updateSettings(alarmVolume: value),
             ),
-            if (!controller.isCompanionMode &&
-                controller.isInputInteractionDetectionSupported) ...<Widget>[
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 14),
-                child: Divider(height: 1),
-              ),
-              SwitchListTile(
-                key: const Key('alert_on_input_interaction_switch'),
-                contentPadding: EdgeInsets.zero,
-                activeThumbColor: WatSafeTheme.amberAccent,
-                title: const Text(
-                  'Alert on keyboard or trackpad interaction while armed',
-                  style: TextStyle(fontWeight: FontWeight.w600),
-                ),
-                subtitle: const Text(
-                  'Optional: starts an 8-second PIN grace window when keys or the trackpad are used, then triggers an alarm if not disarmed. Standard laptop hardware cannot detect touching the outer case without movement or key/trackpad input.',
-                  style: TextStyle(
-                    color: WatSafeTheme.warmMuted,
-                    fontSize: 12.5,
-                    height: 1.35,
+            const SizedBox(height: 6),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: controller.isTestAlarmRunning
+                  ? OutlinedButton.icon(
+                      key: const Key('stop_test_alarm_button'),
+                      onPressed: controller.stopTestAlarm,
+                      icon: const Icon(Icons.stop_rounded),
+                      label: const Text('Stop siren test'),
+                    )
+                  : OutlinedButton.icon(
+                      key: const Key('start_test_alarm_button'),
+                      onPressed: isLockedByProtection
+                          ? null
+                          : controller.startTestAlarm,
+                      icon: const Icon(Icons.volume_up_rounded),
+                      label: const Text('Test siren (5s)'),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDeviceIdentityCard(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Text(
+              'Device name',
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Shown on the map and in phone alerts.',
+              style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: TextField(
+                    key: const Key('settings_device_name_input'),
+                    controller: _deviceNameController,
+                    decoration: const InputDecoration(
+                      labelText: 'Device name',
+                      hintText: 'My MacBook',
+                    ),
+                    onSubmitted: (_) => _saveDeviceName(),
                   ),
                 ),
-                value: controller.settings.alertOnInputInteraction,
-                onChanged: isLockedByProtection
-                    ? null
-                    : controller.updateAlertOnInputInteraction,
-              ),
-            ],
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: <Widget>[
-                controller.isTestAlarmRunning
-                    ? OutlinedButton.icon(
-                        key: const Key('stop_test_alarm_button'),
-                        onPressed: controller.stopTestAlarm,
-                        icon: const Icon(Icons.stop_rounded),
-                        label: const Text('Stop siren test'),
-                      )
-                    : OutlinedButton.icon(
-                        key: const Key('start_test_alarm_button'),
-                        onPressed: isLockedByProtection
-                            ? null
-                            : controller.startTestAlarm,
-                        icon: const Icon(Icons.volume_up_rounded),
-                        label: const Text('Test siren (5s)'),
-                      ),
-                OutlinedButton.icon(
-                  key: const Key('settings_guided_test_button'),
-                  onPressed: isLockedByProtection
-                      ? null
-                      : () =>
-                            showGuidedProtectionTestSheet(context, controller),
-                  icon: const Icon(Icons.verified_user_outlined, size: 18),
-                  label: const Text('Guided protection test'),
+                const SizedBox(width: 12),
+                OutlinedButton(
+                  key: const Key('save_device_name_button'),
+                  onPressed: _saveDeviceName,
+                  child: const Text('Save'),
                 ),
               ],
             ),
+            if (_deviceNameSavedNote != null) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                _deviceNameSavedNote!,
+                style: TextStyle(
+                  color: WatSafeTheme.readyEmerald,
+                  fontSize: 12.5,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPairedDevicesAndNotificationsCard(
+    BuildContext context,
+    AlarmController controller,
+  ) {
+    final pairedPhone = controller.pairedDevices.firstOrNull;
+    final notifPerm = controller.localNotificationPermissionStatus;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Text(
+                        'Paired phone',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        pairedPhone != null
+                            ? '${pairedPhone.displayName} · ${pairedPhone.notificationsEnabled ? "Notifications on" : "Setup needed"}'
+                            : 'No phone paired yet',
+                        style: TextStyle(
+                          color: WatSafeTheme.warmMuted,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (pairedPhone != null)
+                  OutlinedButton(
+                    key: const Key('settings_manage_paired_phone_button'),
+                    onPressed: () =>
+                        showConnectedPhoneDetailsSheet(context, controller),
+                    child: const Text('Details'),
+                  )
+                else if (controller.canManagePairing)
+                  OutlinedButton(
+                    key: const Key('settings_pair_phone_button'),
+                    onPressed: () => showPhonePairingSheet(context, controller),
+                    child: const Text('Pair phone'),
+                  ),
+              ],
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Divider(height: 1),
+            ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Text(
+                        'Local notifications',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        _notificationPermissionSummary(
+                          isSupported: controller.isLocalNotificationsSupported,
+                          status: notifPerm,
+                          pushConfigured:
+                              controller.companionSession.pushServerConfigured,
+                        ),
+                        style: TextStyle(
+                          color: WatSafeTheme.warmMuted,
+                          fontSize: 13,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (controller.isLocalNotificationsSupported &&
+                    notifPerm != PermissionStatus.granted) ...<Widget>[
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    key: const Key('request_notification_permission_button'),
+                    onPressed: controller.requestLocalNotificationPermission,
+                    child: const Text('Allow'),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLocationAndPrivacyCard(
+    BuildContext context,
+    AlarmController controller,
+  ) {
+    final locPerm = controller.locationPermissionStatus;
+    final shareLocation = controller.settings.shareLocationOnAlarm;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            if (controller.isCompanionMode) ...<Widget>[
+              SwitchListTile(
+                key: const Key('share_companion_phone_location_switch'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: WatSafeTheme.amberAccent,
+                title: const Text(
+                  'Share phone location',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: Text(
+                  'While app is open',
+                  style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13),
+                ),
+                value: controller.settings.shareCompanionPhoneLocation,
+                onChanged: controller.updateShareCompanionPhoneLocation,
+              ),
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Divider(height: 1),
+              ),
+            ],
+            SwitchListTile(
+              key: const Key('share_location_switch'),
+              contentPadding: EdgeInsets.zero,
+              activeThumbColor: WatSafeTheme.amberAccent,
+              title: const Text(
+                'Share laptop location',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              subtitle: Text(
+                _locationPermissionSummary(
+                  isSupported: controller.isLocationSupported,
+                  status: locPerm,
+                  enabled: shareLocation,
+                ),
+                style: TextStyle(
+                  color: WatSafeTheme.warmMuted,
+                  fontSize: 13,
+                  height: 1.35,
+                ),
+              ),
+              value: shareLocation,
+              onChanged: controller.updateShareLocationOnAlarm,
+            ),
+            if (shareLocation &&
+                controller.isLocationSupported &&
+                locPerm != PermissionStatus.granted) ...<Widget>[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  key: const Key('request_location_permission_button'),
+                  onPressed: controller.requestLocationPermission,
+                  icon: const Icon(Icons.my_location_rounded, size: 18),
+                  label: Text(
+                    locPerm == PermissionStatus.denied
+                        ? 'Check location access'
+                        : 'Enable location',
+                  ),
+                ),
+              ),
+            ],
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Divider(height: 1),
+            ),
+            const Text(
+              'Stored history',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Shared only inside your paired session and automatically deleted after 7 days.',
+              style: TextStyle(
+                color: WatSafeTheme.warmMuted,
+                fontSize: 12.5,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                key: const Key('delete_location_history_button'),
+                onPressed: () async {
+                  final ok = await controller.deleteStoredLocationHistory();
+                  if (!mounted) {
+                    return;
+                  }
+                  setState(() {
+                    _locationHistoryNote = ok
+                        ? 'Stored location history deleted from this device and your relay session.'
+                        : 'Local location history deleted. Relay cleanup will sync when back online.';
+                  });
+                },
+                icon: const Icon(Icons.location_disabled_outlined, size: 18),
+                label: const Text('Delete history'),
+              ),
+            ),
+            if (_locationHistoryNote != null) ...<Widget>[
+              const SizedBox(height: 8),
+              Text(
+                _locationHistoryNote!,
+                key: const Key('location_history_deleted_note'),
+                style: TextStyle(
+                  color: WatSafeTheme.readyEmerald,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -652,6 +1087,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     AlarmController controller,
     ProtectionSettings settings,
   ) {
+    final activePalette = WatSafeTheme.of(context);
     final activeTheme = settings.colorTheme;
     return Card(
       key: const Key('color_theme_selector_card'),
@@ -660,23 +1096,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Row(
-              children: <Widget>[
-                Icon(Icons.palette_outlined, color: WatSafeTheme.amberAccent),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'Appearance & Color Themes',
-                    style: Theme.of(context).textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
             Text(
-              'Choose a color theme for the WATSafe interface. Your selection applies immediately and persists across restarts.',
-              style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13.5),
+              'Color theme',
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Applies immediately across the sidebar, controls, cards, and alerts.',
+              style: TextStyle(color: activePalette.textMuted, fontSize: 13),
             ),
             const SizedBox(height: 14),
             Wrap(
@@ -686,69 +1114,80 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   .map((themeItem) {
                     final palette = WatSafeTheme.paletteFor(themeItem);
                     final isSelected = themeItem == activeTheme;
-                    return InkWell(
-                      key: Key('theme_option_${themeItem.id}'),
-                      borderRadius: BorderRadius.circular(12),
-                      onTap: () => controller.selectColorTheme(themeItem),
-                      child: Container(
-                        width: 200,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: palette.surfaceElevated,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: isSelected
-                                ? palette.accentPrimary
-                                : palette.borderColor,
-                            width: isSelected ? 2.0 : 1.0,
+                    return Semantics(
+                      selected: isSelected,
+                      button: true,
+                      label:
+                          '${themeItem.displayName}. ${themeItem.description}',
+                      child: InkWell(
+                        key: Key('theme_option_${themeItem.id}'),
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () => controller.selectColorTheme(themeItem),
+                        child: Container(
+                          width: 200,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: palette.surfaceElevated,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: isSelected
+                                  ? palette.accentPrimary
+                                  : palette.borderColor,
+                              width: isSelected ? 2.0 : 1.0,
+                            ),
                           ),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Row(
-                              children: <Widget>[
-                                _swatchCircle(
-                                  palette.backgroundDeep,
-                                  palette.borderColor,
-                                ),
-                                const SizedBox(width: 5),
-                                _swatchCircle(
-                                  palette.accentPrimary,
-                                  palette.borderColor,
-                                ),
-                                const SizedBox(width: 5),
-                                _swatchCircle(
-                                  palette.readyColor,
-                                  palette.borderColor,
-                                ),
-                                const Spacer(),
-                                if (isSelected)
-                                  Icon(
-                                    Icons.check_circle_rounded,
-                                    size: 18,
-                                    color: palette.accentPrimary,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Row(
+                                children: <Widget>[
+                                  _swatchCircle(
+                                    palette.sidebarBackground,
+                                    palette.borderColor,
                                   ),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              themeItem.displayName,
-                              style: TextStyle(
-                                color: palette.textPrimary,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 13,
+                                  const SizedBox(width: 4),
+                                  _swatchCircle(
+                                    palette.backgroundDeep,
+                                    palette.borderColor,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  _swatchCircle(
+                                    palette.accentPrimary,
+                                    palette.borderColor,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  _swatchCircle(
+                                    palette.readyColor,
+                                    palette.borderColor,
+                                  ),
+                                  const Spacer(),
+                                  if (isSelected)
+                                    Icon(
+                                      Icons.check_circle_rounded,
+                                      size: 18,
+                                      color: palette.accentPrimary,
+                                    ),
+                                ],
                               ),
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              themeItem.description,
-                              style: TextStyle(
-                                color: palette.textMuted,
-                                fontSize: 11.5,
+                              const SizedBox(height: 8),
+                              Text(
+                                themeItem.displayName,
+                                style: TextStyle(
+                                  color: palette.textPrimary,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                ),
                               ),
-                            ),
-                          ],
+                              const SizedBox(height: 3),
+                              Text(
+                                themeItem.description,
+                                style: TextStyle(
+                                  color: palette.textMuted,
+                                  fontSize: 11.5,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     );
@@ -793,22 +1232,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               alignment: WrapAlignment.spaceBetween,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: <Widget>[
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Icon(
-                      Icons.notifications_active_outlined,
-                      color: WatSafeTheme.amberAccent,
-                    ),
-                    const SizedBox(width: 10),
-                    Flexible(
-                      child: Text(
-                        'Alarm Noises & Custom Alarm Sounds',
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                  ],
+                Text(
+                  'Alarm sound',
+                  style: Theme.of(context).textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w700),
                 ),
                 OutlinedButton.icon(
                   key: const Key('preview_alarm_sound_button'),
@@ -822,19 +1249,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     size: 18,
                   ),
                   label: Text(
-                    controller.isTestAlarmRunning
-                        ? 'Stop Preview'
-                        : 'Preview Selected',
+                    controller.isTestAlarmRunning ? 'Stop Preview' : 'Preview',
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 6),
-            Text(
-              'Select from built-in deterrents or add your own custom alarm sounds (.wav audio files or custom-synthesized frequency patterns).',
-              style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13.5),
-            ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
             ...allOptions.map((option) {
               final isSelected = option.id == selectedOption.id;
               return Container(
@@ -930,7 +1350,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             }),
             const Divider(),
             Text(
-              'Add Custom Alarm Sound',
+              'Custom sound',
               style: Theme.of(context).textTheme.titleSmall
                   ?.copyWith(fontWeight: FontWeight.w700),
             ),
@@ -940,12 +1360,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
               controller: _customSoundNameController,
               decoration: const InputDecoration(
                 labelText: 'Custom Alarm Name',
-                hintText: 'e.g. Lab Bench Klaxon or My Custom Siren',
+                hintText: 'e.g. Lab Bench Klaxon',
               ),
             ),
             const SizedBox(height: 12),
             Text(
-              'Option A: Import a Custom .WAV Audio File',
+              'Import .WAV audio',
               style: TextStyle(
                 color: WatSafeTheme.warmOffWhite,
                 fontWeight: FontWeight.w600,
@@ -1002,7 +1422,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'Option B: Synthesize a Custom Alarm Tone',
+              'Synthesize tone',
               style: TextStyle(
                 color: WatSafeTheme.warmOffWhite,
                 fontWeight: FontWeight.w600,
@@ -1038,7 +1458,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                const Expanded(child: Text('Primary Tone Frequency')),
+                const Expanded(child: Text('Primary frequency')),
                 const SizedBox(width: 8),
                 Text(
                   '${_customPrimaryFreqHz.round()} Hz',
@@ -1065,7 +1485,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                const Expanded(child: Text('Secondary Tone Frequency')),
+                const Expanded(child: Text('Secondary frequency')),
                 const SizedBox(width: 8),
                 Text(
                   '${_customSecondaryFreqHz.round()} Hz',
@@ -1092,7 +1512,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
-                const Expanded(child: Text('Modulation / Pulse Speed')),
+                const Expanded(child: Text('Pulse speed')),
                 const SizedBox(width: 8),
                 Text(
                   '${_customModulationRateHz.toStringAsFixed(1)} Hz',
@@ -1146,195 +1566,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildPermissionsCard(
-    BuildContext context,
-    AlarmController controller,
-  ) {
-    final locPerm = controller.locationPermissionStatus;
-    final notifPerm = controller.localNotificationPermissionStatus;
-    final shareLocation = controller.settings.shareLocationOnAlarm;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            Text(
-              'Permissions & location sharing',
-              style: Theme.of(context).textTheme.titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 14),
-
-            if (controller.isCompanionMode) ...<Widget>[
-              SwitchListTile(
-                key: const Key('share_companion_phone_location_switch'),
-                contentPadding: EdgeInsets.zero,
-                activeThumbColor: WatSafeTheme.amberAccent,
-                title: const Text(
-                  'Share this phone’s location',
-                  style: TextStyle(fontWeight: FontWeight.w600),
-                ),
-                subtitle: const Text(
-                  'Off by default. Shares this phone’s location on the Devices map only while WATSafe is open in the foreground, and pauses in the background while keeping last-known coordinates labeled with their timestamp.',
-                  style: TextStyle(
-                    color: WatSafeTheme.warmMuted,
-                    fontSize: 13,
-                    height: 1.35,
-                  ),
-                ),
-                value: controller.settings.shareCompanionPhoneLocation,
-                onChanged: controller.updateShareCompanionPhoneLocation,
-              ),
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 12),
-                child: Divider(height: 1),
-              ),
-            ],
-
-            // Location sharing toggle + permission status
-            SwitchListTile(
-              key: const Key('share_location_switch'),
-              contentPadding: EdgeInsets.zero,
-              activeThumbColor: WatSafeTheme.amberAccent,
-              title: const Text(
-                'Share device location when an alarm triggers',
-                style: TextStyle(fontWeight: FontWeight.w600),
-              ),
-              subtitle: Text(
-                _locationPermissionSummary(
-                  isSupported: controller.isLocationSupported,
-                  status: locPerm,
-                  enabled: shareLocation,
-                ),
-                style: const TextStyle(
-                  color: WatSafeTheme.warmMuted,
-                  fontSize: 13,
-                  height: 1.35,
-                ),
-              ),
-              value: shareLocation,
-              onChanged: controller.updateShareLocationOnAlarm,
-            ),
-            if (shareLocation &&
-                controller.isLocationSupported &&
-                locPerm != PermissionStatus.granted) ...<Widget>[
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: OutlinedButton.icon(
-                  key: const Key('request_location_permission_button'),
-                  onPressed: controller.requestLocationPermission,
-                  icon: const Icon(Icons.my_location_rounded, size: 18),
-                  label: Text(
-                    locPerm == PermissionStatus.denied
-                        ? 'Check location access again'
-                        : 'Allow location access',
-                  ),
-                ),
-              ),
-            ],
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Divider(height: 1),
-            ),
-
-            // Notifications permission status
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      const Text(
-                        'Alert notifications',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        _notificationPermissionSummary(
-                          isSupported: controller.isLocalNotificationsSupported,
-                          status: notifPerm,
-                          pushConfigured:
-                              controller.companionSession.pushServerConfigured,
-                        ),
-                        style: const TextStyle(
-                          color: WatSafeTheme.warmMuted,
-                          fontSize: 13,
-                          height: 1.35,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (controller.isLocalNotificationsSupported &&
-                    notifPerm != PermissionStatus.granted) ...<Widget>[
-                  const SizedBox(width: 12),
-                  OutlinedButton(
-                    key: const Key('request_notification_permission_button'),
-                    onPressed: controller.requestLocalNotificationPermission,
-                    child: const Text('Allow'),
-                  ),
-                ],
-              ],
-            ),
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Divider(height: 1),
-            ),
-            const Text(
-              'Location privacy & 7-day retention',
-              style: TextStyle(fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'Protected-device location is shared only with your paired session while armed and for up to 15 minutes after an alarm, stopping immediately on PIN disarm. Companion phone location is off by default and updates only in the foreground when explicitly enabled. Laptop Wi-Fi positioning may be approximate, and sleeping or offline devices cannot report new updates. Stored location history is automatically deleted after 7 days.',
-              style: TextStyle(
-                color: WatSafeTheme.warmMuted,
-                fontSize: 12.5,
-                height: 1.4,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: OutlinedButton.icon(
-                key: const Key('delete_location_history_button'),
-                onPressed: () async {
-                  final ok = await controller.deleteStoredLocationHistory();
-                  if (!mounted) {
-                    return;
-                  }
-                  setState(() {
-                    _locationHistoryNote = ok
-                        ? 'Stored location history deleted from this device and your relay session.'
-                        : 'Local location history deleted. Relay cleanup will sync when back online.';
-                  });
-                },
-                icon: const Icon(Icons.location_disabled_outlined, size: 18),
-                label: const Text('Delete stored location history'),
-              ),
-            ),
-            if (_locationHistoryNote != null) ...<Widget>[
-              const SizedBox(height: 8),
-              Text(
-                _locationHistoryNote!,
-                key: const Key('location_history_deleted_note'),
-                style: const TextStyle(
-                  color: WatSafeTheme.readyEmerald,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildPermanentCompanionCard(
     BuildContext context,
     AlarmController controller,
@@ -1354,7 +1585,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: <Widget>[
                 Expanded(
                   child: Text(
-                    'Phone companion address & migration',
+                    'Companion address',
                     style: Theme.of(context).textTheme.titleMedium
                         ?.copyWith(fontWeight: FontWeight.w700),
                   ),
@@ -1395,11 +1626,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 8),
             Text(
               isPermanent
-                  ? 'Active companion URL: $currentUrl/companion. Both WATSafe on this laptop and your installed iPhone Home Screen app reconnect automatically on startup.'
+                  ? 'Active URL: $currentUrl/companion'
                   : (isEphemeral
-                        ? 'Currently using a temporary tunnel ($currentUrl). Temporary tunnels generate a new domain after restarts, causing old Home Screen bookmarks to open white tunnel error pages. Deploy the permanent relay with Aiven PostgreSQL (render.yaml + AIVEN_DATABASE_URL secret, or a Named Cloudflare Tunnel) and save its https:// address below.'
-                        : 'Deploy the permanent HTTPS relay with Aiven PostgreSQL (render.yaml + AIVEN_DATABASE_URL secret, or a Named Cloudflare Tunnel) and save its https:// address below so your iPhone Home Screen icon and pairing survive every restart.'),
-              style: const TextStyle(
+                        ? 'Using temporary tunnel ($currentUrl). Save a permanent https:// address so your phone pairing survives restarts.'
+                        : 'Save a permanent https:// relay address so your phone pairing survives restarts.'),
+              style: TextStyle(
                 color: WatSafeTheme.warmMuted,
                 fontSize: 13,
                 height: 1.4,
@@ -1461,7 +1692,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ],
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             Theme(
               data: Theme.of(context)
                   .copyWith(dividerColor: Colors.transparent),
@@ -1470,15 +1701,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 tilePadding: EdgeInsets.zero,
                 childrenPadding: const EdgeInsets.only(top: 4, bottom: 8),
                 title: const Text(
-                  'Migrating from an old Home Screen icon (one-time steps)',
+                  'Migrating from an old Home Screen icon',
                   style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
                 ),
-                children: const <Widget>[
+                children: <Widget>[
                   Text(
-                    'Why one final install is required: iOS isolates Home Screen web apps, Service Workers, saved credentials, and Web Push subscriptions strictly by domain. Moving off an expired *.trycloudflare.com domain to your permanent https:// address requires replacing the bookmark once:\n\n'
-                    '1. On your iPhone Home Screen, touch and hold the old WATSafe icon and tap Delete Bookmark.\n'
-                    '2. Save your permanent https:// URL above, then open Pair your phone on Home and scan the QR code once in Safari.\n'
-                    '3. Follow the guided Add to Home Screen + Enable notifications steps one final time. After that, closing/reopening WATSafe or restarting either device reconnects automatically.',
+                    '1. On your iPhone Home Screen, touch and hold an expired tunnel icon and tap Delete Bookmark.\n'
+                    '2. Save your permanent https:// URL above, then scan the QR code from Pair your phone once.\n'
+                    '3. Add to Home Screen and enable notifications. Future updates migrate automatically.',
                     style: TextStyle(
                       color: WatSafeTheme.warmMuted,
                       fontSize: 12.5,
@@ -1506,10 +1736,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               style: Theme.of(context).textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w700),
             ),
-            const SizedBox(height: 6),
-            const Text(
-              'Your PIN is required to disarm protection or silence a triggered alarm.',
-              style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13.5),
+            const SizedBox(height: 4),
+            Text(
+              'Required to disarm protection or silence an alarm.',
+              style: TextStyle(color: WatSafeTheme.warmMuted, fontSize: 13),
             ),
             const SizedBox(height: 16),
             TextField(
@@ -1574,45 +1804,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildAdvancedSection(
+  Widget _buildAdvancedCategoryCards(
     BuildContext context,
     AlarmController controller,
     bool isLockedByProtection,
   ) {
     return Card(
-      clipBehavior: Clip.antiAlias,
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          key: const Key('advanced_settings_tile'),
-          title: const Text(
-            'Advanced',
-            style: TextStyle(fontWeight: FontWeight.w700),
-          ),
-          subtitle: Text(
-            controller.enableDeveloperControls
-                ? 'First-use demo reset, activity cleanup, and custom alert server settings'
-                : 'Activity history cleanup and custom alert server settings',
-            style: const TextStyle(
-              color: WatSafeTheme.warmMuted,
-              fontSize: 12.5,
-            ),
-          ),
-          childrenPadding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-          expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: <Widget>[
                 const Expanded(
                   child: Text(
-                    'Fine-tune sensitivity threshold',
-                    style: TextStyle(fontWeight: FontWeight.w600),
+                    'Sensitivity threshold',
+                    style: TextStyle(fontWeight: FontWeight.w700),
                   ),
                 ),
                 Text(
                   '${_sensitivityLabel(controller.settings.motionSensitivity)} (${(controller.settings.motionSensitivity * 100).round()}%)',
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: WatSafeTheme.amberAccent,
                     fontWeight: FontWeight.w700,
                     fontSize: 12.5,
@@ -1666,7 +1880,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
                 Text(
                   _advancedNote!,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: WatSafeTheme.readyEmerald,
                     fontSize: 12.5,
                   ),
@@ -1702,17 +1916,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    const Row(
+                    Row(
                       children: <Widget>[
                         Icon(
                           Icons.science_outlined,
                           size: 18,
                           color: WatSafeTheme.amberAccent,
                         ),
-                        SizedBox(width: 8),
-                        Expanded(
+                        const SizedBox(width: 8),
+                        const Expanded(
                           child: Text(
-                            'First-use & demo testing (Development only)',
+                            'First-use & demo testing',
                             style: TextStyle(
                               fontWeight: FontWeight.w700,
                               fontSize: 13.5,
@@ -1721,16 +1935,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Relaunching or hot restarting WATSafe keeps your saved PIN, paired phone, settings, and Activity history. Use Preview onboarding to inspect the welcome flow safely, or Reset demo to test a clean first launch. OS and browser permissions stay managed by system settings.',
-                      style: TextStyle(
-                        color: WatSafeTheme.warmMuted,
-                        fontSize: 12.5,
-                        height: 1.4,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 10),
                     Wrap(
                       spacing: 10,
                       runSpacing: 10,
@@ -1776,51 +1981,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ) async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        key: const Key('reset_demo_confirm_dialog'),
-        title: const Text('Reset demo and restart onboarding?'),
-        content: const SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                'This development reset affects only this WATSafe installation and its paired session:',
-                style: TextStyle(fontSize: 13.5, height: 1.4),
-              ),
-              SizedBox(height: 12),
-              Text(
-                '• Stops monitoring and silences any active siren immediately\n'
-                '• Revokes this device’s phone pairing and Web Push registration on the relay\n'
-                '• Clears this installation’s saved security PIN\n'
-                '• Resets device name, motion & siren settings, Activity history, and onboarding state\n'
-                '• Leaves macOS, iOS, Android, and browser permissions unchanged (reset Camera, Location, or Notifications in system settings if testing OS permission prompts)',
-                style: TextStyle(
-                  color: WatSafeTheme.warmMuted,
-                  fontSize: 13,
-                  height: 1.45,
+      builder: (dialogContext) {
+        final palette = WatSafeTheme.of(dialogContext);
+        return AlertDialog(
+          key: const Key('reset_demo_confirm_dialog'),
+          title: const Text('Reset demo and restart onboarding?'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Text(
+                  'This development reset affects only this WATSafe installation and its paired session:',
+                  style: TextStyle(fontSize: 13.5, height: 1.4),
                 ),
-              ),
-            ],
-          ),
-        ),
-        actions: <Widget>[
-          TextButton(
-            key: const Key('cancel_reset_demo_button'),
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            key: const Key('confirm_reset_demo_button'),
-            style: FilledButton.styleFrom(
-              backgroundColor: WatSafeTheme.alarmCrimson,
-              foregroundColor: Colors.white,
+                const SizedBox(height: 12),
+                Text(
+                  '• Stops monitoring and silences any active siren immediately\n'
+                  '• Revokes this device’s phone pairing and Web Push registration on the relay\n'
+                  '• Clears this installation’s saved security PIN\n'
+                  '• Resets device name, motion & siren settings, Activity history, and onboarding state\n'
+                  '• Leaves macOS, iOS, Android, and browser permissions unchanged',
+                  style: TextStyle(
+                    color: palette.textMuted,
+                    fontSize: 13,
+                    height: 1.45,
+                  ),
+                ),
+              ],
             ),
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Reset demo'),
           ),
-        ],
-      ),
+          actions: <Widget>[
+            TextButton(
+              key: const Key('cancel_reset_demo_button'),
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              key: const Key('confirm_reset_demo_button'),
+              style: FilledButton.styleFrom(
+                backgroundColor: palette.alarmColor,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Reset demo'),
+            ),
+          ],
+        );
+      },
     );
 
     if (confirmed == true && mounted) {
@@ -1844,20 +2052,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required bool enabled,
   }) {
     if (!enabled) {
-      return 'Location will not be included when an alarm triggers.';
+      return 'Off';
     }
     if (!isSupported) {
-      return 'Location lookup is not available on this device.';
+      return 'Not supported on this device';
     }
     switch (status) {
       case PermissionStatus.granted:
-        return 'Allowed — shared only with your paired phone when an alarm triggers.';
+        return 'Updates every 4 min while open and every 15s during alarms';
       case PermissionStatus.denied:
       case PermissionStatus.restricted:
-        return 'Location access is blocked in your system or browser settings. Enable Location for WATSafe in system settings to share location on alarm.';
+        return 'Blocked in system settings — allow Location for WATSafe';
       case PermissionStatus.notDetermined:
       case PermissionStatus.notApplicable:
-        return 'Allow location access so your paired phone can see where this device is if an alarm triggers.';
+        return 'Enable location access to appear on the Devices map';
     }
   }
 
@@ -1867,20 +2075,85 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required bool pushConfigured,
   }) {
     if (!isSupported) {
-      return 'Alerts appear inside WATSafe while the app is open.';
+      return 'Alerts appear while WATSafe is open';
     }
     switch (status) {
       case PermissionStatus.granted:
         return pushConfigured
-            ? 'Enabled — lock-screen and background alerts are active.'
-            : 'Enabled — system notifications appear when WATSafe receives an alert.';
+            ? 'Enabled — lock-screen and background alerts active'
+            : 'Enabled';
       case PermissionStatus.denied:
       case PermissionStatus.restricted:
-        return 'Blocked in system or browser settings. Open system Settings > Notifications to turn alerts back on. Foreground alerts still appear while WATSafe is open.';
+        return 'Blocked in system settings';
       case PermissionStatus.notDetermined:
       case PermissionStatus.notApplicable:
-        return 'Off — allow notifications to receive system alerts when a paired device triggers an alarm.';
+        return 'Off';
     }
+  }
+}
+
+class _SettingsCategoryRow extends StatelessWidget {
+  const _SettingsCategoryRow({
+    required this.tileKey,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final Key tileKey;
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
+    return InkWell(
+      key: tileKey,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        child: Row(
+          children: <Widget>[
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: palette.accentPrimary.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, size: 19, color: palette.accentPrimary),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                      color: palette.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12.5, color: palette.textMuted),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right_rounded, color: palette.textMuted),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -1891,27 +2164,28 @@ class _CameraDiagnosticsPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final ev = controller.lastTelemetryEvent;
     return Container(
       key: const Key('developer_camera_diagnostics_card'),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: WatSafeTheme.charcoalElevated,
+        color: palette.surfaceElevated,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: WatSafeTheme.charcoalBorder),
+        border: Border.all(color: palette.borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           const Text(
-            'Live motion diagnostics (numerical only — camera frames are never saved)',
+            'Live motion diagnostics (numerical only)',
             style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12.5),
           ),
           const SizedBox(height: 6),
           if (ev == null)
-            const Text(
-              'Idle — start a Guided protection test or arm protection to inspect live ego-motion scores.',
-              style: TextStyle(fontSize: 12, color: WatSafeTheme.warmMuted),
+            Text(
+              'Idle — start a Guided protection test or arm protection to inspect live scores.',
+              style: TextStyle(fontSize: 12, color: palette.textMuted),
             )
           else
             Wrap(
@@ -1919,30 +2193,40 @@ class _CameraDiagnosticsPanel extends StatelessWidget {
               runSpacing: 6,
               children: <Widget>[
                 _diagMetric(
+                  palette,
                   'Score / Threshold',
                   '${(ev.motionScore ?? 0).toStringAsFixed(3)} / ${(ev.threshold ?? 0).toStringAsFixed(3)}',
                 ),
                 if (ev.coherentBlocks != null)
-                  _diagMetric('Rigid blocks', '${ev.coherentBlocks}'),
+                  _diagMetric(palette, 'Rigid blocks', '${ev.coherentBlocks}'),
                 if (ev.anchoredBlocks != null)
-                  _diagMetric('Static anchors', '${ev.anchoredBlocks}'),
+                  _diagMetric(
+                    palette,
+                    'Static anchors',
+                    '${ev.anchoredBlocks}',
+                  ),
                 if (ev.slowDriftScore != null)
                   _diagMetric(
+                    palette,
                     'Slow drift',
                     ev.slowDriftScore!.toStringAsFixed(3),
                   ),
                 if (ev.loomingRejected != null)
                   _diagMetric(
+                    palette,
                     'Looming filter',
                     ev.loomingRejected! ? 'Suppressed' : 'Clear',
                   ),
                 if (ev.acPowerUnplugged == true)
-                  _diagMetric('AC power', 'Unplugged'),
+                  _diagMetric(palette, 'AC power', 'Unplugged'),
                 if (ev.averageLuminance != null)
                   _diagMetric(
+                    palette,
                     'Luminance',
                     '${(ev.averageLuminance! * 100).round()}%',
                   ),
+                if (ev.obstructionKind != null)
+                  _diagMetric(palette, 'Obstruction', ev.obstructionKind!),
               ],
             ),
         ],
@@ -1950,13 +2234,13 @@ class _CameraDiagnosticsPanel extends StatelessWidget {
     );
   }
 
-  Widget _diagMetric(String label, String value) {
+  Widget _diagMetric(WatSafePalette palette, String label, String value) {
     return Text(
       '$label: $value',
-      style: const TextStyle(
+      style: TextStyle(
         fontSize: 12,
-        color: WatSafeTheme.warmMuted,
-        fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+        color: palette.textMuted,
+        fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
       ),
     );
   }

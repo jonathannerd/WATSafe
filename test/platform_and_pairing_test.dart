@@ -1223,8 +1223,11 @@ void main() {
         await tester.pumpWidget(WatSafeApp(controller: controller));
         await tester.pumpAndSettle();
 
-        // Navigate to Settings tab
+        // Navigate to Settings tab -> Appearance category
         await tester.tap(find.text('Settings').first);
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byKey(const Key('settings_category_appearance')));
         await tester.pumpAndSettle();
 
         final cyberThemeCard = find.byKey(
@@ -1236,6 +1239,14 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(controller.settings.colorTheme, WatSafeColorTheme.cyberSentinel);
+
+        // Return to category list and open Alarm category
+        await tester.tap(
+          find.byKey(const Key('settings_category_back_button')),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.byKey(const Key('settings_category_alarm')));
+        await tester.pumpAndSettle();
 
         // Select a built-in alarm sound
         final temporalBellTile = find.byKey(

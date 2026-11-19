@@ -142,20 +142,23 @@ class DeviceLocationSnapshot {
   String relativeAgeLabel(DateTime now, {bool forceLastKnown = false}) {
     final diff = now.difference(capturedAt);
     final seconds = diff.inSeconds < 0 ? 0 : diff.inSeconds;
-    final stalePrefix = (isLastKnown || forceLastKnown) ? 'Last known · ' : '';
+    final isStale = isLastKnown || forceLastKnown;
     if (seconds < 60) {
-      return stalePrefix.isEmpty ? 'Just now' : '${stalePrefix}just now';
+      return isStale ? 'Last known · just now' : 'Updated just now';
     }
     final minutes = diff.inMinutes < 1 ? 1 : diff.inMinutes;
     if (minutes < 60) {
-      return '$stalePrefix$minutes minute${minutes == 1 ? '' : 's'} ago';
+      final suffix = '$minutes minute${minutes == 1 ? '' : 's'} ago';
+      return isStale ? 'Last known · $suffix' : 'Updated $suffix';
     }
     final hours = diff.inHours;
     if (hours < 24) {
-      return '$stalePrefix$hours hour${hours == 1 ? '' : 's'} ago';
+      final suffix = '$hours hour${hours == 1 ? '' : 's'} ago';
+      return isStale ? 'Last known · $suffix' : 'Updated $suffix';
     }
     final days = diff.inDays;
-    return '$stalePrefix$days day${days == 1 ? '' : 's'} ago';
+    final suffix = '$days day${days == 1 ? '' : 's'} ago';
+    return isStale ? 'Last known · $suffix' : 'Updated $suffix';
   }
 
   /// Great-circle distance in meters using the Haversine formula.

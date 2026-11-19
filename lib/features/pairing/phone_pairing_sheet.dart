@@ -25,11 +25,12 @@ Future<void> showPhonePairingSheet(
   AlarmController controller, {
   String? initialPhonePairingPayload,
 }) {
+  final palette = WatSafeTheme.of(context);
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
-    backgroundColor: WatSafeTheme.charcoalSurface,
+    backgroundColor: palette.surfaceCard,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
@@ -53,11 +54,12 @@ Future<void> showConnectedPhoneDetailsSheet(
   BuildContext context,
   AlarmController controller,
 ) {
+  final palette = WatSafeTheme.of(context);
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
-    backgroundColor: WatSafeTheme.charcoalSurface,
+    backgroundColor: palette.surfaceCard,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
@@ -374,6 +376,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 28),
       child: Center(
@@ -388,7 +391,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
                   width: 40,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: WatSafeTheme.charcoalBorder,
+                    color: palette.borderColor,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -421,7 +424,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
       key: const Key('pairing_connected_confirmation'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const Icon(
+        Icon(
           Icons.check_circle_rounded,
           color: WatSafeTheme.readyEmerald,
           size: 52,
@@ -437,7 +440,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
         Text(
           '${latestPhone.displayName} is now paired with ${widget.controller.effectiveDeviceName}.',
           textAlign: TextAlign.center,
-          style: const TextStyle(color: WatSafeTheme.warmMuted, height: 1.4),
+          style: TextStyle(color: WatSafeTheme.warmMuted, height: 1.4),
         ),
         if (_infoMessage != null) ...<Widget>[
           const SizedBox(height: 14),
@@ -497,7 +500,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
           ],
         ),
         const SizedBox(height: 6),
-        const Text(
+        Text(
           'Scan this with your phone’s camera.',
           style: TextStyle(
             color: WatSafeTheme.warmOffWhite,
@@ -555,7 +558,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
             ),
             child: Column(
               children: <Widget>[
-                const Text(
+                Text(
                   'One-time pairing code',
                   style: TextStyle(
                     color: WatSafeTheme.warmMuted,
@@ -570,7 +573,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
                     SelectableText(
                       invite.pairingCode,
                       key: const Key('active_pairing_code_label'),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 26,
                         fontWeight: FontWeight.w800,
                         letterSpacing: 3,
@@ -595,13 +598,13 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
                 ),
                 Text(
                   'Expires in ${_formatRemaining(remainingSeconds)}',
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: WatSafeTheme.warmSubtle,
                     fontSize: 12,
                   ),
                 ),
                 const SizedBox(height: 10),
-                const Text(
+                Text(
                   'Can’t scan the QR code? Open WATSafe on your phone, tap Pair your phone, choose Enter code instead, and enter this code.',
                   textAlign: TextAlign.center,
                   style: TextStyle(
@@ -653,7 +656,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
           ],
         ),
         const SizedBox(height: 6),
-        const Text(
+        Text(
           'Enter the 6-character code shown below the QR code on your laptop.',
           style: TextStyle(color: WatSafeTheme.warmMuted, height: 1.4),
         ),
@@ -706,7 +709,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const Icon(
+        Icon(
           Icons.laptop_mac_rounded,
           color: WatSafeTheme.amberAccent,
           size: 44,
@@ -723,7 +726,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
         Text(
           'This phone will receive alerts and device location if $hostName triggers an alarm.',
           textAlign: TextAlign.center,
-          style: const TextStyle(color: WatSafeTheme.warmMuted, height: 1.4),
+          style: TextStyle(color: WatSafeTheme.warmMuted, height: 1.4),
         ),
         const SizedBox(height: 18),
         TextField(
@@ -765,7 +768,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        const Icon(
+        Icon(
           Icons.notifications_active_rounded,
           color: WatSafeTheme.readyEmerald,
           size: 48,
@@ -781,7 +784,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
         Text(
           'Allow notifications so this phone can alert you right away when $hostName detects motion — and take you straight to the event and map when tapped.',
           textAlign: TextAlign.center,
-          style: const TextStyle(color: WatSafeTheme.warmMuted, height: 1.4),
+          style: TextStyle(color: WatSafeTheme.warmMuted, height: 1.4),
         ),
         if (_infoMessage != null) ...<Widget>[
           const SizedBox(height: 14),
@@ -855,7 +858,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            const Icon(
+            Icon(
               Icons.verified_rounded,
               color: WatSafeTheme.readyEmerald,
               size: 18,
@@ -864,7 +867,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
             Expanded(
               child: Text(
                 'Permanent HTTPS companion ($currentUrl/companion) — one-time Home Screen install and pairing survive restarts.',
-                style: const TextStyle(
+                style: TextStyle(
                   color: WatSafeTheme.warmOffWhite,
                   fontSize: 12.5,
                   height: 1.35,
@@ -899,7 +902,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              const Icon(
+              Icon(
                 Icons.cloud_queue_rounded,
                 color: WatSafeTheme.amberAccent,
                 size: 18,
@@ -908,7 +911,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
               Expanded(
                 child: Text(
                   headline,
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: WatSafeTheme.amberAccent,
                     fontWeight: FontWeight.w700,
                     fontSize: 12.5,
@@ -920,7 +923,7 @@ class _PhonePairingSheetBodyState extends State<_PhonePairingSheetBody> {
           const SizedBox(height: 6),
           Text(
             detail,
-            style: const TextStyle(
+            style: TextStyle(
               color: WatSafeTheme.warmMuted,
               fontSize: 12,
               height: 1.35,
@@ -1072,6 +1075,7 @@ class _ConnectedPhoneDetailsBodyState
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final devices = widget.controller.pairedDevices;
     final companion = widget.controller.companionSession;
 
@@ -1114,7 +1118,7 @@ class _ConnectedPhoneDetailsBodyState
                   width: 40,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: WatSafeTheme.charcoalBorder,
+                    color: palette.borderColor,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
@@ -1188,7 +1192,7 @@ class _ConnectedPhoneDetailsBodyState
                                 _ =>
                                   'System notifications are off on ${primaryPhone.displayName}. Alerts still appear when WATSafe is open; turn on notifications on your phone for lock-screen alerts.',
                               },
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: WatSafeTheme.warmOffWhite,
                           fontSize: 13.5,
                           height: 1.4,
@@ -1275,7 +1279,7 @@ class _ConnectedPhoneDetailsBodyState
               const SizedBox(height: 6),
               Text(
                 companion.statusMessage ?? 'Connected',
-                style: const TextStyle(color: WatSafeTheme.readyEmerald),
+                style: TextStyle(color: WatSafeTheme.readyEmerald),
               ),
               const SizedBox(height: 16),
               Container(
@@ -1295,7 +1299,7 @@ class _ConnectedPhoneDetailsBodyState
                             : (perm == PermissionStatus.notApplicable
                                   ? 'Open WATSafe over HTTPS and, on iPhone, add WATSafe to your Home Screen and open its icon to enable lock-screen notifications.'
                                   : 'Foreground alerts are active while WATSafe is open. Turn on notifications below to receive system alerts.')),
-                  style: const TextStyle(
+                  style: TextStyle(
                     color: WatSafeTheme.warmOffWhite,
                     fontSize: 13.5,
                     height: 1.4,
@@ -1352,6 +1356,7 @@ class _StatusNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -1367,8 +1372,8 @@ class _StatusNotice extends StatelessWidget {
           Expanded(
             child: Text(
               message,
-              style: const TextStyle(
-                color: WatSafeTheme.warmOffWhite,
+              style: TextStyle(
+                color: palette.textPrimary,
                 fontSize: 13,
                 height: 1.35,
               ),

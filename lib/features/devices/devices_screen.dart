@@ -12,8 +12,8 @@ import 'device_geographic_map.dart';
 /// Dedicated **Devices** destination showing authorized devices on a readable
 /// light interactive map with a single compact horizontal device selector,
 /// separate Connection and Protection badges, natural relative update age,
-/// accuracy circle, "Center on device", "Open in Maps", companion phone
-/// foreground location sharing, and expandable raw coordinates.
+/// accuracy circle, "Center on device", companion phone foreground location
+/// sharing, and expandable raw coordinates.
 class DevicesScreen extends StatefulWidget {
   const DevicesScreen({super.key, required this.controller});
 
@@ -73,7 +73,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
           highAccuracy: !initial,
         );
       }
-      await widget.controller.refreshAuthorizedDeviceLocations();
+      await widget.controller.refreshAuthorizedDeviceLocations(
+        requestHostRefresh: true,
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -110,6 +112,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
     return switch (device.trackingState) {
       'live' => ('Live', WatSafeTheme.readyEmerald),
+      'recent' => (null, null),
       'reconnecting' => ('Reconnecting', WatSafeTheme.amberAccent),
       _ => ('Last known location', const Color(0xFF475569)),
     };
@@ -117,6 +120,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    WatSafeTheme.of(context);
     final devices = widget.controller.authorizedDeviceLocations;
     final selected = _resolveSelected(devices);
     final markers = <DeviceMapMarker>[
@@ -179,22 +183,22 @@ class _DevicesScreenState extends State<DevicesScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
                         Expanded(
-                          flex: 7,
+                          flex: constraints.maxWidth >= 960 ? 8 : 7,
                           child: _buildMapArea(
                             selected: selected,
                             mapFocusDevice: mapFocusDevice,
                             markers: markers,
                             trackingBadge: trackingBadge,
                             secondaryBadge: secondaryBadge,
-                            height: (constraints.maxHeight - 135).clamp(
+                            height: (constraints.maxHeight - 125).clamp(
                               220.0,
-                              560.0,
+                              620.0,
                             ),
                           ),
                         ),
-                        const SizedBox(width: 16),
+                        const SizedBox(width: 14),
                         Expanded(
-                          flex: 5,
+                          flex: constraints.maxWidth >= 960 ? 4 : 5,
                           child: selected != null
                               ? _SelectedDeviceDetailCard(
                                   device: selected,
@@ -213,9 +217,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
           );
         }
 
-        final portraitMapHeight = (constraints.maxHeight * 0.43).clamp(
-          276.0,
-          410.0,
+        final portraitMapHeight = (constraints.maxHeight * 0.52).clamp(
+          300.0,
+          480.0,
         );
         return SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
@@ -410,13 +414,12 @@ class _DeviceSelectorChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final isCurrentPhone =
         device.isCurrentRequester && !device.isProtectedDevice;
     final dotColor = device.isAlarming
-        ? WatSafeTheme.alarmCrimson
-        : (device.online
-              ? WatSafeTheme.readyEmerald
-              : WatSafeTheme.amberAccent);
+        ? palette.alarmColor
+        : (device.online ? palette.readyColor : palette.warningColor);
     final label = isCurrentPhone
         ? '${device.displayName} · This phone'
         : device.displayName;
@@ -527,16 +530,16 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final device = widget.device;
     final controller = widget.controller;
     final loc = device.latestLocation;
     final hasValidLoc = loc != null && loc.isValid;
     final isCurrentPhone =
         device.isCurrentRequester && !device.isProtectedDevice;
-    final connColor = device.online
-        ? WatSafeTheme.readyEmerald
-        : WatSafeTheme.amberAccent;
+    final connColor = device.online ? palette.readyColor : palette.warningColor;
     final protColor = _protectionBadgeColor(device);
+    final phoneBadgeColor = palette.phoneMarkerColor;
     final now = DateTime.now();
 
     return Card(
@@ -555,8 +558,8 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                   decoration: BoxDecoration(
                     color:
                         (device.isProtectedDevice
-                                ? WatSafeTheme.readyEmerald
-                                : const Color(0xFF2563EB))
+                                ? palette.readyColor
+                                : phoneBadgeColor)
                             .withValues(alpha: 0.16),
                     borderRadius: BorderRadius.circular(11),
                   ),
@@ -566,8 +569,8 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                         : Icons.smartphone_rounded,
                     size: 20,
                     color: device.isProtectedDevice
-                        ? WatSafeTheme.readyEmerald
-                        : const Color(0xFF60A5FA),
+                        ? palette.readyColor
+                        : phoneBadgeColor,
                   ),
                 ),
                 const SizedBox(width: 11),
@@ -587,9 +590,9 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                                 ?.copyWith(fontWeight: FontWeight.w800),
                           ),
                           if (isCurrentPhone)
-                            const _CompactStatusBadge(
+                            _CompactStatusBadge(
                               label: 'This phone',
-                              color: Color(0xFF60A5FA),
+                              color: phoneBadgeColor,
                             ),
                         ],
                       ),
@@ -607,34 +610,36 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                             label: device.protectionStatusLabel,
                             color: protColor,
                           ),
+                          if (hasValidLoc)
+                            Container(
+                              key: const Key('selected_device_accuracy_badge'),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 9,
+                                vertical: 3.5,
+                              ),
+                              decoration: BoxDecoration(
+                                color: WatSafeTheme.charcoalElevated,
+                                borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: WatSafeTheme.charcoalBorder,
+                                ),
+                              ),
+                              child: Text(
+                                loc.accuracyDescription,
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: loc.isEffectivelyApproximate
+                                      ? WatSafeTheme.amberAccent
+                                      : WatSafeTheme.readyEmerald,
+                                ),
+                              ),
+                            ),
                         ],
                       ),
                     ],
                   ),
                 ),
-                if (hasValidLoc)
-                  Container(
-                    key: const Key('selected_device_accuracy_badge'),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 9,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: WatSafeTheme.charcoalElevated,
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(color: WatSafeTheme.charcoalBorder),
-                    ),
-                    child: Text(
-                      loc.accuracyDescription,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w600,
-                        color: loc.isEffectivelyApproximate
-                            ? WatSafeTheme.amberAccent
-                            : WatSafeTheme.readyEmerald,
-                      ),
-                    ),
-                  ),
               ],
             ),
             const SizedBox(height: 12),
@@ -646,59 +651,32 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                     (loc.isEffectivelyApproximate
                         ? 'Approximate area'
                         : 'Reported map position'),
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.w700,
                   fontSize: 14.5,
-                  color: WatSafeTheme.warmOffWhite,
+                  color: palette.textPrimary,
                 ),
               ),
               const SizedBox(height: 4),
               Text(
                 loc.relativeAgeLabel(
                   now,
-                  forceLastKnown: device.trackingState != 'live',
+                  forceLastKnown: device.trackingState == 'last_known',
                 ),
                 key: const Key('selected_device_updated_age_label'),
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: WatSafeTheme.warmMuted,
-                ),
+                style: TextStyle(fontSize: 13, color: palette.textMuted),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               Wrap(
-                spacing: 10,
-                runSpacing: 10,
+                spacing: 8,
+                runSpacing: 8,
                 children: <Widget>[
                   OutlinedButton.icon(
                     key: const Key('devices_center_on_device_button'),
                     onPressed: widget.onCenterMap,
-                    icon: const Icon(Icons.my_location_rounded, size: 18),
+                    icon: const Icon(Icons.my_location_rounded, size: 17),
                     label: const Text('Center on device'),
                   ),
-                  FilledButton.icon(
-                    key: const Key('devices_open_in_maps_button'),
-                    onPressed: () async {
-                      final opened = await controller.openExternalUrl(
-                        loc.mapsUrl,
-                      );
-                      if (!opened && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Maps link: ${loc.mapsUrl}')),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.map_rounded, size: 18),
-                    label: const Text('Open in Maps'),
-                  ),
-                  if (device.activeIncidentId != null)
-                    TextButton.icon(
-                      key: const Key('devices_open_active_incident_button'),
-                      onPressed: () => controller.openIncidentInActivity(
-                        device.activeIncidentId!,
-                      ),
-                      icon: const Icon(Icons.warning_amber_rounded, size: 18),
-                      label: const Text('Follow incident'),
-                    ),
                   if (isCurrentPhone &&
                       controller.isCompanionMode &&
                       controller.settings.shareCompanionPhoneLocation)
@@ -706,7 +684,7 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                       key: const Key('devices_stop_companion_phone_loc_btn'),
                       onPressed: () =>
                           controller.updateShareCompanionPhoneLocation(false),
-                      child: const Text('Stop sharing phone location'),
+                      child: const Text('Stop sharing'),
                     ),
                 ],
               ),
@@ -729,15 +707,15 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                             ? Icons.expand_less_rounded
                             : Icons.expand_more_rounded,
                         size: 18,
-                        color: WatSafeTheme.warmMuted,
+                        color: palette.textMuted,
                       ),
                       const SizedBox(width: 4),
-                      const Text(
+                      Text(
                         'Coordinates',
                         style: TextStyle(
                           fontSize: 12.5,
                           fontWeight: FontWeight.w700,
-                          color: WatSafeTheme.warmMuted,
+                          color: palette.textMuted,
                         ),
                       ),
                     ],
@@ -750,11 +728,11 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                   child: SelectableText(
                     loc.formattedCoordinates,
                     key: const Key('selected_device_coordinates_label'),
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontFamily: 'monospace',
                       fontSize: 12.5,
                       fontWeight: FontWeight.w600,
-                      color: WatSafeTheme.warmOffWhite,
+                      color: palette.textPrimary,
                     ),
                   ),
                 ),
@@ -763,9 +741,9 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                 key: const Key('devices_location_unavailable_banner'),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: WatSafeTheme.charcoalElevated,
+                  color: palette.surfaceElevated,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: WatSafeTheme.charcoalBorder),
+                  border: Border.all(color: palette.borderColor),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -777,17 +755,17 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                           : (isCurrentPhone
                                 ? 'Location not shared'
                                 : 'Location unavailable'),
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w700,
-                        color: WatSafeTheme.warmOffWhite,
+                        color: palette.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       device.statusExplanation ?? 'No usable location has been reported for this device yet.',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 13,
-                        color: WatSafeTheme.warmMuted,
+                        color: palette.textMuted,
                         height: 1.35,
                       ),
                     ),
@@ -803,7 +781,7 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                             Icons.location_on_outlined,
                             size: 18,
                           ),
-                          label: const Text('Turn on location sharing'),
+                          label: const Text('Share laptop location'),
                         )
                       else if (controller.isLocationSupported &&
                           controller.locationPermissionStatus !=
@@ -820,7 +798,7 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                             }
                           },
                           icon: const Icon(Icons.my_location_rounded, size: 18),
-                          label: const Text('Allow location access'),
+                          label: const Text('Enable location'),
                         ),
                     ] else if (isCurrentPhone &&
                         controller.isCompanionMode) ...<Widget>[
@@ -830,7 +808,7 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
                         onPressed: () =>
                             controller.updateShareCompanionPhoneLocation(true),
                         icon: const Icon(Icons.my_location_rounded, size: 18),
-                        label: const Text('Share this phone’s location'),
+                        label: const Text('Share phone location'),
                       ),
                     ],
                   ],

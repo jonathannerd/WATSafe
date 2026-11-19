@@ -472,7 +472,7 @@ void main() {
     expect(controller.state, ProtectionState.armed);
     expect(controller.state.isProtected, isTrue);
 
-    // Hardware/capture failure while armed -> transitions to unavailable and records failure incident
+    // Camera hardware/capture failure while armed -> triggers protection-interruption alarm
     fakeDetector.emit(
       DetectorEvent(
         eventId: 'fail_1',
@@ -486,13 +486,13 @@ void main() {
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(controller.state, ProtectionState.unavailable);
-    expect(controller.state.isProtected, isFalse);
+    expect(controller.state, ProtectionState.alarming);
+    expect(fakeAudio.isPlaying, isTrue);
     expect(controller.incidents.length, 1);
-    expect(
-      controller.incidents.first.kind,
-      IncidentKind.detectorFailureDuringMonitoring,
-    );
+    expect(controller.incidents.first.kind, IncidentKind.protectionInterrupted);
+    expect((await controller.verifyAndDisarm('246810')).verified, isTrue);
+    expect(controller.state, ProtectionState.disarmed);
+    expect(fakeAudio.isPlaying, isFalse);
   });
 
   test('7. Local alarm continues operating when incident saving or remote notification delivery fails', () async {

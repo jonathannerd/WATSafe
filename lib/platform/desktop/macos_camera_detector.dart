@@ -370,6 +370,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
     final slowDriftScore = (map['slowDriftScore'] as num?)?.toDouble();
     final loomingRejected = map['loomingRejected'] as bool?;
     final acPowerUnplugged = map['acPowerUnplugged'] as bool?;
+    final obstructionKind = map['obstructionKind'] as String?;
     final errorCode = map['errorCode'] as String?;
     final timestampMs = (map['timestampMs'] as num?)?.toInt();
 
@@ -392,6 +393,7 @@ class MacOSCameraSceneMotionDetector implements MotionDetectorAdapter {
         slowDriftScore: slowDriftScore,
         loomingRejected: loomingRejected,
         acPowerUnplugged: acPowerUnplugged,
+        obstructionKind: obstructionKind,
         errorCode: errorCode,
       ),
     );

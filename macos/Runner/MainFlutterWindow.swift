@@ -377,13 +377,21 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
   private var lastAcUnplugTimeMs: Int64 = 0
   private var consecutiveAboveThreshold: Int = 0
   private var consecutivePoorInputFrames: Int = 0
+  private var consecutiveObstructedFrames: Int = 0
+  private var unobstructedFrameStreak: Int = 0
   private var isInputDegraded: Bool = false
+  private var isCameraObstructed: Bool = false
+  private var isObstructedAtCalibration: Bool = false
+  private var wasUnobstructedDuringSession: Bool = false
+  private var baselineTexturedBlocks: Int = 0
+  private var baselineMeanGrad: Double = 0
   private var processedFrameCount: Int = 0
   private var lastFrameProcessedTime: CFAbsoluteTime = 0
 
   private var sleepObserver: NSObjectProtocol?
   private var wakeObserver: NSObjectProtocol?
   private var runtimeErrorObserver: NSObjectProtocol?
+  private var deviceDisconnectObserver: NSObjectProtocol?
 
   init(messenger: FlutterBinaryMessenger) {
     methodChannel = FlutterMethodChannel(
@@ -412,6 +420,9 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     }
     if let runtimeErrorObserver = runtimeErrorObserver {
       NotificationCenter.default.removeObserver(runtimeErrorObserver)
+    }
+    if let deviceDisconnectObserver = deviceDisconnectObserver {
+      NotificationCenter.default.removeObserver(deviceDisconnectObserver)
     }
   }
 
@@ -707,9 +718,42 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       self.lastAcUnplugTimeMs = 0
       self.consecutiveAboveThreshold = 0
       self.consecutivePoorInputFrames = 0
+      self.consecutiveObstructedFrames = 0
+      self.unobstructedFrameStreak = 0
       self.isInputDegraded = false
+      self.isCameraObstructed = false
+      self.isObstructedAtCalibration = false
+      self.wasUnobstructedDuringSession = false
+      self.baselineTexturedBlocks = 0
+      self.baselineMeanGrad = 0
       self.processedFrameCount = 0
       self.lastFrameProcessedTime = 0
+
+      self.deviceDisconnectObserver = NotificationCenter.default.addObserver(
+        forName: AVCaptureDevice.wasDisconnectedNotification,
+        object: device,
+        queue: nil
+      ) { [weak self] _ in
+        self?.processingQueue.async { [weak self] in
+          guard let self = self, let activeId = self.activeSessionId else { return }
+          self.stopCaptureOnQueue()
+          if MacOSSystemLifecycleBridge.readAppleClamshellClosed() == true,
+             let lifecycle = MacOSSystemLifecycleBridge.shared,
+             lifecycle.isProtectionArmed {
+            DispatchQueue.main.async {
+              lifecycle.pollClamshellStateChange(source: "avcapture_device_disconnect")
+            }
+            return
+          }
+          self.emitEvent([
+            "sessionId": activeId,
+            "eventType": "detectorFailed",
+            "summary": "\(device.localizedName) was disconnected.",
+            "errorCode": "CAMERA_DISCONNECTED",
+            "timestampMs": Int64(Date().timeIntervalSince1970 * 1000),
+          ])
+        }
+      }
 
       self.runtimeErrorObserver = NotificationCenter.default.addObserver(
         forName: .AVCaptureSessionRuntimeError,
@@ -816,6 +860,10 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       NotificationCenter.default.removeObserver(runtimeErrorObserver)
       self.runtimeErrorObserver = nil
     }
+    if let deviceDisconnectObserver = deviceDisconnectObserver {
+      NotificationCenter.default.removeObserver(deviceDisconnectObserver)
+      self.deviceDisconnectObserver = nil
+    }
     if let session = captureSession {
       if session.isRunning {
         session.stopRunning()
@@ -833,6 +881,50 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     wasOnAcPower = nil
     lastAcUnplugTimeMs = 0
     consecutiveAboveThreshold = 0
+    consecutivePoorInputFrames = 0
+    consecutiveObstructedFrames = 0
+    unobstructedFrameStreak = 0
+    isInputDegraded = false
+    isCameraObstructed = false
+    isObstructedAtCalibration = false
+    wasUnobstructedDuringSession = false
+    baselineTexturedBlocks = 0
+    baselineMeanGrad = 0
+  }
+
+  private func computeGridTextureStats(grid: [Float], gridW: Int, gridH: Int) -> (Int, Double) {
+    let blocksX = 4
+    let blocksY = 4
+    let totalBlocks = blocksX * blocksY
+    var blockGradSum = [Double](repeating: 0, count: totalBlocks)
+    var blockGradCount = [Int](repeating: 0, count: totalBlocks)
+    if gridW > 1 && gridH > 1 && grid.count >= gridW * gridH {
+      for gy in 0..<(gridH - 1) {
+        let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
+        for gx in 0..<(gridW - 1) {
+          let bx = min(blocksX - 1, (gx * blocksX) / max(1, gridW))
+          let bIdx = by * blocksX + bx
+          let i = gy * gridW + gx
+          let v = Double(grid[i])
+          let gxDiff = abs(v - Double(grid[i + 1]))
+          let gyDiff = abs(v - Double(grid[i + gridW]))
+          blockGradSum[bIdx] += 0.5 * (gxDiff + gyDiff)
+          blockGradCount[bIdx] += 1
+        }
+      }
+    }
+    var textured = 0
+    var gradSumAll = 0.0
+    var active = 0
+    for b in 0..<totalBlocks where blockGradCount[b] > 0 {
+      let g = blockGradSum[b] / Double(blockGradCount[b])
+      gradSumAll += g
+      active += 1
+      if g >= 3.2 {
+        textured += 1
+      }
+    }
+    return (textured, active > 0 ? (gradSumAll / Double(active)) : 0.0)
   }
 
   private func queryIsRunningOnAcPower() -> Bool? {
@@ -1002,17 +1094,57 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       previousMean255 = currMean
       if elapsedMs >= Int64(calibrationDurationMs) && processedFrameCount >= 4 {
         isCalibrationDone = true
-        recentGrids = [referenceGrid]
-        emitEvent([
-          "sessionId": sessionId,
-          "eventType": "calibrationCompleted",
-          "summary": "Scene baseline calibrated. Ego-motion optical flow filtering enabled.",
-          "motionScore": 0.0,
-          "threshold": motionThreshold,
-          "averageLuminance": normalizedLuminance,
-          "consecutiveFrames": 0,
-          "timestampMs": nowMs,
-        ])
+        let baseStats = computeGridTextureStats(grid: referenceGrid, gridW: gridW, gridH: gridH)
+        baselineTexturedBlocks = baseStats.0
+        baselineMeanGrad = baseStats.1
+        var initialObstruction: String? = nil
+        if normalizedLuminance < 0.032 {
+          initialObstruction = "dark"
+        } else if normalizedLuminance > 0.92 && normalizedDeviation < 0.065 && baselineTexturedBlocks <= 1 {
+          initialObstruction = "bright_glare"
+        } else if normalizedDeviation < 0.012 && baselineTexturedBlocks == 0 {
+          initialObstruction = "opaque_cover"
+        }
+        if let initialKind = initialObstruction {
+          isObstructedAtCalibration = true
+          wasUnobstructedDuringSession = false
+          isInputDegraded = true
+          recentGrids = [referenceGrid]
+          emitEvent([
+            "sessionId": sessionId,
+            "eventType": "calibrationCompleted",
+            "summary": "Camera appears covered or too dark. Uncover the camera for visual motion detection — lid and connection alerts remain active.",
+            "motionScore": 0.0,
+            "threshold": motionThreshold,
+            "averageLuminance": normalizedLuminance,
+            "consecutiveFrames": 0,
+            "obstructionKind": initialKind,
+            "timestampMs": nowMs,
+          ])
+          emitEvent([
+            "sessionId": sessionId,
+            "eventType": "poorInputWarning",
+            "summary": "Camera appears covered or too dark. Uncover the camera for visual motion detection — lid and connection alerts remain active.",
+            "averageLuminance": normalizedLuminance,
+            "threshold": motionThreshold,
+            "obstructionKind": initialKind,
+            "timestampMs": nowMs,
+          ])
+        } else {
+          isObstructedAtCalibration = false
+          wasUnobstructedDuringSession = true
+          recentGrids = [referenceGrid]
+          emitEvent([
+            "sessionId": sessionId,
+            "eventType": "calibrationCompleted",
+            "summary": "Scene baseline calibrated. Ego-motion optical flow filtering enabled.",
+            "motionScore": 0.0,
+            "threshold": motionThreshold,
+            "averageLuminance": normalizedLuminance,
+            "consecutiveFrames": 0,
+            "timestampMs": nowMs,
+          ])
+        }
       }
       return
     }
@@ -1040,6 +1172,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     var blockWinSum = [Double](repeating: 0, count: totalBlocks)
     var blockPixelCount = [Int](repeating: 0, count: totalBlocks)
 
+    var rawDiffSum: Double = 0
     for gy in 0..<gridH {
       let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
       for gx in 0..<gridW {
@@ -1051,6 +1184,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         blockPrevSum[bIdx] += Double(previousGrid[i])
         blockWinSum[bIdx] += Double(windowGrid[i])
         blockPixelCount[bIdx] += 1
+        rawDiffSum += abs(Double(currentGrid[i]) - Double(referenceGrid[i]))
       }
     }
 
@@ -1153,11 +1287,17 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     let blockH = gridH / blocksY
 
     var texturedRefBlocks = 0
+    var texturedCurrBlocks = 0
     var anchoredTexturedBlocks = 0
     var texturedPerimeterBlocks = 0
     var anchoredPerimeterBlocks = 0
     var activeMovingBlocks = 0
+    var displacedOrChangedBlocks = 0
     var texturedRefScoreSum = 0.0
+    var currGradSumAll = 0.0
+    var currGradBlocksCount = 0
+    var refMeanSumAll = 0.0
+    var refMeanBlocksCount = 0
     var dxList: [Double] = []
     var dyList: [Double] = []
     var bxList: [Int] = []
@@ -1185,6 +1325,16 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
         let currGrad = blockGradCount[b] > 0
           ? (blockCurrGradSum[b] / Double(blockGradCount[b]))
           : 0.0
+        if blockGradCount[b] > 0 {
+          currGradSumAll += currGrad
+          currGradBlocksCount += 1
+          if currGrad >= 3.2 { texturedCurrBlocks += 1 }
+        }
+        refMeanSumAll += blockRefMean[b]
+        refMeanBlocksCount += 1
+        if refScore >= staticBlockThreshold || abs(blockCurrMean[b] - blockRefMean[b]) >= 14.0 {
+          displacedOrChangedBlocks += 1
+        }
         let isTextured = meanGrad >= 3.2
         let isPerimeter = bx == 0 || bx == (blocksX - 1) || by == 0 || by == (blocksY - 1)
 
@@ -1309,8 +1459,70 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       hasPrevMeanFlow = false
     }
 
+    let rawSceneScore = rawDiffSum / Double(count * 255)
     let fullSceneStructScore = normRefDiffSum / Double(count * 255)
     let meanStepScore = normStepDiffSum / Double(count * 255)
+    let meanCurrGrad = currGradBlocksCount > 0 ? (currGradSumAll / Double(currGradBlocksCount)) : 0.0
+    let refGlobalMean = refMeanBlocksCount > 0 ? (refMeanSumAll / Double(refMeanBlocksCount)) : Double(currMean)
+
+    var candidateObstruction: String? = nil
+    if normalizedLuminance < 0.032 {
+      candidateObstruction = "dark"
+    } else if (normalizedLuminance > 0.92 && normalizedDeviation < 0.065 && texturedCurrBlocks <= 1)
+      || (normalizedLuminance > 0.86 && anchoredTexturedBlocks == 0 && texturedCurrBlocks == 0 && abs(Double(currMean) - refGlobalMean) >= 45.0)
+    {
+      candidateObstruction = "bright_glare"
+    } else if normalizedDeviation < 0.012 && texturedCurrBlocks == 0 && (texturedRefBlocks == 0 || anchoredTexturedBlocks == 0) {
+      candidateObstruction = "opaque_cover"
+    } else if baselineTexturedBlocks >= 2
+      && anchoredTexturedBlocks == 0
+      && texturedCurrBlocks <= 1
+      && (texturedCurrBlocks == 0 || baselineTexturedBlocks >= 5)
+      && meanCurrGrad < min(2.35, baselineMeanGrad * 0.42)
+      && coherentTranslatedBlocks <= 1
+      && (rawSceneScore >= 0.045 || fullSceneStructScore >= 0.032 || displacedOrChangedBlocks >= 11)
+    {
+      candidateObstruction = "texture_collapse"
+    }
+
+    var obstructionJustTriggered = false
+    if let obstructionKind = candidateObstruction {
+      unobstructedFrameStreak = 0
+      if wasUnobstructedDuringSession {
+        consecutiveObstructedFrames += 1
+        if consecutiveObstructedFrames >= 6 && !isInputDegraded {
+          isInputDegraded = true
+          emitEvent([
+            "sessionId": sessionId,
+            "eventType": "poorInputWarning",
+            "summary": "Low light or covered camera lens detected.",
+            "averageLuminance": normalizedLuminance,
+            "threshold": motionThreshold,
+            "obstructionKind": obstructionKind,
+            "timestampMs": nowMs,
+          ])
+        }
+        if consecutiveObstructedFrames >= 10 && !isCameraObstructed {
+          isCameraObstructed = true
+          obstructionJustTriggered = true
+        }
+      }
+    } else {
+      consecutiveObstructedFrames = 0
+      unobstructedFrameStreak += 1
+      if !wasUnobstructedDuringSession && unobstructedFrameStreak >= 3 {
+        wasUnobstructedDuringSession = true
+        isObstructedAtCalibration = false
+        referenceGrid = currentGrid
+        let refreshedStats = computeGridTextureStats(grid: referenceGrid, gridW: gridW, gridH: gridH)
+        baselineTexturedBlocks = refreshedStats.0
+        baselineMeanGrad = refreshedStats.1
+      }
+      if isCameraObstructed && unobstructedFrameStreak >= 2 {
+        isCameraObstructed = false
+      }
+    }
+
     let texturedStructScore = texturedRefBlocks > 0
       ? (texturedRefScoreSum / Double(texturedRefBlocks))
       : fullSceneStructScore
@@ -1360,8 +1572,8 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       && (activeMovingBlocks <= 2 || meanStepScore < 0.009)
 
     let egoWeight: Double
-    if isLightingTransient || isInputDegraded {
-      egoWeight = 0.10
+    if candidateObstruction != nil || isLightingTransient || isInputDegraded {
+      egoWeight = 0.08
     } else if hasStrongStaticAnchors {
       egoWeight = 0.14
     } else if loomingRejected {
@@ -1409,35 +1621,41 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
       motionScore = min(motionScore, motionThreshold * 0.72)
     }
 
-    let baseAdaptRate: Float = isLightingTransient ? 0.30 : 0.06
-    if motionScore >= motionThreshold {
-      consecutiveAboveThreshold += 1
-      for i in 0..<count {
-        referenceGrid[i] = (0.98 * referenceGrid[i]) + (0.02 * currentGrid[i])
-        previousGrid[i] = currentGrid[i]
-      }
-    } else {
+    if candidateObstruction != nil {
       consecutiveAboveThreshold = 0
-      for gy in 0..<gridH {
-        let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
-        for gx in 0..<gridW {
-          let bx = min(blocksX - 1, (gx * blocksX) / max(1, gridW))
-          let bIdx = by * blocksX + bx
-          let pxCount = blockPixelCount[bIdx]
-          let blockRefScore = pxCount > 0
-            ? (blockRefDiffSum[bIdx] / Double(pxCount * 255))
-            : 0.0
-          let alpha: Float
-          if settledBlockStreak[bIdx] >= 4 && isScenePresentlyStill {
-            alpha = 0.16
-          } else if hasStrongStaticAnchors && blockRefScore >= staticBlockThreshold {
-            alpha = 0.01
-          } else {
-            alpha = baseAdaptRate
-          }
-          let i = gy * gridW + gx
-          referenceGrid[i] = ((1.0 - alpha) * referenceGrid[i]) + (alpha * currentGrid[i])
+      motionScore = min(motionScore, motionThreshold * 0.45)
+      previousGrid = currentGrid
+    } else {
+      let baseAdaptRate: Float = isLightingTransient ? 0.30 : 0.06
+      if motionScore >= motionThreshold {
+        consecutiveAboveThreshold += 1
+        for i in 0..<count {
+          referenceGrid[i] = (0.98 * referenceGrid[i]) + (0.02 * currentGrid[i])
           previousGrid[i] = currentGrid[i]
+        }
+      } else {
+        consecutiveAboveThreshold = 0
+        for gy in 0..<gridH {
+          let by = min(blocksY - 1, (gy * blocksY) / max(1, gridH))
+          for gx in 0..<gridW {
+            let bx = min(blocksX - 1, (gx * blocksX) / max(1, gridW))
+            let bIdx = by * blocksX + bx
+            let pxCount = blockPixelCount[bIdx]
+            let blockRefScore = pxCount > 0
+              ? (blockRefDiffSum[bIdx] / Double(pxCount * 255))
+              : 0.0
+            let alpha: Float
+            if settledBlockStreak[bIdx] >= 4 && isScenePresentlyStill {
+              alpha = 0.16
+            } else if hasStrongStaticAnchors && blockRefScore >= staticBlockThreshold {
+              alpha = 0.01
+            } else {
+              alpha = baseAdaptRate
+            }
+            let i = gy * gridW + gx
+            referenceGrid[i] = ((1.0 - alpha) * referenceGrid[i]) + (alpha * currentGrid[i])
+            previousGrid[i] = currentGrid[i]
+          }
         }
       }
     }
@@ -1445,6 +1663,21 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
     recentGrids.append(currentGrid)
     if recentGrids.count > 4 {
       recentGrids.removeFirst()
+    }
+
+    if obstructionJustTriggered {
+      emitEvent([
+        "sessionId": sessionId,
+        "eventType": "cameraObstructed",
+        "summary": "Camera blocked — webcam view obstructed while armed.",
+        "motionScore": motionScore,
+        "threshold": motionThreshold,
+        "averageLuminance": normalizedLuminance,
+        "consecutiveFrames": consecutiveObstructedFrames,
+        "obstructionKind": candidateObstruction ?? "obstructed",
+        "timestampMs": nowMs,
+      ])
+      return
     }
 
     let reportedCoherent = max(

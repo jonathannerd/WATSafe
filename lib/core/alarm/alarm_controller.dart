@@ -34,7 +34,7 @@ class AlarmController extends ChangeNotifier {
     SystemLifecycleAdapter? systemLifecycleAdapter,
     DateTime Function()? clock,
     this._enableDeveloperControlsForTest = false,
-    this._armedLocationRefreshInterval = const Duration(minutes: 5),
+    this._regularLocationRefreshInterval = const Duration(minutes: 4),
     this._postAlarmLocationInterval = const Duration(seconds: 15),
     this._postAlarmTrackingMaxDuration = const Duration(minutes: 15),
     this._postAlarmMaxSamples = 40,
@@ -62,7 +62,7 @@ class AlarmController extends ChangeNotifier {
   final SystemLifecycleAdapter _systemLifecycleAdapter;
   final DateTime Function() _clock;
   final bool _enableDeveloperControlsForTest;
-  final Duration _armedLocationRefreshInterval;
+  final Duration _regularLocationRefreshInterval;
   final Duration _postAlarmLocationInterval;
   final Duration _postAlarmTrackingMaxDuration;
   final int _postAlarmMaxSamples;
@@ -96,9 +96,12 @@ class AlarmController extends ChangeNotifier {
 
   Timer? _countdownTimer;
   Timer? _testAlarmTimer;
-  Timer? _armedLocationTimer;
+  Timer? _regularLocationTimer;
   Timer? _postAlarmLocationTimer;
   Timer? _confirmationResetTimer;
+  Future<DeviceLocationSnapshot?>? _inFlightHostLocationCapture;
+  DateTime? _lastHostLocationAttemptAt;
+  String? _lastReportedHostLocationSignature;
   bool _isTestAlarmRunning = false;
   IncidentRecord? _activeTestIncident;
 
@@ -335,11 +338,18 @@ class AlarmController extends ChangeNotifier {
                 ? _activeIncident!.locationStatus
                 : _hostLocationStatus;
             final effectiveLoc = localLoc ?? entry.latestLocation;
+            final isRecentHostFix =
+                effectiveLoc != null &&
+                !effectiveLoc.isLastKnown &&
+                now.difference(effectiveLoc.capturedAt) <=
+                    const Duration(minutes: 15);
             final tracking = _isPostAlarmTrackingActive
                 ? (_postAlarmTrackingState == 'reconnecting'
                       ? 'reconnecting'
                       : 'live')
-                : (effectiveLoc != null ? 'last_known' : entry.trackingState);
+                : (effectiveLoc != null
+                      ? (isRecentHostFix ? 'recent' : 'last_known')
+                      : entry.trackingState);
             return AuthorizedDeviceLocationSummary(
               deviceId: entry.deviceId,
               displayName: effectiveDeviceName,
@@ -463,9 +473,15 @@ class AlarmController extends ChangeNotifier {
         : (localHostLoc != null
               ? IncidentLocationStatus.attached
               : (_activeIncident?.locationStatus ?? _hostLocationStatus));
+    final isRecentLocalHostFix =
+        localHostLoc != null &&
+        !localHostLoc.isLastKnown &&
+        now.difference(localHostLoc.capturedAt) <= const Duration(minutes: 15);
     final localTracking = _isPostAlarmTrackingActive
         ? (_postAlarmTrackingState == 'reconnecting' ? 'reconnecting' : 'live')
-        : (localHostLoc != null ? 'last_known' : 'unavailable');
+        : (localHostLoc != null
+              ? (isRecentLocalHostFix ? 'recent' : 'last_known')
+              : 'unavailable');
     return <AuthorizedDeviceLocationSummary>[
       AuthorizedDeviceLocationSummary(
         deviceId: 'local_protected_host',
@@ -858,6 +874,8 @@ class AlarmController extends ChangeNotifier {
       mutableNotifications.onStateChanged = () {
         unawaited(refreshNotificationStatus());
       };
+      mutableNotifications.onHostLocationRefreshRequested =
+          _handleRemoteHostLocationRefreshRequest;
       await _companionAlertsSubscription?.cancel();
       _companionAlertsSubscription = mutableNotifications
           .incomingCompanionAlerts
@@ -914,6 +932,7 @@ class AlarmController extends ChangeNotifier {
     }
     _isInitialized = true;
     _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
+    _ensureRegularLocationSchedule(immediateCapture: true);
     notifyListeners();
 
     if (_selectedActivityIncidentId != null &&
@@ -952,6 +971,10 @@ class AlarmController extends ChangeNotifier {
       _locationPermissionStatus = await _locationAdapter.requestPermission();
     } catch (_) {
       _locationPermissionStatus = PermissionStatus.denied;
+    }
+    if (_locationPermissionStatus == PermissionStatus.granted &&
+        _settings.shareLocationOnAlarm) {
+      _ensureRegularLocationSchedule(immediateCapture: true);
     }
     notifyListeners();
     return _locationPermissionStatus;
@@ -1011,9 +1034,10 @@ class AlarmController extends ChangeNotifier {
     await _persistSettingsSafely();
 
     if (!enabled) {
-      _stopArmedLocationCollection();
+      _stopRegularLocationSchedule();
       _stopPostAlarmLocationTracking(markIncidentStopped: true);
       _hostLocationStatus = IncidentLocationStatus.notRequested;
+      _lastReportedHostLocationSignature = null;
       final adapter = _notificationAdapter;
       if (adapter is MutableRemoteNotificationAdapter) {
         unawaited(
@@ -1035,9 +1059,15 @@ class AlarmController extends ChangeNotifier {
       await refreshPermissionStatuses(notify: false);
     }
     _hostLocationStatus = _determineInitialHostLocationStatus();
-    if (_state == ProtectionState.armed) {
-      _startArmedLocationCollection();
-    }
+    _ensureRegularLocationSchedule(immediateCapture: true);
+    notifyListeners();
+  }
+
+  /// Enables or disables triggering an immediate tamper alarm and phone alert
+  /// when the webcam is covered or loses visibility while armed.
+  Future<void> updateAlertOnCameraObstruction(bool enabled) async {
+    _settings = _settings.copyWith(alertOnCameraObstruction: enabled);
+    await _persistSettingsSafely();
     notifyListeners();
   }
 
@@ -1183,11 +1213,39 @@ class AlarmController extends ChangeNotifier {
   }
 
   /// Captures the protected device's current location on demand (for example,
-  /// when opening Devices or after granting location permission) and syncs it
-  /// to the authorized pairing session if location sharing is enabled.
+  /// on launch, resume, periodic 4-minute intervals, or phone Devices refresh)
+  /// and syncs it to the authorized pairing session if sharing is enabled.
+  ///
+  /// Deduplicates concurrent location captures and skips redundant relay writes
+  /// when neither measurement timestamp, location status, nor protection state
+  /// changed.
   Future<DeviceLocationSnapshot?> refreshProtectedDeviceLocation({
     bool highAccuracy = false,
     bool reportToRelay = true,
+    bool forceReport = false,
+  }) {
+    final active = _inFlightHostLocationCapture;
+    if (active != null) {
+      return active;
+    }
+    final future = _executeRefreshProtectedDeviceLocation(
+      highAccuracy: highAccuracy,
+      reportToRelay: reportToRelay,
+      forceReport: forceReport,
+    );
+    _inFlightHostLocationCapture = future;
+    future.whenComplete(() {
+      if (identical(_inFlightHostLocationCapture, future)) {
+        _inFlightHostLocationCapture = null;
+      }
+    });
+    return future;
+  }
+
+  Future<DeviceLocationSnapshot?> _executeRefreshProtectedDeviceLocation({
+    required bool highAccuracy,
+    required bool reportToRelay,
+    required bool forceReport,
   }) async {
     if (!_settings.shareLocationOnAlarm) {
       _hostLocationStatus = IncidentLocationStatus.notRequested;
@@ -1205,21 +1263,36 @@ class AlarmController extends ChangeNotifier {
         _locationPermissionStatus == PermissionStatus.restricted) {
       _hostLocationStatus = IncidentLocationStatus.permissionDenied;
       final adapter = _notificationAdapter;
-      if (reportToRelay && adapter is MutableRemoteNotificationAdapter) {
+      final sig = 'denied|${_state.badgeLabel}';
+      if (reportToRelay &&
+          adapter is MutableRemoteNotificationAdapter &&
+          (forceReport || _lastReportedHostLocationSignature != sig)) {
         unawaited(
-          adapter.reportHostLocation(
-            location: null,
-            locationStatus: IncidentLocationStatus.permissionDenied,
-            protectionState: _state.badgeLabel,
-          ),
+          adapter
+              .reportHostLocation(
+                location: null,
+                locationStatus: IncidentLocationStatus.permissionDenied,
+                protectionState: _state.badgeLabel,
+              )
+              .then((reported) {
+                if (reported) {
+                  _lastReportedHostLocationSignature = sig;
+                }
+              }),
         );
       }
       notifyListeners();
       return null;
     }
+    if (_locationPermissionStatus == PermissionStatus.notDetermined) {
+      return _hostLatestLocation;
+    }
 
-    _hostLocationStatus = IncidentLocationStatus.pending;
-    notifyListeners();
+    _lastHostLocationAttemptAt = _clock();
+    if (_hostLatestLocation == null) {
+      _hostLocationStatus = IncidentLocationStatus.pending;
+      notifyListeners();
+    }
 
     ({DeviceLocationSnapshot? location, IncidentLocationStatus status}) capture;
     try {
@@ -1238,7 +1311,7 @@ class AlarmController extends ChangeNotifier {
         )) {
       _hostLatestLocation = capture.location;
       _hostLocationStatus = IncidentLocationStatus.attached;
-    } else {
+    } else if (_hostLatestLocation == null) {
       _hostLocationStatus = capture.status == IncidentLocationStatus.attached
           ? IncidentLocationStatus.unavailable
           : capture.status;
@@ -1249,26 +1322,43 @@ class AlarmController extends ChangeNotifier {
     if (reportToRelay &&
         _settings.shareLocationOnAlarm &&
         adapter is MutableRemoteNotificationAdapter) {
-      unawaited(
-        adapter.reportHostLocation(
-          location: _hostLatestLocation,
-          locationStatus: _hostLocationStatus,
-          protectionState: _state.badgeLabel,
-          activeIncidentId: _activeIncident?.id,
-          isBoundedAlarmTracking: _isPostAlarmTrackingActive,
-        ),
-      );
+      final loc = _hostLatestLocation;
+      final signature =
+          '${loc?.capturedAt.toUtc().toIso8601String() ?? 'none'}|'
+          '${loc?.latitude.toStringAsFixed(6) ?? ''}|'
+          '${loc?.longitude.toStringAsFixed(6) ?? ''}|'
+          '${_hostLocationStatus.name}|${_state.badgeLabel}|'
+          '${_activeIncident?.id ?? ''}|$_isPostAlarmTrackingActive';
+      if (forceReport || _lastReportedHostLocationSignature != signature) {
+        unawaited(
+          adapter
+              .reportHostLocation(
+                location: loc,
+                locationStatus: _hostLocationStatus,
+                protectionState: _state.badgeLabel,
+                activeIncidentId: _activeIncident?.id,
+                isBoundedAlarmTracking: _isPostAlarmTrackingActive,
+              )
+              .then((reported) {
+                if (reported) {
+                  _lastReportedHostLocationSignature = signature;
+                }
+              }),
+        );
+      }
     }
     return _hostLatestLocation;
   }
 
   /// Queries the relay for authorized devices in the current pairing session.
   Future<List<AuthorizedDeviceLocationSummary>>
-  refreshAuthorizedDeviceLocations() async {
+  refreshAuthorizedDeviceLocations({bool requestHostRefresh = false}) async {
     final adapter = _notificationAdapter;
     if (adapter is MutableRemoteNotificationAdapter) {
       try {
-        final devices = await adapter.fetchAuthorizedDevicesLocations();
+        final devices = await adapter.fetchAuthorizedDevicesLocations(
+          requestHostRefresh: requestHostRefresh,
+        );
         if (devices.isNotEmpty) {
           _authorizedDeviceLocations = devices;
         }
@@ -1284,6 +1374,7 @@ class AlarmController extends ChangeNotifier {
   /// paired relay session while preserving pairings, PIN, and incident summaries.
   Future<bool> deleteStoredLocationHistory() async {
     _stopPostAlarmLocationTracking(markIncidentStopped: true);
+    _lastReportedHostLocationSignature = null;
     _hostLatestLocation = null;
     _hostLocationStatus = _settings.shareLocationOnAlarm
         ? _determineInitialHostLocationStatus()
@@ -1361,27 +1452,82 @@ class AlarmController extends ChangeNotifier {
         : IncidentLocationStatus.notRequested;
   }
 
-  void _startArmedLocationCollection() {
-    _stopArmedLocationCollection();
-    if (!_settings.shareLocationOnAlarm || !_locationAdapter.isSupported) {
+  void _handleRemoteHostLocationRefreshRequest() {
+    if (_isDisposed ||
+        isCompanionMode ||
+        !_settings.shareLocationOnAlarm ||
+        !_locationAdapter.isSupported ||
+        _isPostAlarmTrackingActive) {
       return;
     }
-    unawaited(refreshProtectedDeviceLocation(highAccuracy: false));
-    _armedLocationTimer = Timer.periodic(_armedLocationRefreshInterval, (_) {
-      if (_state == ProtectionState.armed && _settings.shareLocationOnAlarm) {
+    final lastAttempt = _lastHostLocationAttemptAt;
+    if (lastAttempt != null &&
+        _clock().difference(lastAttempt) < const Duration(seconds: 25)) {
+      // Recently measured; re-report latest measurement metadata if needed
+      // without issuing overlapping OS location calls.
+      unawaited(
+        refreshProtectedDeviceLocation(highAccuracy: false, forceReport: true),
+      );
+      return;
+    }
+    unawaited(
+      refreshProtectedDeviceLocation(highAccuracy: false, forceReport: true),
+    );
+  }
+
+  void _ensureRegularLocationSchedule({
+    bool immediateCapture = true,
+    Duration? minElapsedSinceLastAttempt,
+  }) {
+    if (_isDisposed ||
+        isCompanionMode ||
+        !_settings.shareLocationOnAlarm ||
+        !_locationAdapter.isSupported ||
+        _isPostAlarmTrackingActive) {
+      _stopRegularLocationSchedule();
+      return;
+    }
+    if (_locationPermissionStatus != PermissionStatus.granted &&
+        _locationPermissionStatus != PermissionStatus.notApplicable) {
+      _stopRegularLocationSchedule();
+      return;
+    }
+
+    if (immediateCapture) {
+      final lastAttempt = _lastHostLocationAttemptAt;
+      final allowed =
+          minElapsedSinceLastAttempt == null ||
+          lastAttempt == null ||
+          _clock().difference(lastAttempt) >= minElapsedSinceLastAttempt;
+      if (allowed) {
         unawaited(refreshProtectedDeviceLocation(highAccuracy: false));
-      } else {
-        _stopArmedLocationCollection();
       }
+    }
+
+    _regularLocationTimer ??= Timer.periodic(_regularLocationRefreshInterval, (
+      _,
+    ) {
+      if (_isDisposed ||
+          isCompanionMode ||
+          !_settings.shareLocationOnAlarm ||
+          !_locationAdapter.isSupported) {
+        _stopRegularLocationSchedule();
+        return;
+      }
+      if (_isPostAlarmTrackingActive) {
+        return;
+      }
+      unawaited(refreshProtectedDeviceLocation(highAccuracy: false));
     });
   }
 
-  void _stopArmedLocationCollection() {
-    _armedLocationTimer?.cancel();
-    _armedLocationTimer = null;
+  void _stopRegularLocationSchedule() {
+    _regularLocationTimer?.cancel();
+    _regularLocationTimer = null;
   }
 
   void _startPostAlarmLocationTracking(String incidentId, int alarmGeneration) {
+    _stopRegularLocationSchedule();
     _stopPostAlarmLocationTracking(markIncidentStopped: false);
     if (!_settings.shareLocationOnAlarm) {
       return;
@@ -1467,6 +1613,9 @@ class AlarmController extends ChangeNotifier {
           );
         }
       }
+    }
+    if (markIncidentStopped && !_isDisposed && _isInitialized) {
+      _ensureRegularLocationSchedule(immediateCapture: false);
     }
   }
 
@@ -2088,15 +2237,37 @@ class AlarmController extends ChangeNotifier {
     _state = ProtectionState.armed;
     _clearMovementConfirmationStage();
     _clearInputInteractionGrace();
-    _statusMessage =
-        'Monitoring with ${detector.detectorType.userFacingMethodName.toLowerCase()}. Enter your PIN to disarm.';
+    if (startResult.status == CapabilityStatus.degraded) {
+      final currentCap = _capabilities[detector.detectorType];
+      if (currentCap != null) {
+        _capabilities[detector.detectorType] = currentCap.copyWith(
+          status: CapabilityStatus.degraded,
+          statusDetail: startResult.message,
+        );
+      }
+    }
+    final isCameraBlockedAtArm =
+        detector.detectorType.usesCamera &&
+        (_capabilities[detector.detectorType]?.status ==
+                CapabilityStatus.degraded ||
+            startResult.status == CapabilityStatus.degraded);
+    if (isCameraBlockedAtArm) {
+      _warningMessage = 'Camera appears covered or too dark. Uncover the camera for visual motion detection — lid and connection alerts remain active.';
+      _statusMessage = 'Camera view blocked — lid and connection alerts active. Enter your PIN to disarm.';
+    } else {
+      _statusMessage =
+          'Monitoring with ${detector.detectorType.userFacingMethodName.toLowerCase()}. Enter your PIN to disarm.';
+    }
     _syncArmedLifecycleAndWatchdog(
       armed: true,
       armedSessionId: sessionId,
       protectionState: 'armed',
     );
     _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
-    _startArmedLocationCollection();
+    _ensureRegularLocationSchedule(
+      immediateCapture: true,
+      minElapsedSinceLastAttempt: const Duration(seconds: 20),
+    );
     notifyListeners();
   }
 
@@ -2198,7 +2369,7 @@ class AlarmController extends ChangeNotifier {
       return;
     }
     _cancelCountdownTimer();
-    _stopArmedLocationCollection();
+    _ensureRegularLocationSchedule(immediateCapture: false);
     _clearMovementConfirmationStage();
     _activeSessionId = null;
     _activeAuxiliaryDetectors.clear();
@@ -2218,7 +2389,7 @@ class AlarmController extends ChangeNotifier {
     final oldSessionId = _activeSessionId;
     ++_lifecycleGeneration;
     _cancelCountdownTimer();
-    _stopArmedLocationCollection();
+    _ensureRegularLocationSchedule(immediateCapture: false);
     _clearMovementConfirmationStage();
     _clearInputInteractionGrace();
     _activeSessionId = null;
@@ -2267,7 +2438,7 @@ class AlarmController extends ChangeNotifier {
                   'Protection interrupted — WATSafe was closed while armed.',
             );
           }
-          _stopArmedLocationCollection();
+          _stopRegularLocationSchedule();
           _stopPostAlarmLocationTracking(markIncidentStopped: true);
           _clearMovementConfirmationStage();
           _clearInputInteractionGrace();
@@ -2301,6 +2472,11 @@ class AlarmController extends ChangeNotifier {
         unawaited(refreshPermissionStatuses());
         if (isCompanionMode && _settings.shareCompanionPhoneLocation) {
           unawaited(refreshCompanionPhoneLocation());
+        } else {
+          _ensureRegularLocationSchedule(
+            immediateCapture: true,
+            minElapsedSinceLastAttempt: const Duration(seconds: 30),
+          );
         }
         await _handleAppForegroundResumed('App returned to foreground');
         return;
@@ -2325,7 +2501,6 @@ class AlarmController extends ChangeNotifier {
       ++_lifecycleGeneration;
       final sessionId = _activeSessionId;
       _cancelCountdownTimer();
-      _stopArmedLocationCollection();
       _clearMovementConfirmationStage();
       _isCalibrating = false;
       _remainingCountdownSeconds = 0;
@@ -2548,7 +2723,10 @@ class AlarmController extends ChangeNotifier {
       armedSessionId: sessionId,
       protectionState: 'armed',
     );
-    _startArmedLocationCollection();
+    _ensureRegularLocationSchedule(
+      immediateCapture: true,
+      minElapsedSinceLastAttempt: const Duration(seconds: 20),
+    );
     notifyListeners();
     return true;
   }
@@ -2605,8 +2783,8 @@ class AlarmController extends ChangeNotifier {
 
     final endedSessionId = _activeSessionId;
     _cancelCountdownTimer();
-    _stopArmedLocationCollection();
     _stopPostAlarmLocationTracking(markIncidentStopped: true);
+    _ensureRegularLocationSchedule(immediateCapture: false);
     _clearMovementConfirmationStage();
     _clearInputInteractionGrace();
     _testAlarmTimer?.cancel();
@@ -3043,6 +3221,12 @@ class AlarmController extends ChangeNotifier {
       hostDisplayName: resolvedHostName,
     );
     _lastHostDisplayName = invite.hostDisplayName ?? resolvedHostName;
+    _lastReportedHostLocationSignature = null;
+    if (!isCompanionMode && _settings.shareLocationOnAlarm) {
+      unawaited(
+        refreshProtectedDeviceLocation(highAccuracy: false, forceReport: true),
+      );
+    }
     await refreshNotificationStatus();
     return invite;
   }
@@ -3206,6 +3390,11 @@ class AlarmController extends ChangeNotifier {
         _warningMessage = event.summary;
         notifyListeners();
         return;
+      case DetectorEventType.cameraObstructed:
+        _lastTelemetryEvent = event;
+        _warningMessage = event.summary;
+        notifyListeners();
+        return;
       case DetectorEventType.inputRecovered:
         _lastTelemetryEvent = event;
         _warningMessage = null;
@@ -3285,7 +3474,6 @@ class AlarmController extends ChangeNotifier {
 
       case DetectorEventType.poorInputWarning:
         _lastTelemetryEvent = event;
-        _warningMessage = event.summary;
         final currentCap = _capabilities[event.detectorType];
         if (currentCap != null) {
           _capabilities[event.detectorType] = currentCap.copyWith(
@@ -3293,18 +3481,36 @@ class AlarmController extends ChangeNotifier {
             statusDetail: event.summary,
           );
         }
+        if (_state != ProtectionState.alarming) {
+          _warningMessage = event.summary;
+          if (_state == ProtectionState.armed &&
+              event.summary.toLowerCase().contains('lid and connection')) {
+            _statusMessage = 'Camera view blocked — lid and connection alerts active. Enter your PIN to disarm.';
+          }
+        }
         notifyListeners();
+        return;
+
+      case DetectorEventType.cameraObstructed:
+        _handleCameraObstruction(event);
         return;
 
       case DetectorEventType.inputRecovered:
         _lastTelemetryEvent = event;
-        _warningMessage = null;
         final currentCap = _capabilities[event.detectorType];
         if (currentCap != null) {
           _capabilities[event.detectorType] = currentCap.copyWith(
             status: CapabilityStatus.ready,
             statusDetail: event.summary,
           );
+        }
+        // Removing an obstruction must never automatically disarm or clear an active alarm.
+        if (_state != ProtectionState.alarming) {
+          _warningMessage = null;
+          if (_state == ProtectionState.armed) {
+            _statusMessage =
+                'Monitoring with ${event.detectorType.userFacingMethodName.toLowerCase()}. Enter your PIN to disarm.';
+          }
         }
         notifyListeners();
         return;
@@ -3398,7 +3604,7 @@ class AlarmController extends ChangeNotifier {
     }
 
     _clearMovementConfirmationStage(notify: false);
-    _stopArmedLocationCollection();
+    _stopRegularLocationSchedule();
 
     final alarmGeneration = ++_alarmGeneration;
     _alarmAudioRequested = true;
@@ -3844,6 +4050,10 @@ class AlarmController extends ChangeNotifier {
       case SystemLifecycleEventType.systemDidWake:
       case SystemLifecycleEventType.lidOpened:
         _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
+        _ensureRegularLocationSchedule(
+          immediateCapture: true,
+          minElapsedSinceLastAttempt: const Duration(seconds: 30),
+        );
         if (_state == ProtectionState.alarming) {
           unawaited(_ensureActiveAlarmAudioOnResume('System woke from sleep'));
         }
@@ -3852,6 +4062,38 @@ class AlarmController extends ChangeNotifier {
       case SystemLifecycleEventType.screensDidSleep:
         return;
     }
+  }
+
+  void _handleCameraObstruction(DetectorEvent event) {
+    _lastTelemetryEvent = event;
+    final currentCap = _capabilities[event.detectorType];
+    if (currentCap != null) {
+      _capabilities[event.detectorType] = currentCap.copyWith(
+        status: CapabilityStatus.degraded,
+        statusDetail: event.summary,
+      );
+    }
+
+    if (_state == ProtectionState.alarming || _state != ProtectionState.armed) {
+      notifyListeners();
+      return;
+    }
+
+    if (!_settings.alertOnCameraObstruction) {
+      _warningMessage = 'Camera view is obstructed. Camera obstruction alarm is turned off in Settings.';
+      notifyListeners();
+      return;
+    }
+
+    final summary = event.summary.trim().isNotEmpty
+        ? event.summary.trim()
+        : 'Camera blocked — webcam view obstructed while armed.';
+    _syncArmedLifecycleAndWatchdog(
+      armed: true,
+      armedSessionId: _activeSessionId,
+      protectionState: 'interrupted',
+    );
+    unawaited(_triggerImmediateInterruptionAlert(summary: summary));
   }
 
   /// Immediately records a `protectionInterrupted` incident, attaches the
@@ -3869,7 +4111,7 @@ class AlarmController extends ChangeNotifier {
 
     _clearMovementConfirmationStage(notify: false);
     _clearInputInteractionGrace(notify: false);
-    _stopArmedLocationCollection();
+    _stopRegularLocationSchedule();
 
     final now = _clock();
     final sessionId =
@@ -3891,6 +4133,7 @@ class AlarmController extends ChangeNotifier {
         ? 'live'
         : (lastKnown != null ? 'last_known' : 'idle');
 
+    final isCameraBlocked = summary.toLowerCase().startsWith('camera blocked');
     final incident = IncidentRecord(
       id: 'int_${++_incidentSequence}_${now.millisecondsSinceEpoch}',
       sessionId: sessionId,
@@ -3899,7 +4142,9 @@ class AlarmController extends ChangeNotifier {
       triggeredAt: now,
       deviceName: effectiveDeviceName,
       triggerSummary: summary,
-      resolutionSummary: 'Protection interrupted — enter PIN to disarm',
+      resolutionSummary: isCameraBlocked
+          ? 'Camera blocked — enter PIN to disarm'
+          : 'Protection interrupted — enter PIN to disarm',
       location: lastKnown,
       alarmTimeLocation: lastKnown,
       locationTrail: lastKnown != null
@@ -4023,12 +4268,42 @@ class AlarmController extends ChangeNotifier {
       return;
     }
 
+    // Camera unplugging, permission revocation, or capture failure while armed
+    // is treated as an immediate protection interruption: sound the local siren,
+    // alert the paired phone, and keep armed lid/sleep & watchdog protection active
+    // until disarmed with the PIN.
+    if (_state == ProtectionState.armed && event.detectorType.usesCamera) {
+      final currentCap = _capabilities[event.detectorType];
+      if (currentCap != null) {
+        _capabilities[event.detectorType] = currentCap.copyWith(
+          status: CapabilityStatus.unsupported,
+          summary: event.summary,
+          statusDetail: event.errorCode,
+        );
+      }
+      _warningMessage =
+          'Camera disconnected or unavailable while armed (${event.summary}).';
+      unawaited(_stopSessionDetectorsSafely(_activeSessionId));
+      _syncArmedLifecycleAndWatchdog(
+        armed: true,
+        armedSessionId: _activeSessionId,
+        protectionState: 'interrupted',
+      );
+      unawaited(
+        _triggerImmediateInterruptionAlert(
+          summary:
+              'Protection interrupted — camera unavailable while armed (${event.summary}).',
+        ),
+      );
+      return;
+    }
+
     // Never show "Protected" when a required detector has failed or stopped.
     final wasArmed = _state == ProtectionState.armed;
     ++_lifecycleGeneration;
     final failedSessionId = _activeSessionId;
     _cancelCountdownTimer();
-    _stopArmedLocationCollection();
+    _ensureRegularLocationSchedule(immediateCapture: false);
     _clearMovementConfirmationStage();
     _clearInputInteractionGrace();
     _activeSessionId = null;
@@ -4175,7 +4450,7 @@ class AlarmController extends ChangeNotifier {
     ++_alarmGeneration;
     ++_lifecycleGeneration;
     _cancelCountdownTimer();
-    _stopArmedLocationCollection();
+    _stopRegularLocationSchedule();
     _stopPostAlarmLocationTracking(markIncidentStopped: false);
     _clearMovementConfirmationStage();
     _clearInputInteractionGrace();
@@ -4262,7 +4537,7 @@ class AlarmController extends ChangeNotifier {
     ++_alarmGeneration;
     ++_lifecycleGeneration;
     _cancelCountdownTimer();
-    _stopArmedLocationCollection();
+    _stopRegularLocationSchedule();
     _stopPostAlarmLocationTracking(markIncidentStopped: false);
     _clearMovementConfirmationStage();
     _clearInputInteractionGrace();
