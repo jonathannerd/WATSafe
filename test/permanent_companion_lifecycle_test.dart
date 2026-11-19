@@ -661,7 +661,7 @@ void main() {
         expect(
           pushData['url'],
           equals(
-            '/companion?event=${Uri.encodeComponent(triggeredIncident.id)}',
+            '/companion?incident=${Uri.encodeComponent(triggeredIncident.id)}',
           ),
         );
         // Lock-screen push never leaks precise coordinates
@@ -769,6 +769,10 @@ void main() {
               home: Scaffold(body: SettingsScreen(controller: controller)),
             ),
           );
+          await tester.pumpAndSettle();
+
+          // Navigate into Devices & notifications category
+          await tester.tap(find.byKey(const Key('settings_category_devices')));
           await tester.pumpAndSettle();
 
           // Settings card flags Temporary / Local status clearly

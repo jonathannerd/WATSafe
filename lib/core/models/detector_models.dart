@@ -236,6 +236,7 @@ enum DetectorEventType {
   calibrationCompleted,
   telemetryFrame,
   motionTriggered,
+  cameraObstructed,
   poorInputWarning,
   inputRecovered,
   detectorFailed,
@@ -265,6 +266,7 @@ class DetectorEvent {
     this.slowDriftScore,
     this.loomingRejected,
     this.acPowerUnplugged,
+    this.obstructionKind,
     this.errorCode,
     this.isSimulatedTest = false,
   });
@@ -302,6 +304,11 @@ class DetectorEvent {
 
   /// Optional weak supporting signal: true if host AC power was just unplugged.
   final bool? acPowerUnplugged;
+
+  /// Optional camera obstruction mode (`dark`, `bright_glare`, `opaque_cover`,
+  /// `texture_collapse`) when [eventType] is [DetectorEventType.cameraObstructed]
+  /// or [DetectorEventType.poorInputWarning].
+  final String? obstructionKind;
 
   /// Optional platform or capture error code.
   final String? errorCode;

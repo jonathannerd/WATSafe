@@ -8,8 +8,8 @@ import '../theme/watsafe_theme.dart';
 
 /// Unified chronological Activity feed showing alarm and test events across
 /// both this device and any paired laptop, with an interactive incident map,
-/// alarm-time vs latest location comparison, filtered movement trail,
-/// **Center on device**, and **Open in Maps**.
+/// alarm-time vs latest location comparison, filtered movement trail, and
+/// **Center on device**.
 class ActivityScreen extends StatelessWidget {
   const ActivityScreen({super.key, required this.controller});
 
@@ -62,6 +62,7 @@ class ActivityScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final entries = _buildMergedEntries();
+    final palette = WatSafeTheme.of(context);
     final selectedId = controller.selectedActivityIncidentId;
     final selectedEntry = selectedId == null
         ? null
@@ -81,9 +82,9 @@ class ActivityScreen extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.w800),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Recent alarms and test alerts from your protected devices.',
-                style: TextStyle(color: WatSafeTheme.warmMuted),
+                style: TextStyle(color: palette.textMuted),
               ),
               const SizedBox(height: 20),
               if (selectedEntry != null) ...<Widget>[
@@ -152,6 +153,14 @@ class _ActivityEntry {
       alarmTimeLocation != null &&
       location!.differsMeaningfullyFrom(alarmTimeLocation!);
 
+  static bool _isCameraObstructionSummary(String raw) {
+    final lower = raw.toLowerCase();
+    return lower.contains('camera') &&
+        (lower.contains('block') ||
+            lower.contains('cover') ||
+            lower.contains('obstruct'));
+  }
+
   factory _ActivityEntry.fromIncident(
     IncidentRecord inc, {
     required String fallbackDeviceName,
@@ -160,7 +169,10 @@ class _ActivityEntry {
       IncidentKind.realDetectorTrigger => 'Alarm triggered',
       IncidentKind.manualTestAlarm => 'Test alert',
       IncidentKind.detectorFailureDuringMonitoring => 'Monitoring stopped',
-      IncidentKind.protectionInterrupted => 'Protection interrupted',
+      IncidentKind.protectionInterrupted =>
+        _isCameraObstructionSummary(inc.triggerSummary)
+            ? 'Camera blocked'
+            : 'Protection interrupted',
     };
     return _ActivityEntry(
       id: inc.id,
@@ -190,7 +202,9 @@ class _ActivityEntry {
     final title = alert.isTest
         ? 'Test alert'
         : (isInterrupted
-              ? 'Protection interrupted'
+              ? (_isCameraObstructionSummary(alert.triggerSummary)
+                    ? 'Camera blocked'
+                    : 'Protection interrupted')
               : (isFailure ? 'Monitoring stopped' : 'Alarm triggered'));
     return _ActivityEntry(
       id: alert.incidentId,
@@ -296,28 +310,28 @@ class _ActivityEventRow extends StatelessWidget {
                   children: <Widget>[
                     Text(
                       entry.title,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontWeight: FontWeight.w700,
                         fontSize: 15.5,
-                        color: WatSafeTheme.warmOffWhite,
+                        color: WatSafeTheme.of(context).textPrimary,
                       ),
                     ),
                     const SizedBox(height: 3),
                     Text(
                       '${entry.deviceName} • ${_formatEventTime(entry.triggeredAt)}',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 13,
-                        color: WatSafeTheme.warmMuted,
+                        color: WatSafeTheme.of(context).textMuted,
                       ),
                     ),
                     if (entry.locationStatus ==
                         IncidentLocationStatus.pending) ...<Widget>[
                       const SizedBox(height: 4),
-                      const Text(
+                      Text(
                         'Getting device location…',
                         style: TextStyle(
                           fontSize: 12,
-                          color: WatSafeTheme.amberAccent,
+                          color: WatSafeTheme.of(context).warningColor,
                         ),
                       ),
                     ],
@@ -340,9 +354,9 @@ class _ActivityEventRow extends StatelessWidget {
                   label: const Text('View location'),
                 ),
               ] else
-                const Icon(
+                Icon(
                   Icons.chevron_right_rounded,
-                  color: WatSafeTheme.warmMuted,
+                  color: WatSafeTheme.of(context).textMuted,
                 ),
             ],
           ),
@@ -363,11 +377,10 @@ class _SelectedEventDetailCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final accent = entry.isTest
-        ? WatSafeTheme.infoSteel
-        : (entry.isFailure
-              ? WatSafeTheme.amberAccent
-              : WatSafeTheme.alarmCrimson);
+        ? palette.infoColor
+        : (entry.isFailure ? palette.warningColor : palette.alarmColor);
     final loc = entry.location;
 
     return Card(
@@ -395,8 +408,8 @@ class _SelectedEventDetailCard extends StatelessWidget {
                       const SizedBox(height: 3),
                       Text(
                         '${entry.deviceName} • ${_formatEventTime(entry.triggeredAt)}',
-                        style: const TextStyle(
-                          color: WatSafeTheme.warmMuted,
+                        style: TextStyle(
+                          color: palette.textMuted,
                           fontSize: 13.5,
                         ),
                       ),
@@ -413,8 +426,8 @@ class _SelectedEventDetailCard extends StatelessWidget {
             const SizedBox(height: 12),
             Text(
               entry.summary,
-              style: const TextStyle(
-                color: WatSafeTheme.warmOffWhite,
+              style: TextStyle(
+                color: palette.textPrimary,
                 fontSize: 14.5,
                 height: 1.4,
               ),
@@ -423,28 +436,14 @@ class _SelectedEventDetailCard extends StatelessWidget {
               const SizedBox(height: 6),
               Text(
                 entry.resolutionSummary!,
-                style: const TextStyle(
-                  color: WatSafeTheme.warmSubtle,
-                  fontSize: 12.5,
-                ),
+                style: TextStyle(color: palette.textSubtle, fontSize: 12.5),
               ),
             ],
             const SizedBox(height: 18),
             const Divider(height: 1),
             const SizedBox(height: 16),
             if (loc != null && loc.isValid)
-              _LocationPreviewSection(
-                entry: entry,
-                location: loc,
-                onOpenMaps: () async {
-                  final opened = await controller.openExternalUrl(loc.mapsUrl);
-                  if (!opened && context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Maps link: ${loc.mapsUrl}')),
-                    );
-                  }
-                },
-              )
+              _LocationPreviewSection(entry: entry, location: loc)
             else
               _UnavailableLocationNotice(status: entry.locationStatus),
           ],
@@ -455,15 +454,10 @@ class _SelectedEventDetailCard extends StatelessWidget {
 }
 
 class _LocationPreviewSection extends StatefulWidget {
-  const _LocationPreviewSection({
-    required this.entry,
-    required this.location,
-    required this.onOpenMaps,
-  });
+  const _LocationPreviewSection({required this.entry, required this.location});
 
   final _ActivityEntry entry;
   final DeviceLocationSnapshot location;
-  final VoidCallback onOpenMaps;
 
   @override
   State<_LocationPreviewSection> createState() =>
@@ -474,10 +468,13 @@ class _LocationPreviewSectionState extends State<_LocationPreviewSection> {
   final GlobalKey<DeviceGeographicMapState> _mapKey =
       GlobalKey<DeviceGeographicMapState>();
 
-  (String, Color) _trackingBadge() {
+  (String?, Color?) _trackingBadge() {
     final state = widget.entry.locationTrackingState;
     if (state == 'live') {
       return ('Live', WatSafeTheme.readyEmerald);
+    }
+    if (state == 'recent') {
+      return (null, null);
     }
     if (state == 'reconnecting') {
       return ('Reconnecting', WatSafeTheme.amberAccent);
@@ -487,6 +484,7 @@ class _LocationPreviewSectionState extends State<_LocationPreviewSection> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final location = widget.location;
     final entry = widget.entry;
     final badge = _trackingBadge();
@@ -498,9 +496,9 @@ class _LocationPreviewSectionState extends State<_LocationPreviewSection> {
       children: <Widget>[
         Row(
           children: <Widget>[
-            const Icon(
+            Icon(
               Icons.location_on_rounded,
-              color: WatSafeTheme.amberAccent,
+              color: palette.accentPrimary,
               size: 20,
             ),
             const SizedBox(width: 8),
@@ -517,9 +515,9 @@ class _LocationPreviewSectionState extends State<_LocationPreviewSection> {
               key: const Key('location_precision_badge'),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
-                color: WatSafeTheme.charcoalElevated,
+                color: palette.surfaceElevated,
                 borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: WatSafeTheme.charcoalBorder),
+                border: Border.all(color: palette.borderColor),
               ),
               child: Text(
                 location.precisionLabel,
@@ -529,8 +527,8 @@ class _LocationPreviewSectionState extends State<_LocationPreviewSection> {
                   color:
                       (location.isEffectivelyApproximate ||
                           location.isLastKnown)
-                      ? WatSafeTheme.amberAccent
-                      : WatSafeTheme.readyEmerald,
+                      ? palette.warningColor
+                      : palette.readyColor,
                 ),
               ),
             ),
@@ -554,22 +552,22 @@ class _LocationPreviewSectionState extends State<_LocationPreviewSection> {
             key: const Key('alarm_vs_latest_location_card'),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: WatSafeTheme.charcoalElevated,
+              color: palette.surfaceElevated,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: WatSafeTheme.charcoalBorder),
+              border: Border.all(color: palette.borderColor),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
                 _CoordinateComparisonRow(
-                  dotColor: WatSafeTheme.amberAccent,
+                  dotColor: palette.warningColor,
                   label: 'Alarm-time location',
                   value:
                       '${entry.alarmTimeLocation!.formattedCoordinates} (${_formatShortTime(entry.alarmTimeLocation!.capturedAt)})',
                 ),
                 const SizedBox(height: 8),
                 _CoordinateComparisonRow(
-                  dotColor: WatSafeTheme.alarmCrimson,
+                  dotColor: palette.alarmColor,
                   label: 'Latest known location',
                   value:
                       '${location.formattedCoordinates} • ${location.accuracyDescription}',
@@ -581,10 +579,10 @@ class _LocationPreviewSectionState extends State<_LocationPreviewSection> {
         ] else ...<Widget>[
           Text(
             '${location.formattedCoordinates} • ${location.accuracyDescription}',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13.5,
               fontWeight: FontWeight.w600,
-              color: WatSafeTheme.warmOffWhite,
+              color: palette.textPrimary,
             ),
           ),
           const SizedBox(height: 4),
@@ -593,37 +591,28 @@ class _LocationPreviewSectionState extends State<_LocationPreviewSection> {
           Text(
             '${entry.locationTrail.length} verified location updates (${_formatShortTime(entry.locationTrail.first.capturedAt)} → ${_formatShortTime(entry.locationTrail.last.capturedAt)})',
             key: const Key('incident_trail_summary'),
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12.5,
-              color: WatSafeTheme.amberAccent,
+              color: palette.accentPrimary,
               fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 4),
         ],
         Text(
-          'Recorded ${_formatEventTime(location.capturedAt)} • ${location.relativeAgeLabel(now)}',
+          'Recorded ${_formatEventTime(location.capturedAt)} • ${location.relativeAgeLabel(now, forceLastKnown: entry.locationTrackingState == 'last_known')}',
           key: const Key('location_recorded_time_label'),
-          style: const TextStyle(fontSize: 12.5, color: WatSafeTheme.warmMuted),
+          style: TextStyle(fontSize: 12.5, color: palette.textMuted),
         ),
-        const SizedBox(height: 14),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: <Widget>[
-            OutlinedButton.icon(
-              key: const Key('incident_center_on_device_button'),
-              onPressed: () => _mapKey.currentState?.centerOnDevice(),
-              icon: const Icon(Icons.my_location_rounded, size: 18),
-              label: const Text('Center on device'),
-            ),
-            FilledButton.icon(
-              key: const Key('open_in_maps_button'),
-              onPressed: widget.onOpenMaps,
-              icon: const Icon(Icons.map_rounded),
-              label: const Text('Open in Maps'),
-            ),
-          ],
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            key: const Key('incident_center_on_device_button'),
+            onPressed: () => _mapKey.currentState?.centerOnDevice(),
+            icon: const Icon(Icons.my_location_rounded, size: 18),
+            label: const Text('Center on device'),
+          ),
         ),
       ],
     );
@@ -661,18 +650,18 @@ class _CoordinateComparisonRow extends StatelessWidget {
             children: <Widget>[
               Text(
                 label,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
-                  color: WatSafeTheme.warmMuted,
+                  color: WatSafeTheme.of(context).textMuted,
                 ),
               ),
               Text(
                 value,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
-                  color: WatSafeTheme.warmOffWhite,
+                  color: WatSafeTheme.of(context).textPrimary,
                 ),
               ),
             ],
@@ -690,6 +679,7 @@ class _UnavailableLocationNotice extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final String message = switch (status) {
       IncidentLocationStatus.pending => 'Getting device location… This map will update automatically as soon as coordinates arrive.',
       IncidentLocationStatus.permissionDenied => 'Location unavailable — location permission was turned off on the protected device when this alarm triggered.',
@@ -701,37 +691,37 @@ class _UnavailableLocationNotice extends StatelessWidget {
       key: const Key('location_unavailable_notice'),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: WatSafeTheme.charcoalElevated,
+        color: palette.surfaceElevated,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: WatSafeTheme.charcoalBorder),
+        border: Border.all(color: palette.borderColor),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           if (status == IncidentLocationStatus.pending)
-            const Padding(
-              padding: EdgeInsets.only(top: 2),
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
               child: SizedBox(
                 width: 18,
                 height: 18,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  color: WatSafeTheme.amberAccent,
+                  color: palette.accentPrimary,
                 ),
               ),
             )
           else
-            const Icon(
+            Icon(
               Icons.location_off_outlined,
-              color: WatSafeTheme.warmMuted,
+              color: palette.textMuted,
               size: 20,
             ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               message,
-              style: const TextStyle(
-                color: WatSafeTheme.warmMuted,
+              style: TextStyle(
+                color: palette.textMuted,
                 fontSize: 13.5,
                 height: 1.4,
               ),
@@ -748,15 +738,16 @@ class _EmptyActivityCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     return Card(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 36),
         child: Column(
           children: <Widget>[
-            const Icon(
+            Icon(
               Icons.check_circle_outline_rounded,
               size: 44,
-              color: WatSafeTheme.readyEmerald,
+              color: palette.readyColor,
             ),
             const SizedBox(height: 12),
             Text(
@@ -765,10 +756,10 @@ class _EmptyActivityCard extends StatelessWidget {
                   ?.copyWith(fontWeight: FontWeight.w700),
             ),
             const SizedBox(height: 6),
-            const Text(
+            Text(
               'When an alarm or test alert happens on your protected device, it will appear here with the time and location.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: WatSafeTheme.warmMuted, height: 1.4),
+              style: TextStyle(color: palette.textMuted, height: 1.4),
             ),
           ],
         ),

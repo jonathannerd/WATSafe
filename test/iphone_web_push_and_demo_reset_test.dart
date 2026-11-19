@@ -486,7 +486,7 @@ void main() {
         expect(swResp.statusCode, 200);
         expect(swText, contains("addEventListener('push'"));
         expect(swText, contains("addEventListener('notificationclick'"));
-        expect(swText, contains('/companion?event='));
+        expect(swText, contains('/companion?incident='));
 
         final pageReq = await client.getUrl(Uri.parse('$base/companion'));
         final pageResp = await pageReq.close();
@@ -1044,9 +1044,11 @@ void main() {
           await tester.tap(find.text('Settings'));
           await tester.pumpAndSettle();
 
-          final advancedTile = find.byKey(const Key('advanced_settings_tile'));
-          await tester.ensureVisible(advancedTile);
-          await tester.tap(advancedTile);
+          final advancedCategory = find.byKey(
+            const Key('settings_category_advanced'),
+          );
+          await tester.ensureVisible(advancedCategory);
+          await tester.tap(advancedCategory);
           await tester.pumpAndSettle();
 
           // Test 1: Preview onboarding preserves ALL saved data on Exit preview!
@@ -1070,10 +1072,12 @@ void main() {
           expect(laptopController.effectiveDeviceName, 'Jonathan’s MacBook');
           expect(laptopController.pairedDevices, hasLength(1));
 
-          // Re-expand Advanced after returning from Onboarding preview
-          await tester.ensureVisible(advancedTile);
-          await tester.tap(advancedTile);
-          await tester.pumpAndSettle();
+          // Re-open Advanced category if returned to category list
+          if (advancedCategory.evaluate().isNotEmpty) {
+            await tester.ensureVisible(advancedCategory);
+            await tester.tap(advancedCategory);
+            await tester.pumpAndSettle();
+          }
 
           // Test 2: Open Reset Demo confirmation dialog, verify Cancel leaves everything untouched
           final resetBtn = find.byKey(const Key('reset_demo_button'));

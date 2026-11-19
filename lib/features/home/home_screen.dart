@@ -18,23 +18,44 @@ class HomeScreen extends StatelessWidget {
 
   final AlarmController controller;
 
+  String? _resolveActionableWarning() {
+    final explicit = controller.warningMessage?.trim();
+    if (explicit != null && explicit.isNotEmpty) {
+      return explicit;
+    }
+    if (!controller.isCompanionMode &&
+        controller.state == ProtectionState.armed &&
+        controller.pairedDevices.isNotEmpty) {
+      final phone = controller.pairedDevices.first;
+      if (!phone.connected) {
+        return 'Phone connection interrupted — local siren remains active.';
+      }
+      if (!phone.notificationsEnabled) {
+        return 'Phone notifications are off — open WATSafe on your phone to enable alerts.';
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final state = controller.state;
-    final stateColor = WatSafeTheme.colorForProtectionState(state);
+    final stateColor = WatSafeTheme.colorForProtectionState(state, palette);
     final capability = controller.selectedCapability;
+    final actionableWarning = _resolveActionableWarning();
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560),
+          constraints: const BoxConstraints(maxWidth: 540),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              if (controller.warningMessage != null) ...<Widget>[
-                _WarningCard(message: controller.warningMessage!),
-                const SizedBox(height: 16),
+              if (actionableWarning != null) ...<Widget>[
+                _WarningCard(message: actionableWarning),
+                const SizedBox(height: 14),
               ],
               _ProtectionHeroCard(
                 controller: controller,
@@ -43,8 +64,12 @@ class HomeScreen extends StatelessWidget {
                 capability: capability,
                 onPromptDisarmPin: () => _showDisarmPinDialog(context),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               _PhoneConnectionRow(controller: controller),
+              if (!controller.isCompanionMode) ...<Widget>[
+                const SizedBox(height: 10),
+                _ProtectionDetailsCard(controller: controller),
+              ],
             ],
           ),
         ),
@@ -57,7 +82,7 @@ class HomeScreen extends StatelessWidget {
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      backgroundColor: WatSafeTheme.charcoalSurface,
+      backgroundColor: WatSafeTheme.of(context).surfaceCard,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -90,31 +115,36 @@ class _ProtectionHeroCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final isActive =
         state == ProtectionState.armed ||
         state == ProtectionState.arming ||
         state == ProtectionState.alarming;
+    final subtitle = _subtitleForState(state, capability);
+    final shieldAccent = state == ProtectionState.disarmed
+        ? palette.accentPrimary
+        : stateColor;
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 28, 24, 24),
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             Center(
               child: WatSafeShieldGraphic(
-                accentColor: stateColor,
-                size: 76,
+                accentColor: shieldAccent,
+                size: 68,
                 isActiveWave: isActive,
               ),
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 14),
             Center(
               child: Container(
                 key: const Key('dashboard_state_badge'),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,
-                  vertical: 6,
+                  vertical: 5,
                 ),
                 decoration: BoxDecoration(
                   color: stateColor.withValues(alpha: 0.16),
@@ -125,37 +155,39 @@ class _ProtectionHeroCard extends StatelessWidget {
                   state.badgeLabel,
                   style: TextStyle(
                     color: state == ProtectionState.disarmed
-                        ? WatSafeTheme.warmOffWhite
+                        ? palette.textPrimary
                         : stateColor,
                     fontWeight: FontWeight.w800,
-                    fontSize: 13,
+                    fontSize: 12.5,
                     letterSpacing: 0.2,
                   ),
                 ),
               ),
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
             Text(
               _headlineForState(state),
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                 fontWeight: FontWeight.w800,
-                color: WatSafeTheme.warmOffWhite,
+                color: palette.textPrimary,
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              _subtitleForState(state, capability),
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: WatSafeTheme.warmMuted,
-                fontSize: 14.5,
-                height: 1.45,
+            if (subtitle != null) ...<Widget>[
+              const SizedBox(height: 6),
+              Text(
+                subtitle,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: palette.textMuted,
+                  fontSize: 13.5,
+                  height: 1.4,
+                ),
               ),
-            ),
+            ],
             if (state == ProtectionState.armed &&
                 controller.isConfirmingMovement) ...<Widget>[
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
               Container(
                 key: const Key('movement_confirmation_banner'),
                 padding: const EdgeInsets.symmetric(
@@ -163,13 +195,13 @@ class _ProtectionHeroCard extends StatelessWidget {
                   vertical: 10,
                 ),
                 decoration: BoxDecoration(
-                  color: WatSafeTheme.amberAccent.withValues(alpha: 0.16),
+                  color: palette.warningColor.withValues(alpha: 0.16),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color: WatSafeTheme.amberAccent.withValues(alpha: 0.65),
+                    color: palette.warningColor.withValues(alpha: 0.65),
                   ),
                 ),
-                child: const Row(
+                child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: <Widget>[
                     SizedBox(
@@ -177,15 +209,15 @@ class _ProtectionHeroCard extends StatelessWidget {
                       height: 14,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: WatSafeTheme.amberAccent,
+                        color: palette.warningColor,
                       ),
                     ),
-                    SizedBox(width: 10),
+                    const SizedBox(width: 10),
                     Flexible(
                       child: Text(
                         'Movement detected — checking…',
                         style: TextStyle(
-                          color: WatSafeTheme.amberAccent,
+                          color: palette.warningColor,
                           fontWeight: FontWeight.w700,
                           fontSize: 13.5,
                         ),
@@ -205,26 +237,26 @@ class _ProtectionHeroCard extends StatelessWidget {
                   vertical: 10,
                 ),
                 decoration: BoxDecoration(
-                  color: WatSafeTheme.amberAccent.withValues(alpha: 0.16),
+                  color: palette.warningColor.withValues(alpha: 0.16),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color: WatSafeTheme.amberAccent.withValues(alpha: 0.65),
+                    color: palette.warningColor.withValues(alpha: 0.65),
                   ),
                 ),
-                child: const Row(
+                child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: <Widget>[
                     Icon(
                       Icons.keyboard_alt_outlined,
                       size: 16,
-                      color: WatSafeTheme.amberAccent,
+                      color: palette.warningColor,
                     ),
-                    SizedBox(width: 8),
+                    const SizedBox(width: 8),
                     Flexible(
                       child: Text(
                         'Keyboard or trackpad input detected — enter your PIN within 8s to disarm.',
                         style: TextStyle(
-                          color: WatSafeTheme.amberAccent,
+                          color: palette.warningColor,
                           fontWeight: FontWeight.w700,
                           fontSize: 13,
                         ),
@@ -235,7 +267,7 @@ class _ProtectionHeroCard extends StatelessWidget {
               ),
             ],
             if (state == ProtectionState.arming) ...<Widget>[
-              const SizedBox(height: 18),
+              const SizedBox(height: 16),
               ClipRRect(
                 borderRadius: BorderRadius.circular(6),
                 child: LinearProgressIndicator(
@@ -246,57 +278,13 @@ class _ProtectionHeroCard extends StatelessWidget {
                                 (controller.remainingCountdownSeconds /
                                     controller.settings.armingCountdownSeconds))
                             .clamp(0.05, 1.0),
-                  backgroundColor: WatSafeTheme.charcoalElevated,
-                  color: WatSafeTheme.amberAccent,
+                  backgroundColor: palette.surfaceElevated,
+                  color: palette.accentPrimary,
                 ),
               ),
             ],
-            const SizedBox(height: 24),
-            _buildPrimaryAction(context),
-            if (!controller.isCompanionMode &&
-                (state == ProtectionState.disarmed ||
-                    state == ProtectionState.arming ||
-                    state == ProtectionState.armed)) ...<Widget>[
-              const SizedBox(height: 16),
-              Container(
-                key: const Key('home_sleep_lid_notice'),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 11,
-                ),
-                decoration: BoxDecoration(
-                  color: WatSafeTheme.charcoalElevated.withValues(alpha: 0.65),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: WatSafeTheme.charcoalBorder),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    const Padding(
-                      padding: EdgeInsets.only(top: 2),
-                      child: Icon(
-                        Icons.laptop_mac_rounded,
-                        size: 16,
-                        color: WatSafeTheme.warmSubtle,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        state == ProtectionState.armed
-                            ? 'Keep the lid open while protected. Closing the lid triggers an immediate siren and urgent phone alert before sleep completes; if this laptop abruptly loses connection, the relay warns your phone within ~45–55s.'
-                            : 'Before arming: keep your laptop lid open. Sleeping or powered-off laptops cannot run local sirens or sensors, so closing the lid while armed immediately alerts your phone before sleep, and the cloud relay warns you within ~45–55s if an armed laptop goes offline.',
-                        style: const TextStyle(
-                          color: WatSafeTheme.warmMuted,
-                          fontSize: 12.5,
-                          height: 1.4,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+            const SizedBox(height: 20),
+            _buildPrimaryAction(context, palette),
           ],
         ),
       ),
@@ -324,32 +312,32 @@ class _ProtectionHeroCard extends StatelessWidget {
     }
   }
 
-  String _subtitleForState(ProtectionState s, DetectorCapability? cap) {
+  String? _subtitleForState(ProtectionState s, DetectorCapability? cap) {
     final methodLabel = controller.selectedDetectorType.userFacingMethodName
         .toLowerCase();
     switch (s) {
       case ProtectionState.disarmed:
-        return 'Arm protection before stepping away. WATSafe will watch for movement using your $methodLabel and sound an alarm if this device is disturbed.';
+        return null;
       case ProtectionState.arming:
         return controller.isCalibrating
-            ? 'Calibrating $methodLabel — keep this device still for a moment.'
-            : 'Place this device on a steady surface before monitoring begins.';
+            ? 'Calibrating $methodLabel — keep device still.'
+            : 'Place on a steady surface.';
       case ProtectionState.armed:
-        return 'Monitoring for movement with your $methodLabel. Your PIN is required to turn protection off.';
+        return 'Monitoring with $methodLabel · PIN required to disarm';
       case ProtectionState.paused:
-        return 'Monitoring paused while WATSafe was in the background. Resume monitoring to protect this device again.';
+        return 'Resume monitoring to protect this device.';
       case ProtectionState.alarming:
         return controller.activeIncident?.triggerSummary ??
             'Movement was detected while protected.';
       case ProtectionState.unavailable:
         if (cap == null) {
-          return 'Motion detection is not ready on this device yet.';
+          return 'Motion detection is not ready yet.';
         }
         return cap.guidance ?? cap.summary;
     }
   }
 
-  Widget _buildPrimaryAction(BuildContext context) {
+  Widget _buildPrimaryAction(BuildContext context, WatSafePalette palette) {
     switch (state) {
       case ProtectionState.disarmed:
         return Column(
@@ -387,9 +375,9 @@ class _ProtectionHeroCard extends StatelessWidget {
           key: const Key('disarm_protected_button'),
           onPressed: onPromptDisarmPin,
           style: FilledButton.styleFrom(
-            backgroundColor: WatSafeTheme.charcoalElevated,
-            foregroundColor: WatSafeTheme.warmOffWhite,
-            side: const BorderSide(color: WatSafeTheme.charcoalBorder),
+            backgroundColor: palette.surfaceElevated,
+            foregroundColor: palette.textPrimary,
+            side: BorderSide(color: palette.borderColor),
           ),
           icon: const Icon(Icons.lock_open_rounded),
           label: const Text('Enter PIN to disarm'),
@@ -422,8 +410,8 @@ class _ProtectionHeroCard extends StatelessWidget {
           key: const Key('disarm_alarming_button'),
           onPressed: onPromptDisarmPin,
           style: FilledButton.styleFrom(
-            backgroundColor: WatSafeTheme.alarmCrimson,
-            foregroundColor: WatSafeTheme.warmOffWhite,
+            backgroundColor: palette.alarmColor,
+            foregroundColor: Colors.white,
           ),
           icon: const Icon(Icons.lock_open_rounded),
           label: const Text('Enter PIN to disarm'),
@@ -464,10 +452,10 @@ class _PhoneConnectionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     final devices = controller.pairedDevices;
     final companion = controller.companionSession;
 
-    // 1. Paired phone row on protected laptop
     if (devices.isNotEmpty) {
       final phone = devices.first;
       final isConnected = phone.connected;
@@ -487,8 +475,8 @@ class _PhoneConnectionRow extends StatelessWidget {
       }
       final statusText = isConnected ? 'Phone connected' : 'Disconnected';
       final accentColor = isFullyReady
-          ? WatSafeTheme.readyEmerald
-          : WatSafeTheme.amberAccent;
+          ? palette.readyColor
+          : palette.warningColor;
 
       return Card(
         key: const Key('home_phone_connection_row'),
@@ -516,10 +504,10 @@ class _PhoneConnectionRow extends StatelessWidget {
                     children: <Widget>[
                       Text(
                         phone.displayName,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontWeight: FontWeight.w700,
                           fontSize: 15.5,
-                          color: WatSafeTheme.warmOffWhite,
+                          color: palette.textPrimary,
                         ),
                       ),
                       const SizedBox(height: 3),
@@ -534,10 +522,7 @@ class _PhoneConnectionRow extends StatelessWidget {
                     ],
                   ),
                 ),
-                const Icon(
-                  Icons.chevron_right_rounded,
-                  color: WatSafeTheme.warmMuted,
-                ),
+                Icon(Icons.chevron_right_rounded, color: palette.textMuted),
               ],
             ),
           ),
@@ -545,7 +530,6 @@ class _PhoneConnectionRow extends StatelessWidget {
       );
     }
 
-    // 2. Connected companion row when this device is the paired phone
     if (companion.isConnected) {
       final hostName = companion.hostDisplayName ?? 'Your Laptop';
       final perm = controller.localNotificationPermissionStatus;
@@ -568,12 +552,12 @@ class _PhoneConnectionRow extends StatelessWidget {
                   width: 42,
                   height: 42,
                   decoration: BoxDecoration(
-                    color: WatSafeTheme.readyEmerald.withValues(alpha: 0.16),
+                    color: palette.readyColor.withValues(alpha: 0.16),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.laptop_mac_rounded,
-                    color: WatSafeTheme.readyEmerald,
+                    color: palette.readyColor,
                   ),
                 ),
                 const SizedBox(width: 14),
@@ -583,28 +567,25 @@ class _PhoneConnectionRow extends StatelessWidget {
                     children: <Widget>[
                       Text(
                         hostName,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontWeight: FontWeight.w700,
                           fontSize: 15.5,
-                          color: WatSafeTheme.warmOffWhite,
+                          color: palette.textPrimary,
                         ),
                       ),
                       const SizedBox(height: 3),
                       Text(
                         'Connected • $notifLabel',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 13,
-                          color: WatSafeTheme.readyEmerald,
+                          color: palette.readyColor,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
                     ],
                   ),
                 ),
-                const Icon(
-                  Icons.chevron_right_rounded,
-                  color: WatSafeTheme.warmMuted,
-                ),
+                Icon(Icons.chevron_right_rounded, color: palette.textMuted),
               ],
             ),
           ),
@@ -612,7 +593,6 @@ class _PhoneConnectionRow extends StatelessWidget {
       );
     }
 
-    // 3. Before pairing: single clean "Pair your phone" row
     return Card(
       key: const Key('home_phone_connection_row'),
       clipBehavior: Clip.antiAlias,
@@ -629,12 +609,12 @@ class _PhoneConnectionRow extends StatelessWidget {
                 width: 42,
                 height: 42,
                 decoration: BoxDecoration(
-                  color: WatSafeTheme.amberAccent.withValues(alpha: 0.14),
+                  color: palette.accentPrimary.withValues(alpha: 0.16),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Icon(
+                child: Icon(
                   Icons.qr_code_scanner_rounded,
-                  color: WatSafeTheme.amberAccent,
+                  color: palette.accentPrimary,
                 ),
               ),
               const SizedBox(width: 14),
@@ -642,12 +622,12 @@ class _PhoneConnectionRow extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    const Text(
+                    Text(
                       'Pair your phone',
                       style: TextStyle(
                         fontWeight: FontWeight.w700,
                         fontSize: 15.5,
-                        color: WatSafeTheme.warmOffWhite,
+                        color: palette.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 3),
@@ -655,19 +635,13 @@ class _PhoneConnectionRow extends StatelessWidget {
                       controller.canManagePairing
                           ? 'Get notified with device location if an alarm triggers'
                           : 'Phone alerts are unavailable right now',
-                      style: const TextStyle(
-                        fontSize: 13,
-                        color: WatSafeTheme.warmMuted,
-                      ),
+                      style: TextStyle(fontSize: 13, color: palette.textMuted),
                     ),
                   ],
                 ),
               ),
               if (controller.canManagePairing)
-                const Icon(
-                  Icons.chevron_right_rounded,
-                  color: WatSafeTheme.warmMuted,
-                ),
+                Icon(Icons.chevron_right_rounded, color: palette.textMuted),
             ],
           ),
         ),
@@ -721,6 +695,7 @@ class _DisarmPinSheetState extends State<_DisarmPinSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
       child: Center(
@@ -732,13 +707,15 @@ class _DisarmPinSheetState extends State<_DisarmPinSheet> {
             children: <Widget>[
               Text(
                 'Enter PIN to disarm',
-                style: Theme.of(context).textTheme.titleLarge
-                    ?.copyWith(fontWeight: FontWeight.w800),
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: palette.textPrimary,
+                ),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 'Enter your security PIN to turn protection off.',
-                style: TextStyle(color: WatSafeTheme.warmMuted),
+                style: TextStyle(color: palette.textMuted),
               ),
               const SizedBox(height: 16),
               TextField(
@@ -770,6 +747,102 @@ class _DisarmPinSheetState extends State<_DisarmPinSheet> {
   }
 }
 
+class _ProtectionDetailsCard extends StatelessWidget {
+  const _ProtectionDetailsCard({required this.controller});
+
+  final AlarmController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
+    final methodName = controller.selectedDetectorType.userFacingMethodName;
+    final usesCamera = controller.selectedDetectorType.usesCamera;
+    final presetTitle = controller.settings.sensitivityPreset.title;
+    final soundTitle = controller.settings.selectedAlarmSoundOption.displayName;
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          key: const Key('home_protection_details_tile'),
+          tilePadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 2),
+          childrenPadding: const EdgeInsets.fromLTRB(18, 0, 18, 16),
+          leading: Icon(
+            Icons.shield_outlined,
+            size: 20,
+            color: palette.textMuted,
+          ),
+          title: Text(
+            'Protection details',
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 14,
+              color: palette.textPrimary,
+            ),
+          ),
+          subtitle: Text(
+            '$methodName · $presetTitle · $soundTitle',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12.5, color: palette.textMuted),
+          ),
+          children: <Widget>[
+            _detailLine(
+              palette: palette,
+              icon: usesCamera
+                  ? Icons.videocam_outlined
+                  : Icons.sensors_rounded,
+              text: usesCamera
+                  ? 'Watches background scene shifts for physical movement and sounds an immediate tamper alarm if the camera is covered.'
+                  : 'Monitors built-in device motion sensors and triggers an alarm when disturbed.',
+            ),
+            const SizedBox(height: 8),
+            _detailLine(
+              palette: palette,
+              icon: Icons.laptop_mac_rounded,
+              text: 'Keep your laptop lid open while armed. Closing the lid alerts your phone before sleep, and the cloud relay warns you within ~45–55s if an armed laptop goes offline.',
+            ),
+            const SizedBox(height: 8),
+            _detailLine(
+              palette: palette,
+              icon: Icons.lock_outline_rounded,
+              text: 'Your security PIN is always required to disarm protection or silence an active siren.',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _detailLine({
+    required WatSafePalette palette,
+    required IconData icon,
+    required String text,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Icon(icon, size: 15, color: palette.textSubtle),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            text,
+            style: TextStyle(
+              color: palette.textMuted,
+              fontSize: 12.5,
+              height: 1.4,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _WarningCard extends StatelessWidget {
   const _WarningCard({required this.message});
 
@@ -777,29 +850,28 @@ class _WarningCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: WatSafeTheme.amberAccent.withValues(alpha: 0.14),
+        color: palette.warningColor.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: WatSafeTheme.amberAccent.withValues(alpha: 0.55),
-        ),
+        border: Border.all(color: palette.warningColor.withValues(alpha: 0.55)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          const Icon(
+          Icon(
             Icons.info_outline_rounded,
-            color: WatSafeTheme.amberAccent,
+            color: palette.warningColor,
             size: 20,
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               message,
-              style: const TextStyle(
-                color: WatSafeTheme.warmOffWhite,
+              style: TextStyle(
+                color: palette.textPrimary,
                 fontSize: 13.5,
                 height: 1.4,
               ),

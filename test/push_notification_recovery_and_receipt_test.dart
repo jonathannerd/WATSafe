@@ -164,7 +164,7 @@ void main() {
           health['swVersion'],
           equals(WatSafeRelayServer.companionSwVersion),
         );
-        expect(health['swVersion'], equals('2026.11.17-v5'));
+        expect(health['swVersion'], equals('2026.11.18-v8'));
 
         final initiated = await _requestJson(
           client: client,

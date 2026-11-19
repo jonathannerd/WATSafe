@@ -1,55 +1,9 @@
 import 'package:flutter/foundation.dart';
 
 import 'detector_models.dart';
+import 'theme_palette_catalog.dart';
 
-/// User-facing color themes for WATSafe.
-enum WatSafeColorTheme {
-  obsidianAmber(
-    'obsidian_amber',
-    'Obsidian & Amber (Default)',
-    'Deep slate charcoal with warm amber security accents',
-  ),
-  cyberSentinel(
-    'cyber_sentinel',
-    'Cyber Sentinel (Cobalt & Cyan)',
-    'Midnight navy with electric cyan and cobalt highlights',
-  ),
-  emeraldTactical(
-    'emerald_tactical',
-    'Emerald Tactical (Matrix Green)',
-    'Stealth forest dark with crisp emerald and mint indicators',
-  ),
-  crimsonNight(
-    'crimson_night',
-    'Crimson Night (Ruby Alert)',
-    'Deep onyx-burgundy with high-urgency ruby and coral accents',
-  ),
-  royalViolet(
-    'royal_violet',
-    'Royal Violet (Amethyst)',
-    'Cosmic indigo surface with luminous amethyst and lavender accents',
-  ),
-  arcticDaylight(
-    'arctic_daylight',
-    'Arctic Daylight (High-Contrast Light)',
-    'Clean alabaster daylight surfaces with royal blue and slate contrast',
-  );
-
-  const WatSafeColorTheme(this.id, this.displayName, this.description);
-
-  final String id;
-  final String displayName;
-  final String description;
-
-  static WatSafeColorTheme fromId(String? raw) {
-    for (final item in WatSafeColorTheme.values) {
-      if (item.id == raw || item.name == raw) {
-        return item;
-      }
-    }
-    return WatSafeColorTheme.obsidianAmber;
-  }
-}
+export 'theme_palette_catalog.dart' show WatSafeColorTheme;
 
 /// Built-in alarm sound profiles bundled/synthesized by WATSafe.
 enum BuiltInAlarmSound {
@@ -261,6 +215,7 @@ class ProtectionSettings {
     this.deviceDisplayName = '',
     this.shareLocationOnAlarm = true,
     this.shareCompanionPhoneLocation = false,
+    this.alertOnCameraObstruction = true,
     this.alertOnInputInteraction = false,
     this.permanentRelayEndpointUrl = '',
     this.colorTheme = WatSafeColorTheme.obsidianAmber,
@@ -295,6 +250,10 @@ class ProtectionSettings {
   /// Whether this companion phone explicitly opted in to sharing its own
   /// active foreground location on the paired Devices map.
   final bool shareCompanionPhoneLocation;
+
+  /// Whether a sustained webcam obstruction or camera loss while armed triggers
+  /// an immediate tamper alarm and phone alert.
+  final bool alertOnCameraObstruction;
 
   /// Optional desktop tamper check: alert when keyboard, trackpad, or mouse
   /// activity is detected while armed (with a brief PIN-entry grace window).
@@ -360,6 +319,7 @@ class ProtectionSettings {
     String? deviceDisplayName,
     bool? shareLocationOnAlarm,
     bool? shareCompanionPhoneLocation,
+    bool? alertOnCameraObstruction,
     bool? alertOnInputInteraction,
     String? permanentRelayEndpointUrl,
     WatSafeColorTheme? colorTheme,
@@ -380,6 +340,8 @@ class ProtectionSettings {
       shareLocationOnAlarm: shareLocationOnAlarm ?? this.shareLocationOnAlarm,
       shareCompanionPhoneLocation:
           shareCompanionPhoneLocation ?? this.shareCompanionPhoneLocation,
+      alertOnCameraObstruction:
+          alertOnCameraObstruction ?? this.alertOnCameraObstruction,
       alertOnInputInteraction:
           alertOnInputInteraction ?? this.alertOnInputInteraction,
       permanentRelayEndpointUrl:
@@ -400,6 +362,7 @@ class ProtectionSettings {
       'deviceDisplayName': deviceDisplayName,
       'shareLocationOnAlarm': shareLocationOnAlarm,
       'shareCompanionPhoneLocation': shareCompanionPhoneLocation,
+      'alertOnCameraObstruction': alertOnCameraObstruction,
       'alertOnInputInteraction': alertOnInputInteraction,
       if (permanentRelayEndpointUrl.trim().isNotEmpty)
         'permanentRelayEndpointUrl': permanentRelayEndpointUrl.trim(),
@@ -449,11 +412,13 @@ class ProtectionSettings {
       shareLocationOnAlarm: json['shareLocationOnAlarm'] as bool? ?? true,
       shareCompanionPhoneLocation:
           json['shareCompanionPhoneLocation'] as bool? ?? false,
+      alertOnCameraObstruction:
+          json['alertOnCameraObstruction'] as bool? ?? true,
       alertOnInputInteraction:
           json['alertOnInputInteraction'] as bool? ?? false,
       permanentRelayEndpointUrl:
           (json['permanentRelayEndpointUrl'] as String? ?? '').trim(),
-      colorTheme: WatSafeColorTheme.fromId(json['colorTheme'] as String?),
+      colorTheme: WatSafeColorTheme.fromId(json['colorTheme']?.toString()),
       selectedAlarmSoundId:
           (json['selectedAlarmSoundId'] as String?) ??
           BuiltInAlarmSound.classicSiren.id,

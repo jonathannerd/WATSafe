@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import '../core/models/theme_palette_catalog.dart';
+
 /// Embedded PWA icons, Web App Manifest, Service Worker, and guided iPhone /
 /// Android Web Companion HTML served directly by `WatSafeRelayServer`.
 class CompanionPwaAssets {
@@ -63,8 +65,10 @@ class CompanionPwaAssets {
     });
   }
 
+  static const String serviceWorkerVersion = '2026.11.18-v8';
+
   static const String serviceWorkerJs = r'''
-const SHELL_CACHE = 'watsafe-shell-2026.11.17-v5';
+const SHELL_CACHE = 'watsafe-shell-2026.11.18-v8';
 const SHELL_URLS = [
   '/companion',
   '/manifest.webmanifest',
@@ -409,7 +413,7 @@ self.addEventListener('pushsubscriptionchange', (event) => {
 self.addEventListener('push', (event) => {
   let payload = {
     title: 'WATSafe Alert',
-    body: 'Alarm triggered — tap to view event.',
+    body: 'Alarm triggered — tap to view location.',
     incidentId: '',
     pairingSessionId: '',
     isTest: false
@@ -477,11 +481,23 @@ self.addEventListener('notificationclick', (event) => {
   const data = event.notification.data || {};
   const incidentId = data.incidentId || '';
   const targetUrl = incidentId
-    ? '/companion?event=' + encodeURIComponent(incidentId)
+    ? '/companion?incident=' + encodeURIComponent(incidentId)
     : '/companion';
 
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+    (async () => {
+      if (incidentId) {
+        try {
+          const saved = (await readIdbStateSw()) || {};
+          saved.pendingOpenIncidentId = incidentId;
+          saved.pendingOpenIncidentAtMs = Date.now();
+          await writeIdbStateSw(saved);
+        } catch (_) {}
+      }
+      const windowClients = await self.clients.matchAll({
+        type: 'window',
+        includeUncontrolled: true
+      });
       for (const client of windowClients) {
         if ('focus' in client) {
           client.postMessage({
@@ -494,20 +510,25 @@ self.addEventListener('notificationclick', (event) => {
       if (self.clients.openWindow) {
         return self.clients.openWindow(targetUrl);
       }
-    })
+    })()
   );
 });
 ''';
 
-  static const String companionWebHtml = r'''<!doctype html>
-<html lang="en">
+  static final String companionWebHtml = _companionWebHtmlTemplate.replaceFirst(
+    '__WATSAFE_THEME_CATALOG_JSON__',
+    WatSafeThemeCatalog.toWebCatalogJson(),
+  );
+
+  static const String _companionWebHtmlTemplate = r'''<!doctype html>
+<html lang="en" data-theme="obsidian_amber">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#141619">
+  <meta name="theme-color" id="themeColorMeta" content="#171C24">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" id="appleStatusBarMeta">
   <meta name="apple-mobile-web-app-title" content="WATSafe">
   <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
@@ -517,17 +538,38 @@ self.addEventListener('notificationclick', (event) => {
   <title>WATSafe Phone Companion</title>
   <style>
     :root {
-      --bg: #141619;
-      --surface: #1D2025;
-      --elevated: #262A31;
-      --border: #363C46;
-      --text: #F5F2EB;
-      --muted: #C8C2B6;
-      --subtle: #948E83;
-      --amber: #E58E26;
-      --emerald: #2E9B68;
-      --crimson: #D6453A;
+      color-scheme: dark;
+      --bg: #101318;
+      --chrome: #171C24;
+      --chrome-translucent: rgba(23, 28, 36, 0.96);
+      --surface: #1B212B;
+      --elevated: #252D3A;
+      --details-bg: rgba(16, 19, 24, 0.42);
+      --border: #3B4659;
+      --chrome-border: #2E3747;
+      --text: #F8F5EE;
+      --muted: #D2CBBF;
+      --subtle: #A29B8E;
+      --amber: #F59E0B;
+      --accent: #F59E0B;
+      --accent-secondary: #FB923C;
+      --on-accent: #111419;
+      --accent-soft: rgba(245, 158, 11, 0.22);
+      --accent-hover: rgba(245, 158, 11, 0.14);
+      --accent-border: rgba(245, 158, 11, 0.58);
+      --accent-halo: rgba(245, 158, 11, 0.44);
+      --emerald: #10B981;
+      --ok-bg: rgba(16, 185, 129, 0.18);
+      --ok-fg: #6EE7B7;
+      --warning: #F59E0B;
+      --warn-bg: rgba(245, 158, 11, 0.18);
+      --warn-fg: #FDE68A;
+      --crimson: #EF4444;
+      --alert-bg: rgba(239, 68, 68, 0.18);
+      --alert-fg: #FECACA;
+      --info: #38BDF8;
       --phone-blue: #2563EB;
+      --laptop-green: #0F8A5F;
     }
     * { box-sizing: border-box; }
     body {
@@ -540,51 +582,61 @@ self.addEventListener('notificationclick', (event) => {
       flex-direction: column;
       padding-left: env(safe-area-inset-left, 0px);
       padding-right: env(safe-area-inset-right, 0px);
+      transition: background-color 0.16s ease, color 0.16s ease;
     }
     header {
       position: sticky;
       top: 0;
       z-index: 20;
       padding: calc(11px + env(safe-area-inset-top, 0px)) 16px 11px;
-      border-bottom: 1px solid var(--border);
+      border-bottom: 1px solid var(--chrome-border);
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      background: rgba(20, 22, 25, 0.96);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
+      background: var(--chrome-translucent);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
     }
-    .brand { font-weight: 800; font-size: 17px; letter-spacing: 0.25px; display: flex; align-items: center; gap: 9px; white-space: nowrap; }
-    .shield-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--amber); display: inline-block; flex-shrink: 0; }
+    .brand { font-weight: 800; font-size: 17px; letter-spacing: 0.25px; display: flex; align-items: center; gap: 9px; white-space: nowrap; color: var(--text); }
+    .shield-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--accent); display: inline-block; flex-shrink: 0; }
     main {
       flex: 1;
       max-width: 560px;
       width: 100%;
       margin: 0 auto;
-      padding: 14px 16px calc(86px + env(safe-area-inset-bottom, 0px));
+      padding: 12px 14px calc(76px + env(safe-area-inset-bottom, 0px));
     }
     main.wide-devices { max-width: 960px; }
+    main.no-bottom-nav { padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 16px;
-      padding: 18px;
-      margin-bottom: 14px;
+      padding: 16px;
+      margin-bottom: 12px;
     }
-    h1 { font-size: 21px; margin: 0 0 8px 0; line-height: 1.28; }
-    h2 { font-size: 17px; margin: 0 0 6px 0; line-height: 1.3; }
+    h1 { font-size: 21px; margin: 0 0 8px 0; line-height: 1.28; color: var(--text); }
+    h2 { font-size: 17px; margin: 0 0 6px 0; line-height: 1.3; color: var(--text); }
     p { margin: 0 0 12px 0; color: var(--muted); line-height: 1.45; font-size: 14.5px; }
     label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 600; }
     input {
       width: 100%;
       padding: 13px 14px;
       border-radius: 10px;
-      border: 1px solid var(--border);
+      border: 1.5px solid var(--border);
       background: var(--elevated);
       color: var(--text);
       font-size: 16px;
       margin-bottom: 14px;
+    }
+    input:focus-visible,
+    button:focus-visible,
+    a:focus-visible,
+    summary:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
     .btn {
       display: inline-flex;
@@ -600,12 +652,13 @@ self.addEventListener('notificationclick', (event) => {
       cursor: pointer;
       text-decoration: none;
       text-align: center;
-      transition: opacity 0.15s;
+      transition: opacity 0.15s, background-color 0.15s, border-color 0.15s;
     }
     .btn:disabled { opacity: 0.55; cursor: default; }
-    .btn-primary { background: var(--amber); color: #141619; }
+    .btn-primary { background: var(--accent); color: var(--on-accent); }
     .btn-secondary { background: var(--elevated); color: var(--text); border: 1px solid var(--border); margin-top: 10px; }
-    .btn-danger { background: rgba(214,69,58,0.16); color: #ffb4ae; border: 1px solid var(--crimson); margin-top: 10px; }
+    .btn-secondary:hover:not(:disabled) { border-color: var(--accent-border); background: var(--accent-hover); }
+    .btn-danger { background: var(--alert-bg); color: var(--alert-fg); border: 1px solid var(--crimson); margin-top: 10px; }
     .pill {
       display: inline-flex;
       align-items: center;
@@ -616,13 +669,13 @@ self.addEventListener('notificationclick', (event) => {
       font-weight: 700;
       line-height: 1.25;
     }
-    .pill-ok { background: rgba(46,155,104,0.18); color: #6ee7b7; border: 1px solid var(--emerald); }
-    .pill-warn { background: rgba(229,142,38,0.18); color: #fcd34d; border: 1px solid var(--amber); }
-    .pill-alert { background: rgba(214,69,58,0.2); color: #fca5a5; border: 1px solid var(--crimson); }
+    .pill-ok { background: var(--ok-bg); color: var(--ok-fg); border: 1px solid var(--emerald); }
+    .pill-warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warning); }
+    .pill-alert { background: var(--alert-bg); color: var(--alert-fg); border: 1px solid var(--crimson); }
     .pill-neutral { background: var(--elevated); color: var(--muted); border: 1px solid var(--border); }
     .pill-map-light { background: rgba(255,255,255,0.95); color: #0F172A; border: 1px solid rgba(15,23,42,0.18); box-shadow: 0 2px 6px rgba(15,23,42,0.12); }
     .error-box {
-      background: rgba(214,69,58,0.16);
+      background: var(--alert-bg);
       border: 1px solid var(--crimson);
       border-radius: 10px;
       padding: 12px 14px;
@@ -632,7 +685,7 @@ self.addEventListener('notificationclick', (event) => {
       line-height: 1.45;
     }
     .info-box {
-      background: rgba(46,155,104,0.15);
+      background: var(--ok-bg);
       border: 1px solid var(--emerald);
       border-radius: 10px;
       padding: 12px 14px;
@@ -660,7 +713,7 @@ self.addEventListener('notificationclick', (event) => {
       font-size: 24px;
       font-weight: 800;
       letter-spacing: 3px;
-      color: var(--amber);
+      color: var(--accent);
       text-align: center;
       padding: 10px;
       background: var(--bg);
@@ -693,10 +746,10 @@ self.addEventListener('notificationclick', (event) => {
       flex-shrink: 0;
       margin-top: 1px;
     }
-    .check-ok { background: rgba(46,155,104,0.22); color: #6ee7b7; border: 1px solid var(--emerald); }
-    .check-next { background: rgba(229,142,38,0.22); color: #fcd34d; border: 1px solid var(--amber); }
+    .check-ok { background: var(--ok-bg); color: var(--ok-fg); border: 1px solid var(--emerald); }
+    .check-next { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warning); }
     .check-pending { background: var(--elevated); color: var(--subtle); border: 1px solid var(--border); }
-    .check-blocked { background: rgba(214,69,58,0.22); color: #fca5a5; border: 1px solid var(--crimson); }
+    .check-blocked { background: var(--alert-bg); color: var(--alert-fg); border: 1px solid var(--crimson); }
     .event-item {
       background: var(--elevated);
       border: 1px solid var(--border);
@@ -705,35 +758,52 @@ self.addEventListener('notificationclick', (event) => {
       margin-bottom: 10px;
       cursor: pointer;
     }
-    .event-item.selected { border-color: var(--amber); border-width: 2px; }
+    .event-item.selected { border-color: var(--accent); border-width: 2px; }
     .nav-bar {
       position: fixed;
       bottom: 0; left: 0; right: 0;
       z-index: 20;
-      background: var(--surface);
-      border-top: 1px solid var(--border);
+      background: var(--chrome-translucent);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border-top: 1px solid var(--chrome-border);
       display: flex;
-      justify-content: space-around;
-      padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
+      justify-content: center;
+      gap: 12px;
+      padding: 6px 14px calc(6px + env(safe-area-inset-bottom, 0px));
     }
     .nav-btn {
-      background: none; border: none; color: var(--muted);
+      flex: 1;
+      max-width: 180px;
+      background: none;
+      border: 1px solid transparent;
+      color: var(--muted);
       min-height: 40px;
-      font-size: 13px; font-weight: 700; padding: 8px 14px; border-radius: 999px; cursor: pointer;
+      font-size: 13.5px;
+      font-weight: 700;
+      padding: 7px 18px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background-color 0.15s, color 0.15s, border-color 0.15s;
     }
-    .nav-btn.active { background: rgba(229,142,38,0.2); color: var(--amber); }
+    .nav-btn:hover { background: var(--accent-hover); color: var(--text); }
+    .nav-btn.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-color: var(--accent-border);
+    }
     .devices-topbar {
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 10px;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
     }
     .device-chip-bar {
       display: flex;
       gap: 8px;
       overflow-x: auto;
-      padding: 2px 0 10px;
+      padding: 2px 0 8px;
       scrollbar-width: none;
       -webkit-overflow-scrolling: touch;
     }
@@ -742,22 +812,25 @@ self.addEventListener('notificationclick', (event) => {
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      min-height: 44px;
-      padding: 8px 14px;
+      min-height: 40px;
+      padding: 7px 13px;
       border-radius: 999px;
       border: 1.5px solid var(--border);
       background: var(--surface);
       color: var(--text);
-      font-size: 13.5px;
+      font-size: 13px;
       font-weight: 700;
       white-space: nowrap;
       cursor: pointer;
       flex-shrink: 0;
+      transition: background-color 0.15s, border-color 0.15s;
     }
+    .device-chip:hover { background: var(--accent-hover); border-color: var(--accent-border); }
     .device-chip.selected {
-      border-color: var(--amber);
-      background: rgba(229, 142, 38, 0.16);
-      color: #FDE68A;
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--text);
+      box-shadow: inset 0 0 0 0.5px var(--accent-border);
     }
     .device-chip .chip-dot {
       width: 8px;
@@ -768,30 +841,251 @@ self.addEventListener('notificationclick', (event) => {
     .devices-grid {
       display: flex;
       flex-direction: column;
-      gap: 12px;
-    }
-    @media (min-width: 720px), (orientation: landscape) and (min-width: 640px) {
-      .devices-grid {
-        display: grid;
-        grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.95fr);
-        align-items: start;
-        gap: 14px;
-      }
-      .devices-grid .card { margin-bottom: 0; }
+      gap: 10px;
     }
     .map-card {
-      padding: 8px;
+      padding: 6px;
       margin-bottom: 0;
     }
     .map-stage {
       position: relative;
       width: 100%;
-      height: clamp(292px, 45vh, 430px);
+      height: clamp(320px, 47vh, 480px);
       border-radius: 12px;
       overflow: hidden;
-      border: 1px solid rgba(148, 163, 184, 0.35);
+      border: 1.5px solid var(--border);
       background: #EEF2F6;
       touch-action: none;
+    }
+    .selected-device-card {
+      border-color: var(--accent-border);
+    }
+    @media (min-width: 720px), (orientation: landscape) and (min-width: 620px) {
+      header {
+        padding-top: calc(7px + env(safe-area-inset-top, 0px));
+        padding-bottom: 7px;
+      }
+      .devices-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.45fr) minmax(252px, 0.85fr);
+        align-items: start;
+        gap: 12px;
+      }
+      .devices-grid .card { margin-bottom: 0; }
+      .map-stage {
+        height: clamp(185px, 52vh, 380px);
+      }
+    }
+    .maplibregl-ctrl-attrib.maplibregl-compact {
+      min-height: 20px;
+      margin: 0 6px 6px 0 !important;
+      background-color: rgba(255, 255, 255, 0.86) !important;
+      font-size: 10px !important;
+      line-height: 1.25 !important;
+    }
+    .alarm-banner {
+      background: var(--alert-bg);
+      border: 1.5px solid var(--crimson);
+      border-radius: 14px;
+      padding: 11px 13px;
+      margin-bottom: 10px;
+    }
+    .alarm-banner-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .alarm-banner.warn {
+      background: var(--warn-bg);
+      border-color: var(--warning);
+    }
+    .compact-recovery {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      background: var(--warn-bg);
+      border: 1px solid var(--warning);
+      border-radius: 12px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+    .compact-recovery .btn {
+      width: auto;
+      min-height: 36px;
+      padding: 7px 12px;
+      font-size: 13px;
+      flex-shrink: 0;
+      margin: 0;
+    }
+    .settings-group-label {
+      font-size: 11.5px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      color: var(--subtle);
+      margin: 14px 4px 6px;
+    }
+    .settings-group-label:first-child { margin-top: 2px; }
+    .settings-list {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .settings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--border);
+    }
+    .settings-row:last-child { border-bottom: none; }
+    .settings-nav-row {
+      width: 100%;
+      background: transparent;
+      border-top: none;
+      border-left: none;
+      border-right: none;
+      text-align: left;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background-color 0.15s;
+    }
+    .settings-nav-row:hover { background: var(--accent-hover); }
+    .settings-row-title { font-size: 14.5px; font-weight: 700; color: var(--text); }
+    .settings-row-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; line-height: 1.35; }
+    .settings-back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: none;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      color: var(--accent);
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      min-height: 38px;
+      padding: 6px 10px;
+      margin: -4px 0 4px -10px;
+      cursor: pointer;
+    }
+    .settings-back-btn:hover { background: var(--accent-hover); }
+    .theme-swatch-strip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .theme-swatch-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 1px solid rgba(128, 128, 128, 0.45);
+      display: inline-block;
+      flex-shrink: 0;
+    }
+    .theme-options-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 9px;
+    }
+    @media (min-width: 520px) {
+      .theme-options-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    .theme-option-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 7px;
+      width: 100%;
+      padding: 12px 13px;
+      border-radius: 13px;
+      border: 1.5px solid var(--border);
+      background: var(--elevated);
+      text-align: left;
+      font-family: inherit;
+      cursor: pointer;
+      transition: transform 0.12s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+    }
+    .theme-option-btn:hover { transform: translateY(-1px); }
+    .theme-option-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .theme-check-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      font-size: 12px;
+      font-weight: 900;
+      flex-shrink: 0;
+    }
+    .switch-btn {
+      position: relative;
+      width: 48px;
+      height: 28px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--elevated);
+      cursor: pointer;
+      padding: 0;
+      flex-shrink: 0;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .switch-btn[aria-checked="true"] {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+    .switch-btn::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #FFFFFF;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.32);
+      transition: transform 0.15s, background-color 0.15s;
+    }
+    .switch-btn[aria-checked="true"]::after {
+      transform: translateX(20px);
+      background: var(--on-accent);
+    }
+    .settings-details {
+      padding: 10px 15px 13px;
+      border-top: 1px solid var(--border);
+      background: var(--details-bg);
+    }
+    .settings-details summary {
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+      user-select: none;
+      padding: 2px 0;
+    }
+    .btn-compact {
+      width: auto;
+      min-height: 36px;
+      padding: 7px 12px;
+      font-size: 13px;
+      border-radius: 10px;
+      margin: 0;
+      flex-shrink: 0;
     }
     .map-canvas {
       position: absolute;
@@ -830,16 +1124,22 @@ self.addEventListener('notificationclick', (event) => {
       width: 40px;
       height: 40px;
       border-radius: 10px;
-      border: 1px solid rgba(15, 23, 42, 0.18);
-      background: rgba(255, 255, 255, 0.95);
-      color: #0F172A;
+      border: 1.5px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
       font-size: 18px;
       font-weight: 800;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.2);
+      transition: background-color 0.15s, border-color 0.15s;
+    }
+    .map-ctrl-btn:hover,
+    .map-ctrl-btn:active {
+      background: var(--elevated);
+      border-color: var(--accent);
     }
     .map-attrib {
       position: absolute;
@@ -862,8 +1162,17 @@ self.addEventListener('notificationclick', (event) => {
       display: flex;
       flex-direction: column;
       align-items: center;
+      justify-content: center;
+      min-width: 44px;
+      min-height: 44px;
+      padding: 4px;
+      z-index: 2;
       cursor: pointer;
       user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .map-pin-wrap.selected {
+      z-index: 6;
     }
     .map-pin-badge {
       width: 34px;
@@ -879,7 +1188,7 @@ self.addEventListener('notificationclick', (event) => {
     }
     .map-pin-wrap.selected .map-pin-badge {
       transform: scale(1.12);
-      box-shadow: 0 0 0 4px rgba(229, 142, 38, 0.42), 0 4px 12px rgba(15, 23, 42, 0.34);
+      box-shadow: 0 0 0 4px var(--accent-halo), 0 4px 12px rgba(15, 23, 42, 0.34);
     }
     .map-pin-label {
       margin-top: 3px;
@@ -931,11 +1240,115 @@ self.addEventListener('notificationclick', (event) => {
     }
     .hidden { display: none !important; }
   </style>
+  <script>
+    (function initWatSafeThemeEarly() {
+      const THEMES = __WATSAFE_THEME_CATALOG_JSON__;
+      const APPEARANCE_KEY = 'watsafe.appearance.v1';
+      window.WATSAFE_THEMES = THEMES;
+      window.WATSAFE_APPEARANCE_KEY = APPEARANCE_KEY;
+
+      function normalizeThemeId(raw) {
+        if (raw === null || raw === undefined) return 'obsidian_amber';
+        const cleaned = String(raw).trim();
+        if (!cleaned) return 'obsidian_amber';
+        const lower = cleaned.toLowerCase();
+        const snake = lower.replace(/[-\s]+/g, '_');
+        const compact = snake.replace(/_/g, '');
+        for (let i = 0; i < THEMES.length; i++) {
+          const t = THEMES[i];
+          if (t.id === lower ||
+              t.id === snake ||
+              t.id.replace(/_/g, '') === compact ||
+              String(t.shortName || '').toLowerCase() === lower ||
+              String(t.name || '').toLowerCase() === lower) {
+            return t.id;
+          }
+        }
+        if (snake === 'default' || snake === 'dark' || snake === 'amber' || snake === 'obsidian') return 'obsidian_amber';
+        if (snake === 'cyber' || snake === 'cyan' || snake === 'cobalt') return 'cyber_sentinel';
+        if (snake === 'emerald' || snake === 'green' || snake === 'matrix') return 'emerald_tactical';
+        if (snake === 'crimson' || snake === 'ruby') return 'crimson_night';
+        if (snake === 'violet' || snake === 'purple' || snake === 'amethyst') return 'royal_violet';
+        if (snake === 'light' || snake === 'daylight' || snake === 'arctic') return 'arctic_daylight';
+        return 'obsidian_amber';
+      }
+
+      function getSpec(themeId) {
+        const id = normalizeThemeId(themeId);
+        return THEMES.find(t => t.id === id) || THEMES[0];
+      }
+
+      function applyThemeVariables(themeId) {
+        const spec = getSpec(themeId);
+        const root = document.documentElement;
+        root.setAttribute('data-theme', spec.id);
+        root.style.colorScheme = spec.isDark ? 'dark' : 'light';
+        const vars = {
+          '--bg': spec.bg,
+          '--chrome': spec.chrome,
+          '--chrome-translucent': spec.chromeTranslucent,
+          '--surface': spec.surface,
+          '--elevated': spec.elevated,
+          '--details-bg': spec.detailsBg,
+          '--border': spec.border,
+          '--chrome-border': spec.chromeBorder,
+          '--text': spec.text,
+          '--muted': spec.muted,
+          '--subtle': spec.subtle,
+          '--amber': spec.accent,
+          '--accent': spec.accent,
+          '--accent-secondary': spec.accentSecondary,
+          '--on-accent': spec.onAccent,
+          '--accent-soft': spec.accentSoft,
+          '--accent-hover': spec.accentHover,
+          '--accent-border': spec.accentBorder,
+          '--accent-halo': spec.accentHalo,
+          '--emerald': spec.emerald,
+          '--ok-bg': spec.okBg,
+          '--ok-fg': spec.okFg,
+          '--warning': spec.warning,
+          '--warn-bg': spec.warnBg,
+          '--warn-fg': spec.warnFg,
+          '--crimson': spec.crimson,
+          '--alert-bg': spec.alertBg,
+          '--alert-fg': spec.alertFg,
+          '--info': spec.info,
+          '--phone-blue': spec.phoneMarker,
+          '--laptop-green': spec.laptopMarker
+        };
+        Object.keys(vars).forEach(k => root.style.setProperty(k, vars[k]));
+        const meta = document.getElementById('themeColorMeta');
+        if (meta) meta.setAttribute('content', spec.themeColorMeta);
+        const statusBarMeta = document.getElementById('appleStatusBarMeta');
+        if (statusBarMeta) statusBarMeta.setAttribute('content', spec.isDark ? 'black' : 'default');
+        window.__WATSAFE_ACTIVE_THEME_ID = spec.id;
+        return spec;
+      }
+
+      window.normalizeWatSafeThemeId = normalizeThemeId;
+      window.getWatSafeThemeSpec = getSpec;
+      window.applyWatSafeThemeVariables = applyThemeVariables;
+
+      let initialId = 'obsidian_amber';
+      try {
+        const raw = localStorage.getItem(APPEARANCE_KEY);
+        if (raw) {
+          if (raw.trim().charAt(0) === '{') {
+            const parsed = JSON.parse(raw);
+            initialId = normalizeThemeId(parsed && (parsed.themeId || parsed.colorTheme || parsed.id));
+          } else {
+            initialId = normalizeThemeId(raw);
+          }
+        }
+      } catch (_) {}
+      applyThemeVariables(initialId);
+    })();
+  </script>
 </head>
 <body>
   <header>
     <div class="brand"><span class="shield-dot" id="statusDot"></span> WATSafe</div>
-    <span class="pill pill-warn" id="headerBadge">Connecting…</span>
+    <span class="pill pill-warn hidden" id="headerBadge">Connecting…</span>
   </header>
   <main id="appMain">
     <div id="errorBox" class="error-box hidden"></div>
@@ -943,8 +1356,8 @@ self.addEventListener('notificationclick', (event) => {
     <div id="migrationBanner" class="guide-box hidden" style="border-color:var(--amber);"></div>
     <div id="connectionStatusBanner" class="guide-box hidden" style="border-color:var(--amber);">
       <div id="connectionStatusTitle" style="font-weight:700;color:var(--text);margin-bottom:4px;"></div>
-      <div id="connectionStatusDetail" style="font-size:13.5px;color:var(--muted);line-height:1.45;"></div>
-      <button id="retryConnectionBtn" class="btn btn-secondary" style="margin-top:10px;padding:10px 14px;font-size:14px;">Retry</button>
+      <div id="connectionStatusDetail" style="font-size:13px;color:var(--muted);line-height:1.4;"></div>
+      <button id="retryConnectionBtn" class="btn btn-secondary btn-compact" style="margin-top:8px;">Retry</button>
     </div>
 
     <!-- Step 1: Enter pairing code or Home Screen setup code -->
@@ -968,96 +1381,177 @@ self.addEventListener('notificationclick', (event) => {
       <button id="useDifferentCodeBtn" class="btn btn-secondary">Enter a different code</button>
     </section>
 
-    <!-- Connected Home Tab (Guided Setup + Status + Test Alert) -->
-    <section id="tabHome" class="hidden">
+    <!-- Step 3: Guided First-Time Setup (hidden automatically once all 5 checks pass!) -->
+    <section id="stepSetupChecklist" class="hidden">
       <div class="card">
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-          <span class="pill pill-ok" id="homeConnBadge">Connecting…</span>
-          <span class="pill pill-warn" id="homeNotifBadge">Setup needed</span>
-        </div>
-        <h1 id="homeHostTitle" style="margin-top:12px;">My Laptop</h1>
-        <p id="homeHostPresenceText" style="font-size:13px;color:var(--subtle);margin-bottom:8px;"></p>
+        <span class="pill pill-warn" id="setupStepBadge">Finish setup</span>
+        <h1 id="homeHostTitle" style="margin-top:10px;">My Laptop</h1>
         <p id="homeNotifStatusText">Checking notification readiness…</p>
 
-        <!-- Dynamic Next-Step Action Panel -->
         <div id="nextStepBox" class="guide-box hidden"></div>
 
-        <!-- Primary Action Buttons (strictly shown only when valid for current step!) -->
         <button id="copyHandoffBtn" class="btn btn-primary hidden">Copy Home Screen setup code</button>
         <button id="enableNotifBtn" class="btn btn-primary hidden">Enable notifications</button>
-        <button id="sendTestAlertBtn" class="btn btn-primary hidden">Send test alert</button>
-        <button id="sendDelayedTestAlertBtn" class="btn btn-secondary hidden">Send test alert in 5s (lock phone test)</button>
         <a id="openHttpsLinkBtn" class="btn btn-primary hidden" href="#">Open secure HTTPS link</a>
         <button id="recheckSetupBtn" class="btn btn-secondary hidden">Re-check notification setup</button>
 
-        <!-- 5-State Readiness Checklist -->
         <div class="checklist" id="readinessChecklist"></div>
       </div>
     </section>
 
-    <!-- Connected Devices Map Tab -->
+    <!-- Connected Devices Map Tab (Default Home Screen after setup) -->
     <section id="tabDevices" class="hidden">
+      <div id="compactRecoveryBanner" class="compact-recovery hidden">
+        <div id="compactRecoveryText"></div>
+        <button type="button" id="compactRecoveryBtn" class="btn btn-primary">Repair</button>
+      </div>
+      <div id="locationOnboardingCard" class="guide-box hidden" style="margin:0 0 10px;border-color:var(--amber);">
+        <div style="font-weight:700;font-size:14px;color:var(--text);">Show this phone on the map</div>
+        <div style="font-size:12.5px;color:var(--muted);margin-top:3px;line-height:1.4;">Allow location to display this phone alongside your laptop while WATSafe is open.</div>
+        <div style="display:flex;gap:8px;margin-top:9px;">
+          <button type="button" id="setupEnableLocationBtn" class="btn btn-primary btn-compact" style="flex:1;">Enable location</button>
+          <button type="button" id="setupSkipLocationBtn" class="btn btn-secondary btn-compact">Not now</button>
+        </div>
+      </div>
+      <div id="activeAlarmBanner" class="alarm-banner hidden" role="region" aria-label="Active device alert"></div>
+
       <div class="devices-topbar">
-        <h1 style="margin:0;">Devices</h1>
-        <button id="refreshDevicesBtn" class="btn btn-secondary" style="width:auto;min-height:40px;margin:0;padding:8px 14px;font-size:13.5px;">Refresh</button>
+        <h1 style="margin:0;font-size:20px;">Devices</h1>
+        <button id="refreshDevicesBtn" class="btn btn-secondary btn-compact">Refresh</button>
       </div>
       <div id="devicesRosterList" class="device-chip-bar" role="tablist" aria-label="Paired devices"></div>
       <div class="devices-grid">
         <div id="devicesMapWrap" class="card map-card">
           <div id="devicesMapStage" class="map-stage"></div>
         </div>
-        <div id="selectedDeviceCard" class="card" style="padding:16px;"></div>
+        <div id="selectedDeviceCard" class="card selected-device-card" style="padding:13px 14px;"></div>
       </div>
     </section>
 
-    <!-- Connected Activity Tab -->
-    <section id="tabActivity" class="hidden">
-      <h1 style="margin-bottom:14px;">Activity</h1>
-      <div id="eventDetailCard" class="card hidden"></div>
-      <div id="eventsList"></div>
-    </section>
-
-    <!-- Connected Settings Tab -->
+    <!-- Connected Settings Tab (Compact Categorized Rows + Appearance Category Page) -->
     <section id="tabSettings" class="hidden">
-      <div class="card">
-        <h2>Notifications &amp; connection</h2>
-        <p id="settingsDeliverySummary"></p>
-        <p id="settingsAddressSummary" style="font-size:13px;color:var(--subtle);"></p>
-        <button id="settingsRecheckBtn" class="btn btn-secondary">Refresh notification status</button>
-        <button id="disconnectPhoneBtn" class="btn btn-danger">Disconnect phone</button>
+      <div id="settingsMainView">
+        <div class="settings-group-label">Connection</div>
+        <div class="settings-list">
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-title" id="settingsPairedHostTitle">My Laptop</div>
+              <div class="settings-row-sub" id="settingsPairedHostSub">Checking connection…</div>
+            </div>
+            <span class="pill pill-neutral" id="settingsHostOnlinePill">Online</span>
+          </div>
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-title">Notifications</div>
+              <div class="settings-row-sub" id="settingsDeliverySummary">Checking status…</div>
+            </div>
+            <button type="button" id="settingsRepairNotifBtn" class="btn btn-primary btn-compact hidden">Repair</button>
+            <span class="pill pill-ok" id="settingsNotifPill">On</span>
+          </div>
+          <details class="settings-details" id="settingsTroubleshootingDetails">
+            <summary>Setup &amp; troubleshooting</summary>
+            <div id="settingsChecklistContainer" class="checklist" style="margin-top:10px;padding-top:8px;"></div>
+            <div id="settingsAddressSummary" style="font-size:12px;color:var(--subtle);margin-top:8px;line-height:1.45;"></div>
+            <button type="button" id="settingsRecheckBtn" class="btn btn-secondary btn-compact" style="margin-top:10px;width:100%;">Refresh connection status</button>
+          </details>
+        </div>
+
+        <div class="settings-group-label" id="settingsAppearanceSection">Appearance</div>
+        <div class="settings-list">
+          <button type="button" id="openAppearancePageBtn" class="settings-row settings-nav-row" aria-label="Appearance color theme">
+            <div>
+              <div class="settings-row-title">Appearance</div>
+              <div class="settings-row-sub" id="settingsActiveThemeSub">Obsidian &amp; Amber</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <span class="theme-swatch-strip" id="settingsActiveThemeSwatches" aria-hidden="true"></span>
+              <span style="color:var(--muted);font-size:18px;font-weight:700;line-height:1;" aria-hidden="true">›</span>
+            </div>
+          </button>
+        </div>
+
+        <div class="settings-group-label">Location</div>
+        <div class="settings-list">
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-title">Share phone location</div>
+              <div class="settings-row-sub" id="settingsPhoneLocationStatus">While app is open</div>
+            </div>
+            <button type="button" id="togglePhoneLocationBtn" class="switch-btn" role="switch" aria-checked="false" aria-label="Share phone location"></button>
+          </div>
+          <div id="settingsLocationDeniedHint" class="settings-details hidden" style="font-size:12.5px;color:var(--muted);">
+            Turn on Location in iOS <strong>Settings → Privacy &amp; Security → Location Services → Safari Websites</strong>, then switch on above.
+          </div>
+        </div>
+
+        <div class="settings-group-label">Privacy</div>
+        <div class="settings-list">
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-title">Location history</div>
+              <div class="settings-row-sub">Auto-deleted after 7 days</div>
+            </div>
+            <button type="button" id="deleteLocationHistoryBtn" class="btn btn-secondary btn-compact">Delete history</button>
+          </div>
+          <div id="confirmDeleteHistoryBox" class="settings-details hidden">
+            <div style="font-size:13px;color:var(--text);margin-bottom:8px;">Delete all stored phone and laptop coordinates for this session?</div>
+            <div style="display:flex;gap:8px;">
+              <button type="button" id="confirmDeleteHistoryYesBtn" class="btn btn-danger btn-compact" style="flex:1;">Delete</button>
+              <button type="button" id="confirmDeleteHistoryCancelBtn" class="btn btn-secondary btn-compact" style="flex:1;">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group-label">Disconnect</div>
+        <div class="settings-list">
+          <div class="settings-row">
+            <div>
+              <div class="settings-row-title">Unpair this phone</div>
+              <div class="settings-row-sub">Stops alerts from this laptop</div>
+            </div>
+            <button type="button" id="disconnectPhoneBtn" class="btn btn-danger btn-compact">Disconnect</button>
+          </div>
+          <div id="confirmDisconnectBox" class="settings-details hidden">
+            <div id="confirmDisconnectText" style="font-size:13px;color:var(--text);margin-bottom:8px;">Stop receiving alerts on this phone?</div>
+            <div style="display:flex;gap:8px;">
+              <button type="button" id="confirmDisconnectYesBtn" class="btn btn-danger btn-compact" style="flex:1;">Disconnect phone</button>
+              <button type="button" id="confirmDisconnectCancelBtn" class="btn btn-secondary btn-compact" style="flex:1;">Cancel</button>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="card">
-        <h2>This phone’s location</h2>
-        <p id="settingsPhoneLocationStatus" style="font-size:13.5px;">Off — this phone’s position is not shared on the Devices map.</p>
-        <p style="font-size:12.5px;color:var(--subtle);">When enabled, WATSafe updates this phone’s marker only while WATSafe is open on screen. Home Screen web apps cannot track phone GPS in the background.</p>
-        <button id="togglePhoneLocationBtn" class="btn btn-secondary">Share this phone’s location</button>
-      </div>
-      <div class="card">
-        <h2>Location privacy &amp; history</h2>
-        <p style="font-size:13.5px;">Your protected laptop reports its own coordinates while armed and for up to 15 minutes after an alarm. Phone and laptop locations are stored separately and automatically deleted after 7 days.</p>
-        <button id="deleteLocationHistoryBtn" class="btn btn-secondary">Delete stored location history</button>
+
+      <div id="settingsAppearancePage" class="hidden">
+        <button type="button" id="appearanceBackBtn" class="settings-back-btn">← Settings</button>
+        <h1 style="font-size:20px;margin:2px 0 4px;">Appearance</h1>
+        <p style="font-size:13px;margin:0 0 12px;">Choose a color theme for this phone.</p>
+        <div class="card" style="padding:14px;">
+          <div id="phoneThemeOptionsList" class="theme-options-grid" role="radiogroup" aria-label="Color theme"></div>
+        </div>
       </div>
     </section>
   </main>
 
-  <nav id="bottomNav" class="nav-bar hidden">
-    <button class="nav-btn active" data-tab="Home">Home</button>
-    <button class="nav-btn" data-tab="Devices">Devices</button>
-    <button class="nav-btn" data-tab="Activity">Activity</button>
+  <nav id="bottomNav" class="nav-bar hidden" aria-label="Primary navigation">
+    <button class="nav-btn active" data-tab="Devices">Devices</button>
     <button class="nav-btn" data-tab="Settings">Settings</button>
   </nav>
 
   <script>
     const STORAGE_KEY = 'watsafe.web_companion.v3';
     const LEGACY_STORAGE_KEY = 'watsafe.web_companion.v2';
+    const APPEARANCE_STORAGE_KEY = window.WATSAFE_APPEARANCE_KEY || 'watsafe.appearance.v1';
     const IDB_NAME = 'watsafe_companion_v2';
     const IDB_STORE = 'kv';
     const IDB_STATE_KEY = 'state';
+    const IDB_APPEARANCE_KEY = 'appearance';
     const TOKEN_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
     const urlParams = new URLSearchParams(window.location.search);
     const initialCode = (urlParams.get('code') || '').trim();
     const initialSource = (urlParams.get('source') || '').trim();
-    let pendingEventId = (urlParams.get('event') || '').trim();
+    const hadLegacyEventParam = Boolean((urlParams.get('event') || '').trim());
+    const hadLegacyHash = Boolean(window.location.hash);
+    let pendingIncidentId = (urlParams.get('incident') || urlParams.get('event') || '').trim();
 
     function isIosDevice() {
       const ua = navigator.userAgent || '';
@@ -1179,6 +1673,7 @@ self.addEventListener('notificationclick', (event) => {
       pushEndpoint: null,
       backendRegisteredEndpoint: null,
       backendPushRegistered: false,
+      setupCompletedOnce: false,
       pushSubscriptionNeedsRenewal: false,
       pushRepairNeeded: false,
       lastPushErrorCode: null,
@@ -1191,9 +1686,12 @@ self.addEventListener('notificationclick', (event) => {
       hostDisconnectedAtUtc: null,
       hostProtectionState: 'off',
       phoneLocationSharingEnabled: false,
+      phoneLocationExplicitlyDisabled: false,
+      phoneLocationSetupHandled: false,
       phoneLatestLocation: null,
       phoneLocationPermission: 'prompt',
       placeLabelCache: {},
+      dismissedBannerIncidentIds: {},
       lastSeq: 0,
       seenIds: {},
       events: [],
@@ -1287,15 +1785,134 @@ self.addEventListener('notificationclick', (event) => {
       } catch (_) {}
     }
 
+    function loadAppearanceFromIdb() {
+      return new Promise((resolve) => {
+        if (typeof indexedDB === 'undefined') {
+          resolve(null);
+          return;
+        }
+        try {
+          const req = indexedDB.open(IDB_NAME, 1);
+          req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains(IDB_STORE)) {
+              db.createObjectStore(IDB_STORE);
+            }
+          };
+          req.onsuccess = () => {
+            try {
+              const db = req.result;
+              const tx = db.transaction(IDB_STORE, 'readonly');
+              const getReq = tx.objectStore(IDB_STORE).get(IDB_APPEARANCE_KEY);
+              getReq.onsuccess = () => {
+                db.close();
+                resolve(getReq.result || null);
+              };
+              getReq.onerror = () => {
+                db.close();
+                resolve(null);
+              };
+            } catch (_) {
+              resolve(null);
+            }
+          };
+          req.onerror = () => resolve(null);
+        } catch (_) {
+          resolve(null);
+        }
+      });
+    }
+
+    function writeAppearanceToIdb(appearanceRecord) {
+      if (typeof indexedDB === 'undefined') return;
+      try {
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains(IDB_STORE)) {
+            db.createObjectStore(IDB_STORE);
+          }
+        };
+        req.onsuccess = () => {
+          try {
+            const db = req.result;
+            const tx = db.transaction(IDB_STORE, 'readwrite');
+            tx.objectStore(IDB_STORE).put(appearanceRecord, IDB_APPEARANCE_KEY);
+            tx.oncomplete = () => db.close();
+            tx.onerror = () => db.close();
+          } catch (_) {}
+        };
+      } catch (_) {}
+    }
+
+    function readSavedAppearanceLocal() {
+      try {
+        const raw = localStorage.getItem(APPEARANCE_STORAGE_KEY);
+        if (!raw) return null;
+        if (raw.trim().charAt(0) === '{') {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            return {
+              themeId: window.normalizeWatSafeThemeId(parsed.themeId || parsed.colorTheme || parsed.id),
+              updatedAtUtc: parsed.updatedAtUtc || null
+            };
+          }
+        }
+        return {
+          themeId: window.normalizeWatSafeThemeId(raw),
+          updatedAtUtc: null
+        };
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function saveAppearancePreference(themeId) {
+      const normalizedId = window.normalizeWatSafeThemeId(themeId);
+      const record = {
+        themeId: normalizedId,
+        updatedAtUtc: new Date().toISOString()
+      };
+      try { localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify(record)); } catch (_) {}
+      try { writeAppearanceToIdb(record); } catch (_) {}
+      return normalizedId;
+    }
+
+    function getActiveThemeSpec() {
+      return window.getWatSafeThemeSpec(window.__WATSAFE_ACTIVE_THEME_ID || 'obsidian_amber');
+    }
+
     function saveState() {
       if (!state.installationDeviceId) {
         state.installationDeviceId = state.deviceId || generateInstallationDeviceId();
       }
+      delete state.colorTheme;
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) {}
       try { writeStateToIdb(JSON.parse(JSON.stringify(state))); } catch (_) {}
     }
 
     async function hydrateDurableState() {
+      // Hydrate decoupled phone appearance preference (survives storage eviction, SW updates, and pairing resets).
+      let localApp = readSavedAppearanceLocal();
+      const idbApp = await loadAppearanceFromIdb();
+      let resolvedThemeId = 'obsidian_amber';
+      if (localApp && localApp.themeId) {
+        resolvedThemeId = localApp.themeId;
+        if (idbApp && idbApp.themeId) {
+          const lt = localApp.updatedAtUtc ? Date.parse(localApp.updatedAtUtc) : 0;
+          const it = idbApp.updatedAtUtc ? Date.parse(idbApp.updatedAtUtc) : 0;
+          if (!isNaN(it) && it > (isNaN(lt) ? 0 : lt)) {
+            resolvedThemeId = window.normalizeWatSafeThemeId(idbApp.themeId);
+          }
+        }
+      } else if (idbApp && (idbApp.themeId || typeof idbApp === 'string')) {
+        resolvedThemeId = window.normalizeWatSafeThemeId(typeof idbApp === 'string' ? idbApp : idbApp.themeId);
+      } else if (state && state.colorTheme) {
+        resolvedThemeId = window.normalizeWatSafeThemeId(state.colorTheme);
+      }
+      window.applyWatSafeThemeVariables(resolvedThemeId);
+      saveAppearancePreference(resolvedThemeId);
+
       const idbSaved = await loadStateFromIdb();
       if (idbSaved && typeof idbSaved === 'object') {
         if (!state.companionToken && idbSaved.companionToken) {
@@ -1309,17 +1926,69 @@ self.addEventListener('notificationclick', (event) => {
         } else if (!state.installationDeviceId && idbSaved.installationDeviceId) {
           state.installationDeviceId = idbSaved.installationDeviceId;
         }
+        if (idbSaved.pendingOpenIncidentId &&
+            (!idbSaved.pendingOpenIncidentAtMs || (Date.now() - idbSaved.pendingOpenIncidentAtMs) <= 600000)) {
+          pendingIncidentId = String(idbSaved.pendingOpenIncidentId).trim();
+          focusedIncidentId = pendingIncidentId || focusedIncidentId;
+        }
       }
+      if (state.backendPushRegistered) {
+        state.setupCompletedOnce = true;
+      }
+      if (!state.dismissedBannerIncidentIds || typeof state.dismissedBannerIncidentIds !== 'object') {
+        state.dismissedBannerIncidentIds = {};
+      }
+      delete state.pendingOpenIncidentId;
+      delete state.pendingOpenIncidentAtMs;
       if (!state.installationDeviceId) {
         state.installationDeviceId = state.deviceId || generateInstallationDeviceId();
       }
       saveState();
     }
 
-    // Strip any one-time code or query params from URL immediately so codes/tokens never linger in browser history.
-    if (initialCode || initialSource) {
-      const cleanPath = pendingEventId
-        ? ('/companion?event=' + encodeURIComponent(pendingEventId))
+    function openIncidentOnDevices(incidentId) {
+      const incId = String(incidentId || '').trim();
+      if (!incId) return;
+      focusedIncidentId = incId;
+      if (state.dismissedBannerIncidentIds) {
+        delete state.dismissedBannerIncidentIds[incId];
+      }
+      try {
+        window.history.replaceState({}, '', '/companion?incident=' + encodeURIComponent(incId));
+      } catch (_) {}
+      const hostDev = (state.authorizedDevices || []).find(d => d.role === 'protected_device');
+      if (hostDev && hostDev.deviceId) {
+        selectedDeviceId = hostDev.deviceId;
+      }
+      if (state.companionToken) {
+        switchTab('Devices');
+        fetchSingleIncidentIfMissing(incId);
+        fetchAuthorizedDevicesLocations({ requestHostRefresh: true });
+        if (hostDev && isValidCoord(hostDev.latestLocation) && mapControllers.devices) {
+          mapControllers.devices.centerOnDevice(hostDev.latestLocation);
+        }
+      }
+    }
+
+    async function consumePendingNotificationIncident() {
+      const idbSaved = await loadStateFromIdb();
+      if (idbSaved &&
+          idbSaved.pendingOpenIncidentId &&
+          (!idbSaved.pendingOpenIncidentAtMs || (Date.now() - idbSaved.pendingOpenIncidentAtMs) <= 600000)) {
+        const incId = String(idbSaved.pendingOpenIncidentId).trim();
+        delete state.pendingOpenIncidentId;
+        delete state.pendingOpenIncidentAtMs;
+        saveState();
+        if (incId) {
+          openIncidentOnDevices(incId);
+        }
+      }
+    }
+
+    // Strip any one-time code or legacy #activity / ?event= route immediately so codes never linger and old routes land on Devices.
+    if (initialCode || initialSource || hadLegacyEventParam || hadLegacyHash) {
+      const cleanPath = pendingIncidentId
+        ? ('/companion?incident=' + encodeURIComponent(pendingIncidentId))
         : '/companion';
       try { window.history.replaceState({}, '', cleanPath); } catch (_) {}
     }
@@ -1340,11 +2009,18 @@ self.addEventListener('notificationclick', (event) => {
       httpPrePairNotice: document.getElementById('httpPrePairNotice'),
       stepConfirmPair: document.getElementById('stepConfirmPair'),
       confirmPlatformHint: document.getElementById('confirmPlatformHint'),
-      tabHome: document.getElementById('tabHome'),
+      stepSetupChecklist: document.getElementById('stepSetupChecklist'),
+      setupStepBadge: document.getElementById('setupStepBadge'),
       tabDevices: document.getElementById('tabDevices'),
-      tabActivity: document.getElementById('tabActivity'),
       tabSettings: document.getElementById('tabSettings'),
       bottomNav: document.getElementById('bottomNav'),
+      compactRecoveryBanner: document.getElementById('compactRecoveryBanner'),
+      compactRecoveryText: document.getElementById('compactRecoveryText'),
+      compactRecoveryBtn: document.getElementById('compactRecoveryBtn'),
+      locationOnboardingCard: document.getElementById('locationOnboardingCard'),
+      setupEnableLocationBtn: document.getElementById('setupEnableLocationBtn'),
+      setupSkipLocationBtn: document.getElementById('setupSkipLocationBtn'),
+      activeAlarmBanner: document.getElementById('activeAlarmBanner'),
       devicesMapStage: document.getElementById('devicesMapStage'),
       selectedDeviceCard: document.getElementById('selectedDeviceCard'),
       devicesRosterList: document.getElementById('devicesRosterList'),
@@ -1352,40 +2028,55 @@ self.addEventListener('notificationclick', (event) => {
       phoneNameInput: document.getElementById('phoneNameInput'),
       confirmHeading: document.getElementById('confirmHeading'),
       homeHostTitle: document.getElementById('homeHostTitle'),
-      homeHostPresenceText: document.getElementById('homeHostPresenceText'),
-      homeConnBadge: document.getElementById('homeConnBadge'),
-      homeNotifBadge: document.getElementById('homeNotifBadge'),
       homeNotifStatusText: document.getElementById('homeNotifStatusText'),
       nextStepBox: document.getElementById('nextStepBox'),
       copyHandoffBtn: document.getElementById('copyHandoffBtn'),
       enableNotifBtn: document.getElementById('enableNotifBtn'),
-      sendTestAlertBtn: document.getElementById('sendTestAlertBtn'),
-      sendDelayedTestAlertBtn: document.getElementById('sendDelayedTestAlertBtn'),
       openHttpsLinkBtn: document.getElementById('openHttpsLinkBtn'),
       recheckSetupBtn: document.getElementById('recheckSetupBtn'),
       readinessChecklist: document.getElementById('readinessChecklist'),
-      eventsList: document.getElementById('eventsList'),
-      eventDetailCard: document.getElementById('eventDetailCard'),
+      settingsPairedHostTitle: document.getElementById('settingsPairedHostTitle'),
+      settingsPairedHostSub: document.getElementById('settingsPairedHostSub'),
+      settingsHostOnlinePill: document.getElementById('settingsHostOnlinePill'),
       settingsDeliverySummary: document.getElementById('settingsDeliverySummary'),
+      settingsRepairNotifBtn: document.getElementById('settingsRepairNotifBtn'),
+      settingsNotifPill: document.getElementById('settingsNotifPill'),
+      settingsTroubleshootingDetails: document.getElementById('settingsTroubleshootingDetails'),
+      settingsChecklistContainer: document.getElementById('settingsChecklistContainer'),
       settingsAddressSummary: document.getElementById('settingsAddressSummary'),
+      settingsMainView: document.getElementById('settingsMainView'),
+      settingsAppearancePage: document.getElementById('settingsAppearancePage'),
+      openAppearancePageBtn: document.getElementById('openAppearancePageBtn'),
+      appearanceBackBtn: document.getElementById('appearanceBackBtn'),
+      settingsActiveThemeSub: document.getElementById('settingsActiveThemeSub'),
+      settingsActiveThemeSwatches: document.getElementById('settingsActiveThemeSwatches'),
+      phoneThemeOptionsList: document.getElementById('phoneThemeOptionsList'),
       settingsPhoneLocationStatus: document.getElementById('settingsPhoneLocationStatus'),
       togglePhoneLocationBtn: document.getElementById('togglePhoneLocationBtn'),
+      settingsLocationDeniedHint: document.getElementById('settingsLocationDeniedHint'),
+      confirmDeleteHistoryBox: document.getElementById('confirmDeleteHistoryBox'),
+      confirmDisconnectBox: document.getElementById('confirmDisconnectBox'),
+      confirmDisconnectText: document.getElementById('confirmDisconnectText'),
       appMain: document.getElementById('appMain')
     };
     els.phoneNameInput.value = state.phoneDisplayName || detectPhoneName();
 
     let activeLookupCode = '';
-    let activeTab = 'Home';
-    let selectedIncidentId = pendingEventId || null;
+    let activeTab = 'Devices';
+    let activeSettingsSubpage = null; // null | 'appearance'
+    let focusedIncidentId = pendingIncidentId || null;
     let selectedDeviceId = null;
-    let pendingTestIncidentId = null;
     let swRegistration = null;
     let activePushSubscription = null;
+    let swInspectionComplete = false;
     let connState = 'connecting'; // 'connecting' | 'connected' | 'laptop_offline' | 'service_unavailable'
     let consecutiveFailures = 0;
     let pollTimerId = null;
     let phoneGeoWatchId = null;
     let lastPhoneGeoUploadMs = 0;
+    let lastAutoHostRefreshReqMs = 0;
+    let hostRefreshFollowupTimer = null;
+    const ackedIncidentIds = {};
     const mapControllers = {};
     const pendingGeocodeKeys = {};
 
@@ -1402,8 +2093,8 @@ self.addEventListener('notificationclick', (event) => {
     }
 
     function hideAllSections() {
-      [els.stepCodeEntry, els.stepConfirmPair, els.tabHome, els.tabDevices, els.tabActivity, els.tabSettings]
-        .forEach(el => el.classList.add('hidden'));
+      [els.stepCodeEntry, els.stepConfirmPair, els.stepSetupChecklist, els.tabDevices, els.tabSettings]
+        .forEach(el => { if (el) el.classList.add('hidden'); });
     }
 
     function escapeHtml(raw) {
@@ -1541,6 +2232,7 @@ self.addEventListener('notificationclick', (event) => {
       if (!isHttpsReady() || !('serviceWorker' in navigator)) {
         swRegistration = null;
         activePushSubscription = null;
+        swInspectionComplete = true;
         return;
       }
       try {
@@ -1559,11 +2251,14 @@ self.addEventListener('notificationclick', (event) => {
           state.pushEndpoint = activePushSubscription ? activePushSubscription.endpoint : null;
           saveState();
         }
-      } catch (_) {}
+      } catch (_) {
+      } finally {
+        swInspectionComplete = true;
+      }
     }
 
     async function acknowledgeEventReceipt(incidentId, source) {
-      if (!incidentId || !state.companionToken) return;
+      if (!incidentId || !state.companionToken || ackedIncidentIds[incidentId]) return;
       try {
         const res = await fetch('/v1/companion/events/' + encodeURIComponent(incidentId) + '/ack', {
           method: 'POST',
@@ -1574,6 +2269,7 @@ self.addEventListener('notificationclick', (event) => {
           body: JSON.stringify({ source: source || 'companion_poll' })
         });
         if (isAuthenticWatSafeHeader(res) && res.ok) {
+          ackedIncidentIds[incidentId] = true;
           const ackBody = await res.json();
           const idx = state.events.findIndex(e => e.incidentId === incidentId);
           if (idx >= 0) {
@@ -1581,10 +2277,6 @@ self.addEventListener('notificationclick', (event) => {
             state.events[idx].receiptConfirmedAtUtc = ackBody.receiptConfirmedAtUtc || new Date().toISOString();
             state.events[idx].receiptSource = ackBody.receiptSource || source || 'companion_poll';
             saveState();
-          }
-          if (pendingTestIncidentId && pendingTestIncidentId === incidentId) {
-            pendingTestIncidentId = null;
-            showInfo('Phone receipt confirmed — test notification arrived on this phone.');
           }
         }
       } catch (_) {}
@@ -1595,28 +2287,23 @@ self.addEventListener('notificationclick', (event) => {
         if (!ev.data) return;
         if (ev.data.type === 'PUSH_RECEIVED' && ev.data.incidentId) {
           state.seenIds[ev.data.incidentId] = true;
+          ackedIncidentIds[ev.data.incidentId] = true;
           const idx = state.events.findIndex(e => e.incidentId === ev.data.incidentId);
           if (idx >= 0) {
             state.events[idx].receiptConfirmed = true;
             state.events[idx].receiptSource = 'push_sw';
           }
-          if (pendingTestIncidentId && pendingTestIncidentId === ev.data.incidentId) {
-            pendingTestIncidentId = null;
-            showInfo('Phone receipt confirmed — test notification arrived on this phone.');
-          }
           saveState();
           triggerImmediateReconnect();
         }
         if ((ev.data.type === 'OPEN_INCIDENT' || ev.data.type === 'OPEN_INCIDENT_MAP') && ev.data.incidentId) {
-          selectedIncidentId = ev.data.incidentId;
-          try { window.history.replaceState({}, '', '/companion?event=' + encodeURIComponent(selectedIncidentId)); } catch (_) {}
-          switchTab('Activity');
-          fetchSingleIncidentIfMissing(selectedIncidentId);
+          openIncidentOnDevices(ev.data.incidentId);
         }
         if (ev.data.type === 'PUSH_SUBSCRIPTION_RENEWED' && ev.data.endpoint) {
           state.pushEndpoint = ev.data.endpoint;
           state.backendRegisteredEndpoint = ev.data.endpoint;
           state.backendPushRegistered = true;
+          state.setupCompletedOnce = true;
           state.pushSubscriptionNeedsRenewal = false;
           state.pushRepairNeeded = false;
           saveState();
@@ -1748,6 +2435,9 @@ self.addEventListener('notificationclick', (event) => {
         if (isAuthenticWatSafeHeader(res) && res.ok) {
           const updated = await res.json();
           state.backendPushRegistered = Boolean(updated.backendPushRegistered);
+          if (state.backendPushRegistered) {
+            state.setupCompletedOnce = true;
+          }
           state.pushSubscriptionNeedsRenewal = Boolean(updated.pushSubscriptionNeedsRenewal);
           state.lastPushErrorCode = updated.lastPushErrorCode || null;
           if (updated.vapidPublicKey) state.vapidPublicKey = updated.vapidPublicKey;
@@ -1811,6 +2501,9 @@ self.addEventListener('notificationclick', (event) => {
       state.backendRegisteredEndpoint = sub.endpoint;
       state.subscribedVapidPublicKey = subAppKey || state.vapidPublicKey || null;
       state.backendPushRegistered = Boolean(body.backendPushRegistered);
+      if (state.backendPushRegistered) {
+        state.setupCompletedOnce = true;
+      }
       state.pushSubscriptionNeedsRenewal = false;
       state.pushRepairNeeded = false;
       state.lastPushErrorCode = null;
@@ -1850,6 +2543,7 @@ self.addEventListener('notificationclick', (event) => {
     }
 
     async function handleServerRevokedSession() {
+      stopForegroundPhoneLocationWatch();
       if (pollTimerId) {
         clearTimeout(pollTimerId);
         pollTimerId = null;
@@ -1859,12 +2553,14 @@ self.addEventListener('notificationclick', (event) => {
       clearIdbState();
       state.companionToken = null;
       state.backendPushRegistered = false;
+      state.setupCompletedOnce = false;
       state.pushEndpoint = null;
       state.backendRegisteredEndpoint = null;
       els.bottomNav.classList.add('hidden');
       els.connectionStatusBanner.classList.add('hidden');
       els.headerBadge.textContent = 'Phone setup';
       els.headerBadge.className = 'pill pill-warn';
+      els.headerBadge.classList.remove('hidden');
       showError(
         'This phone was explicitly disconnected from ' +
           (state.hostDisplayName || 'your laptop') +
@@ -1878,6 +2574,7 @@ self.addEventListener('notificationclick', (event) => {
     function renderPrePairUi() {
       els.headerBadge.textContent = 'Phone setup';
       els.headerBadge.className = 'pill pill-warn';
+      els.headerBadge.classList.remove('hidden');
       els.connectionStatusBanner.classList.add('hidden');
       renderMigrationBanner();
       if (isStandaloneWebApp()) {
@@ -2140,9 +2837,12 @@ self.addEventListener('notificationclick', (event) => {
           throw new Error('Browser did not return Web Push encryption keys.');
         }
 
-        // 4. Register subscription with backend for this paired device
+        // 4. Register subscription with backend and transition directly into Devices!
         await registerPushSubscriptionWithBackend(sub, p256dh, auth, true);
-        showInfo('Notifications enabled! Pairing and notifications are saved permanently — tap "Send test alert" to verify.');
+        state.setupCompletedOnce = true;
+        saveState();
+        showInfo('');
+        enterConnectedShell();
       } catch (err) {
         showError((err && err.message) ? err.message : 'Could not finish notification setup. Please try again.');
         await syncCompanionReadinessToBackend();
@@ -2160,113 +2860,100 @@ self.addEventListener('notificationclick', (event) => {
       if (!state.handoffCode) return;
       try {
         await navigator.clipboard.writeText(state.handoffCode);
-        showInfo('Copied code ' + state.handoffCode + '! Now tap Safari’s Share button → Add to Home Screen, then open the WATSafe icon on your Home Screen.');
+        showInfo('Copied code ' + state.handoffCode + '. Tap Share → Add to Home Screen, then open the WATSafe icon.');
       } catch (_) {
         showInfo('Copy setup code ' + state.handoffCode + ', then tap Share → Add to Home Screen.');
       }
     });
 
-    async function triggerCompanionTestAlert(delaySeconds) {
-      if (!state.companionToken) return;
-      showError('');
-      els.sendTestAlertBtn.disabled = true;
-      els.sendDelayedTestAlertBtn.disabled = true;
-      try {
-        if (delaySeconds > 0) {
-          showInfo('Lock your phone screen now — sending real Web Push test alert in ' + delaySeconds + ' seconds…');
-        }
-        const res = await fetch('/v1/companion/test-alert', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + state.companionToken
-          },
-          body: JSON.stringify({ delaySeconds: delaySeconds })
-        });
-        if (await isAuthenticUnauthorizedSession(res)) {
-          await handleServerRevokedSession();
-          return;
-        }
-        if (!isAuthenticWatSafeHeader(res)) {
-          showError('Service temporarily unavailable. Your pairing is preserved — tap Retry above and try again.');
-          return;
-        }
-        const body = await res.json();
-        if (!res.ok) {
-          showError(body.message || 'Could not send test alert.');
-          return;
-        }
-        const pushAccepted = Boolean(
-          body.pushAccepted ||
-          Number(body.pushAcceptedCount ?? body.pushDispatchedCount ?? 0) > 0
-        );
-        if (body.receiptConfirmed) {
-          pendingTestIncidentId = null;
-          showInfo('Phone receipt confirmed — test notification arrived on this phone.');
-        } else if (pushAccepted) {
-          pendingTestIncidentId = body.incidentId || null;
-          showInfo(
-            'Push service accepted test alert — waiting for phone receipt (check your lock screen or notification banner).'
-          );
-        } else {
-          pendingTestIncidentId = null;
-          showInfo('');
-          const failedCount = Number(body.pushFailedCount || 0);
-          const reasons = Array.isArray(body.pushFailureReasons) && body.pushFailureReasons.length
-            ? (' (' + body.pushFailureReasons.join(', ') + ')')
-            : '';
-          if (failedCount > 0) {
-            showError(
-              'Push provider rejected the test alert' +
-                reasons +
-                '. Recorded in Activity only — tap Repair notifications below to refresh push delivery.'
-            );
-          } else {
-            showError(
-              'Notifications are not active on this phone yet — test alert was recorded in Activity only. Complete the notification step below.'
-            );
-          }
-          await syncCompanionReadinessToBackend();
-        }
-        await pollAlerts();
-      } catch (_) {
-        showError('Service temporarily unavailable — could not send test alert right now.');
-      } finally {
-        els.sendTestAlertBtn.disabled = false;
-        els.sendDelayedTestAlertBtn.disabled = false;
+    function handleNotificationRecoveryAction(ev) {
+      const r = evaluateReadiness();
+      if (!r.httpsReady && state.httpsPublicOrigin && state.httpsPublicOrigin.indexOf('https://') === 0) {
+        window.location.href = state.httpsPublicOrigin + '/companion';
+        return;
       }
+      if (!r.httpsReady || !r.homeScreenInstalled || r.notificationPermission === 'denied') {
+        switchTab('Settings');
+        if (els.settingsTroubleshootingDetails) {
+          els.settingsTroubleshootingDetails.open = true;
+        }
+        return;
+      }
+      handleExplicitEnableNotificationsTap(ev);
     }
 
-    els.sendTestAlertBtn.addEventListener('click', () => triggerCompanionTestAlert(0));
-    els.sendDelayedTestAlertBtn.addEventListener('click', () => triggerCompanionTestAlert(5));
+    if (els.compactRecoveryBtn) {
+      els.compactRecoveryBtn.addEventListener('click', handleNotificationRecoveryAction);
+    }
+    if (els.settingsRepairNotifBtn) {
+      els.settingsRepairNotifBtn.addEventListener('click', handleNotificationRecoveryAction);
+    }
+    if (els.setupEnableLocationBtn) {
+      els.setupEnableLocationBtn.addEventListener('click', () => {
+        state.phoneLocationSetupHandled = true;
+        state.phoneLocationExplicitlyDisabled = false;
+        saveState();
+        enableCompanionPhoneLocationSharing(false);
+      });
+    }
+    if (els.setupSkipLocationBtn) {
+      els.setupSkipLocationBtn.addEventListener('click', () => {
+        state.phoneLocationSetupHandled = true;
+        state.phoneLocationExplicitlyDisabled = true;
+        saveState();
+        renderConnectedUi();
+      });
+    }
+
     els.recheckSetupBtn.addEventListener('click', () => {
       showError('');
       showInfo('');
       triggerImmediateReconnect();
     });
     document.getElementById('settingsRecheckBtn').addEventListener('click', () => {
+      showError('');
       triggerImmediateReconnect();
-      showInfo('Connection and notification status refreshed.');
     });
     document.getElementById('refreshDevicesBtn').addEventListener('click', () => {
-      fetchAuthorizedDevicesLocations(true);
+      showError('');
+      fetchAuthorizedDevicesLocations({ requestHostRefresh: true, manualTap: true });
     });
     if (els.togglePhoneLocationBtn) {
       els.togglePhoneLocationBtn.addEventListener('click', () => {
+        state.phoneLocationSetupHandled = true;
         if (state.phoneLocationSharingEnabled) {
-          disableCompanionPhoneLocationSharing(true);
+          state.phoneLocationExplicitlyDisabled = true;
+          saveState();
+          disableCompanionPhoneLocationSharing(false);
         } else {
-          enableCompanionPhoneLocationSharing(true);
+          state.phoneLocationExplicitlyDisabled = false;
+          saveState();
+          enableCompanionPhoneLocationSharing(false);
         }
       });
     }
-    document.getElementById('deleteLocationHistoryBtn').addEventListener('click', async () => {
+
+    document.getElementById('deleteLocationHistoryBtn').addEventListener('click', () => {
+      if (els.confirmDeleteHistoryBox) {
+        els.confirmDeleteHistoryBox.classList.toggle('hidden');
+      }
+    });
+    document.getElementById('confirmDeleteHistoryCancelBtn').addEventListener('click', () => {
+      if (els.confirmDeleteHistoryBox) {
+        els.confirmDeleteHistoryBox.classList.add('hidden');
+      }
+    });
+    document.getElementById('confirmDeleteHistoryYesBtn').addEventListener('click', async () => {
+      if (els.confirmDeleteHistoryBox) {
+        els.confirmDeleteHistoryBox.classList.add('hidden');
+      }
       if (!state.companionToken) return;
       stopForegroundPhoneLocationWatch();
       state.phoneLocationSharingEnabled = false;
+      state.phoneLocationExplicitlyDisabled = true;
       state.phoneLatestLocation = null;
       try {
-        const res = await fetch('/v1/location-history', {
+        await fetch('/v1/location-history', {
           method: 'DELETE',
           headers: { 'Authorization': 'Bearer ' + state.companionToken }
         });
@@ -2288,15 +2975,11 @@ self.addEventListener('notificationclick', (event) => {
         }));
         saveState();
         renderConnectedUi();
-        if (isAuthenticWatSafeHeader(res) && res.ok) {
-          showInfo('Stored location history deleted from this phone and your WATSafe session.');
-        } else {
-          showInfo('Local location history cleared.');
-        }
       } catch (_) {
         showError('Could not reach relay right now — local cached location history cleared.');
       }
     });
+
     els.retryConnectionBtn.addEventListener('click', () => {
       showError('');
       connState = 'connecting';
@@ -2304,7 +2987,24 @@ self.addEventListener('notificationclick', (event) => {
       triggerImmediateReconnect();
     });
 
-    document.getElementById('disconnectPhoneBtn').addEventListener('click', async () => {
+    document.getElementById('disconnectPhoneBtn').addEventListener('click', () => {
+      if (els.confirmDisconnectText) {
+        els.confirmDisconnectText.textContent =
+          'Stop receiving alerts from ' + (state.hostDisplayName || 'your laptop') + ' on this phone?';
+      }
+      if (els.confirmDisconnectBox) {
+        els.confirmDisconnectBox.classList.toggle('hidden');
+      }
+    });
+    document.getElementById('confirmDisconnectCancelBtn').addEventListener('click', () => {
+      if (els.confirmDisconnectBox) {
+        els.confirmDisconnectBox.classList.add('hidden');
+      }
+    });
+    document.getElementById('confirmDisconnectYesBtn').addEventListener('click', async () => {
+      if (els.confirmDisconnectBox) {
+        els.confirmDisconnectBox.classList.add('hidden');
+      }
       stopForegroundPhoneLocationWatch();
       if (pollTimerId) {
         clearTimeout(pollTimerId);
@@ -2327,6 +3027,7 @@ self.addEventListener('notificationclick', (event) => {
       clearIdbState();
       state.companionToken = null;
       state.backendPushRegistered = false;
+      state.setupCompletedOnce = false;
       state.pushEndpoint = null;
       state.backendRegisteredEndpoint = null;
       state.phoneLocationSharingEnabled = false;
@@ -2335,39 +3036,165 @@ self.addEventListener('notificationclick', (event) => {
       els.connectionStatusBanner.classList.add('hidden');
       els.headerBadge.textContent = 'Disconnected';
       els.headerBadge.className = 'pill pill-warn';
+      els.headerBadge.classList.remove('hidden');
       renderPrePairUi();
       hideAllSections();
       els.stepCodeEntry.classList.remove('hidden');
     });
 
     document.querySelectorAll('.nav-btn').forEach(btn => {
-      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+      btn.addEventListener('click', () => {
+        if (btn.dataset.tab === 'Settings' && activeTab === 'Settings' && activeSettingsSubpage) {
+          activeSettingsSubpage = null;
+          renderAppearanceSettingsUi();
+          return;
+        }
+        switchTab(btn.dataset.tab);
+      });
     });
 
+    function buildSwatchesHtml(spec) {
+      const colors = [spec.chrome, spec.bg, spec.accent, spec.emerald];
+      return colors
+        .map(c => '<span class="theme-swatch-dot" style="background:' + escapeHtml(c) + ';border-color:' + escapeHtml(spec.border) + ';"></span>')
+        .join('');
+    }
+
+    function renderAppearanceSettingsUi() {
+      const activeSpec = getActiveThemeSpec();
+      if (els.settingsActiveThemeSub) {
+        els.settingsActiveThemeSub.textContent = activeSpec.shortName || activeSpec.name;
+      }
+      if (els.settingsActiveThemeSwatches) {
+        els.settingsActiveThemeSwatches.innerHTML = buildSwatchesHtml(activeSpec);
+      }
+      if (els.settingsMainView && els.settingsAppearancePage) {
+        const showAppearance = activeSettingsSubpage === 'appearance';
+        els.settingsMainView.classList.toggle('hidden', showAppearance);
+        els.settingsAppearancePage.classList.toggle('hidden', !showAppearance);
+      }
+      if (els.phoneThemeOptionsList) {
+        const themes = window.WATSAFE_THEMES || [];
+        els.phoneThemeOptionsList.innerHTML = '';
+        themes.forEach((spec, idx) => {
+          const isSelected = spec.id === activeSpec.id;
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.id = 'phoneThemeOption_' + spec.id;
+          btn.setAttribute('data-theme-id', spec.id);
+          btn.setAttribute('role', 'radio');
+          btn.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+          btn.setAttribute('tabindex', isSelected ? '0' : '-1');
+          btn.className = 'theme-option-btn' + (isSelected ? ' selected' : '');
+          btn.style.background = spec.elevated;
+          btn.style.borderColor = isSelected ? spec.accent : spec.border;
+          if (isSelected) {
+            btn.style.boxShadow = '0 0 0 1.5px ' + spec.accent;
+          }
+          const checkHtml = isSelected
+            ? '<span class="theme-check-badge" style="background:' + escapeHtml(spec.accent) + ';color:' + escapeHtml(spec.onAccent) + ';" aria-hidden="true">✓</span>'
+            : '<span style="width:20px;height:20px;border-radius:50%;border:1.5px solid ' + escapeHtml(spec.border) + ';display:inline-block;flex-shrink:0;" aria-hidden="true"></span>';
+          btn.innerHTML =
+            '<div class="theme-option-top">' +
+            '<span class="theme-swatch-strip" aria-hidden="true">' + buildSwatchesHtml(spec) + '</span>' +
+            checkHtml +
+            '</div>' +
+            '<div style="font-size:13.5px;font-weight:700;color:' + escapeHtml(spec.text) + ';line-height:1.25;">' + escapeHtml(spec.name) + '</div>' +
+            '<div style="font-size:12px;color:' + escapeHtml(spec.muted) + ';line-height:1.35;">' + escapeHtml(spec.description) + '</div>';
+          btn.onclick = () => selectPhoneColorTheme(spec.id, false);
+          btn.onkeydown = ev => {
+            if (ev.key === 'ArrowDown' || ev.key === 'ArrowRight' || ev.key === 'ArrowUp' || ev.key === 'ArrowLeft') {
+              ev.preventDefault();
+              const delta = (ev.key === 'ArrowDown' || ev.key === 'ArrowRight') ? 1 : -1;
+              const nextIdx = (idx + delta + themes.length) % themes.length;
+              const nextSpec = themes[nextIdx];
+              if (nextSpec) {
+                selectPhoneColorTheme(nextSpec.id, true);
+              }
+            }
+          };
+          els.phoneThemeOptionsList.appendChild(btn);
+        });
+      }
+    }
+
+    function selectPhoneColorTheme(themeId, restoreFocus) {
+      const spec = window.applyWatSafeThemeVariables(themeId);
+      saveAppearancePreference(spec.id);
+      renderAppearanceSettingsUi();
+      if (state.companionToken) {
+        renderConnectionStateUi(evaluateReadiness());
+      }
+      if (mapControllers.devices && typeof mapControllers.devices.redrawTheme === 'function') {
+        mapControllers.devices.redrawTheme();
+      }
+      if (restoreFocus && els.phoneThemeOptionsList) {
+        const activeBtn = els.phoneThemeOptionsList.querySelector('[data-theme-id="' + spec.id + '"]');
+        if (activeBtn) activeBtn.focus();
+      }
+    }
+
+    if (els.openAppearancePageBtn) {
+      els.openAppearancePageBtn.addEventListener('click', () => {
+        activeSettingsSubpage = 'appearance';
+        renderAppearanceSettingsUi();
+      });
+    }
+    if (els.appearanceBackBtn) {
+      els.appearanceBackBtn.addEventListener('click', () => {
+        activeSettingsSubpage = null;
+        renderAppearanceSettingsUi();
+        if (els.openAppearancePageBtn) els.openAppearancePageBtn.focus();
+      });
+    }
+    renderAppearanceSettingsUi();
+
+    function isInInitialOnboarding(r) {
+      return !state.setupCompletedOnce && !r.notificationsEnabled;
+    }
+
     function switchTab(tab) {
-      activeTab = tab;
-      document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+      const normalized = tab === 'Settings' ? 'Settings' : 'Devices';
+      activeTab = normalized;
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === normalized));
       if (els.appMain) {
-        els.appMain.classList.toggle('wide-devices', tab === 'Devices');
+        els.appMain.classList.toggle('wide-devices', normalized === 'Devices');
       }
       hideAllSections();
-      if (tab === 'Home') els.tabHome.classList.remove('hidden');
-      if (tab === 'Devices') {
+      els.bottomNav.classList.remove('hidden');
+      if (normalized === 'Devices') {
         els.tabDevices.classList.remove('hidden');
-        fetchAuthorizedDevicesLocations(false);
+        const nowMs = Date.now();
+        const shouldReqHost = (nowMs - lastAutoHostRefreshReqMs) >= 30000;
+        if (shouldReqHost) lastAutoHostRefreshReqMs = nowMs;
+        fetchAuthorizedDevicesLocations({ requestHostRefresh: shouldReqHost });
       }
-      if (tab === 'Activity') els.tabActivity.classList.remove('hidden');
-      if (tab === 'Settings') els.tabSettings.classList.remove('hidden');
+      if (normalized === 'Settings') {
+        els.tabSettings.classList.remove('hidden');
+      }
       renderConnectedUi();
     }
 
     function enterConnectedShell() {
-      els.bottomNav.classList.remove('hidden');
-      if (selectedIncidentId) {
-        switchTab('Activity');
-        fetchSingleIncidentIfMissing(selectedIncidentId);
+      const r = evaluateReadiness();
+      if (r.notificationsEnabled) {
+        state.setupCompletedOnce = true;
+        saveState();
+      }
+      probePhoneLocationPermissionAndAutoResume();
+      if (isInInitialOnboarding(r)) {
+        els.bottomNav.classList.add('hidden');
+        if (els.appMain) els.appMain.classList.remove('wide-devices');
+        hideAllSections();
+        els.stepSetupChecklist.classList.remove('hidden');
+        renderConnectedUi();
       } else {
-        switchTab(activeTab);
+        els.bottomNav.classList.remove('hidden');
+        if (focusedIncidentId) {
+          openIncidentOnDevices(focusedIncidentId);
+        } else {
+          switchTab(activeTab);
+        }
       }
       scheduleNextPoll(0);
     }
@@ -2388,16 +3215,14 @@ self.addEventListener('notificationclick', (event) => {
       return 'Protection off';
     }
 
-    function hideAllHomeActions() {
+    function hideAllSetupActions() {
       [
         els.nextStepBox,
         els.copyHandoffBtn,
         els.enableNotifBtn,
-        els.sendTestAlertBtn,
-        els.sendDelayedTestAlertBtn,
         els.openHttpsLinkBtn,
         els.recheckSetupBtn
-      ].forEach(el => el.classList.add('hidden'));
+      ].forEach(el => { if (el) el.classList.add('hidden'); });
     }
 
     function renderChecklistItem(status, title, detail) {
@@ -2418,55 +3243,38 @@ self.addEventListener('notificationclick', (event) => {
       const lastRelayConn = state.lastConnectedAtIso;
 
       if (connState === 'connecting') {
-        els.homeConnBadge.textContent = 'Connecting…';
-        els.homeConnBadge.className = 'pill pill-warn';
         els.headerBadge.textContent = 'Connecting…';
         els.headerBadge.className = 'pill pill-warn';
-        els.statusDot.style.background = '#E58E26';
-        els.homeHostPresenceText.textContent = lastRelayConn
-          ? ('Reconnecting to WATSafe · Last connected ' + formatTime(lastRelayConn))
-          : 'Connecting to WATSafe…';
+        els.headerBadge.classList.remove('hidden');
+        els.statusDot.style.background = 'var(--warning)';
         els.connectionStatusBanner.classList.add('hidden');
       } else if (connState === 'service_unavailable') {
-        els.homeConnBadge.textContent = 'Service temporarily unavailable';
-        els.homeConnBadge.className = 'pill pill-warn';
         els.headerBadge.textContent = 'Service temporarily unavailable';
         els.headerBadge.className = 'pill pill-warn';
-        els.statusDot.style.background = '#E58E26';
-        els.homeHostPresenceText.textContent =
-          'Last connected ' + formatTime(lastRelayConn) + ' · Pairing saved on this phone';
+        els.headerBadge.classList.remove('hidden');
+        els.statusDot.style.background = 'var(--warning)';
         els.connectionStatusTitle.textContent = 'Service temporarily unavailable';
         els.connectionStatusDetail.textContent =
           'Last connected: ' +
           formatTime(lastRelayConn) +
-          '. Your pairing and notification setup remain saved — WATSafe is retrying automatically in the background.';
+          '. Pairing and alerts remain saved — retrying automatically.';
         els.connectionStatusBanner.classList.remove('hidden');
       } else if (connState === 'laptop_offline') {
-        els.homeConnBadge.textContent = 'Laptop offline';
-        els.homeConnBadge.className = 'pill pill-warn';
         els.headerBadge.textContent = 'Laptop offline';
         els.headerBadge.className = 'pill pill-warn';
-        els.statusDot.style.background = '#E58E26';
-        els.homeHostPresenceText.textContent =
-          'Laptop offline · Last seen ' + formatTime(lastSeenHost);
+        els.headerBadge.classList.remove('hidden');
+        els.statusDot.style.background = 'var(--warning)';
         els.connectionStatusTitle.textContent = 'Laptop offline';
         els.connectionStatusDetail.textContent =
           (state.hostDisplayName || 'Your laptop') +
-          ' is currently closed or offline (last seen ' +
+          ' is closed or offline (last seen ' +
           formatTime(lastSeenHost) +
-          '). Your pairing and lock-screen notifications stay active — WATSafe reconnects automatically when your laptop opens.';
+          '). Reconnects automatically when opened.';
         els.connectionStatusBanner.classList.remove('hidden');
       } else {
-        els.homeConnBadge.textContent = 'Connected';
-        els.homeConnBadge.className = 'pill pill-ok';
-        els.headerBadge.textContent = r.notificationsEnabled ? 'Notifications enabled' : 'Connected';
-        els.headerBadge.className = r.notificationsEnabled ? 'pill pill-ok' : 'pill pill-warn';
-        els.statusDot.style.background = r.notificationsEnabled ? '#2E9B68' : '#E58E26';
-        els.homeHostPresenceText.textContent =
-          'Laptop online (' +
-          formatProtectionLabel(state.hostProtectionState) +
-          ') · Last seen ' +
-          formatTime(lastSeenHost || lastRelayConn);
+        // Connected & healthy: keep header clean without repeated status badges
+        els.headerBadge.classList.add('hidden');
+        els.statusDot.style.background = r.notificationsEnabled ? 'var(--emerald)' : 'var(--warning)';
         els.connectionStatusBanner.classList.add('hidden');
       }
     }
@@ -2474,95 +3282,128 @@ self.addEventListener('notificationclick', (event) => {
     function renderConnectedUi() {
       if (!state.companionToken) return;
       const r = evaluateReadiness();
-      els.homeHostTitle.textContent = state.hostDisplayName || 'Protected Laptop';
-      hideAllHomeActions();
-      renderConnectionStateUi(r);
-
-      if (r.notificationsEnabled) {
-        els.homeNotifBadge.textContent = 'Notifications enabled';
-        els.homeNotifBadge.className = 'pill pill-ok';
-        els.homeNotifStatusText.textContent =
-          'Lock-screen and background Web Push alerts are active for ' + (state.hostDisplayName || 'your laptop') + '.';
-        els.sendTestAlertBtn.classList.remove('hidden');
-        els.sendDelayedTestAlertBtn.classList.remove('hidden');
+      if (r.notificationsEnabled && !state.setupCompletedOnce) {
+        state.setupCompletedOnce = true;
+        saveState();
+      }
+      const inOnboarding = isInInitialOnboarding(r);
+      if (inOnboarding) {
+        els.bottomNav.classList.add('hidden');
+        if (els.appMain) els.appMain.classList.remove('wide-devices');
+        hideAllSections();
+        els.stepSetupChecklist.classList.remove('hidden');
       } else {
-        els.homeNotifBadge.textContent = 'Notifications not ready';
-        els.homeNotifBadge.className = 'pill pill-warn';
-
-        if (!r.httpsReady) {
-          els.homeNotifStatusText.textContent =
-            'Paired with ' + (state.hostDisplayName || 'your laptop') + ', but lock-screen notifications require an HTTPS connection.';
-          els.nextStepBox.innerHTML =
-            '<strong>Step 1: Switch from plain HTTP to HTTPS</strong>' +
-            '<p style="margin:8px 0 0 0;font-size:13.5px;">This page was opened at <code>' + escapeHtml(window.location.origin) + '</code>. iOS and Android block push notifications on unencrypted LAN addresses. Open your permanent HTTPS companion URL and scan the HTTPS QR code.</p>';
-          els.nextStepBox.classList.remove('hidden');
-          if (state.httpsPublicOrigin && state.httpsPublicOrigin.indexOf('https://') === 0) {
-            els.openHttpsLinkBtn.href = state.httpsPublicOrigin + '/companion';
-            els.openHttpsLinkBtn.classList.remove('hidden');
-          }
-          els.recheckSetupBtn.classList.remove('hidden');
-        } else if (!r.homeScreenInstalled) {
-          els.homeNotifStatusText.textContent =
-            'Paired with ' + (state.hostDisplayName || 'your laptop') + '. Add WATSafe to your iPhone Home Screen once to enable lock-screen notifications.';
-          const codeDisplay = state.handoffCode
-            ? '<div class="transfer-code" id="handoffCodeDisplay">' + escapeHtml(state.handoffCode) + '</div>'
-            : '<div style="font-size:13px;color:var(--muted);margin:8px 0;">Generating one-time setup code…</div>';
-          els.nextStepBox.innerHTML =
-            '<strong>Next step on iPhone: Add to Home Screen</strong>' +
-            codeDisplay +
-            '<ol>' +
-            '<li>Tap <strong>Copy Home Screen setup code</strong> below.</li>' +
-            '<li>Tap Safari’s <strong>Share</strong> button (square with upward arrow) and choose <strong>Add to Home Screen → Add</strong>.</li>' +
-            '<li>Open the new <strong>WATSafe</strong> icon from your Home Screen and paste this code to enable notifications.</li>' +
-            '</ol>';
-          els.nextStepBox.classList.remove('hidden');
-          els.copyHandoffBtn.classList.remove('hidden');
-          if (!state.handoffCode) {
-            ensureIosHandoffCode();
-          }
-        } else if (r.notificationPermission === 'denied') {
-          els.homeNotifStatusText.textContent =
-            'Notification permission is currently turned off for WATSafe on this phone.';
-          const steps = r.isIos
-            ? '<ol><li>Open iPhone <strong>Settings → Notifications → WATSafe</strong>.</li><li>Turn on <strong>Allow Notifications</strong> (enable Lock Screen &amp; Banners).</li><li>Return to WATSafe and tap <strong>Re-check notification setup</strong>.</li></ol>'
-            : '<ol><li>Tap the site settings / lock icon in your browser bar.</li><li>Set <strong>Notifications</strong> to <strong>Allow</strong>.</li><li>Tap <strong>Re-check notification setup</strong> below.</li></ol>';
-          els.nextStepBox.innerHTML =
-            '<strong>Allow notifications in phone settings</strong>' + steps;
-          els.nextStepBox.classList.remove('hidden');
-          els.recheckSetupBtn.classList.remove('hidden');
-        } else if (r.notificationPermission === 'default') {
-          els.homeNotifStatusText.textContent =
-            'Almost done! Tap Enable notifications below so ' + (state.hostDisplayName || 'your laptop') + ' can alert your lock screen.';
-          els.nextStepBox.innerHTML =
-            '<strong>Next step: Enable notifications</strong>' +
-            '<p style="margin:6px 0 0 0;font-size:13.5px;">Tap the button below and choose <strong>Allow</strong> when your phone asks for permission.</p>';
-          els.nextStepBox.classList.remove('hidden');
-          els.enableNotifBtn.textContent = 'Enable notifications';
-          els.enableNotifBtn.classList.remove('hidden');
-        } else if (r.needsPushRenewal || !r.pushSubscribed || !r.backendPushRegistered) {
-          if (r.needsPushRenewal || state.lastPushErrorCode) {
-            els.homeNotifStatusText.textContent =
-              'Your phone pairing is active, but lock-screen push delivery needs a one-tap refresh.';
-            els.nextStepBox.innerHTML =
-              '<strong>Refresh push notifications</strong>' +
-              '<p style="margin:6px 0 0 0;font-size:13.5px;">Tap <strong>Repair notifications</strong> once below to renew your push subscription. You do not need to reinstall WATSafe or scan a new QR code.</p>';
-            els.nextStepBox.classList.remove('hidden');
-            els.enableNotifBtn.textContent = 'Repair notifications';
-            els.enableNotifBtn.classList.remove('hidden');
-          } else {
-            els.homeNotifStatusText.textContent =
-              'Notification permission is granted — tap below to finish registering push delivery with WATSafe.';
-            els.enableNotifBtn.textContent = 'Complete push registration';
-            els.enableNotifBtn.classList.remove('hidden');
-          }
-        } else {
-          els.homeNotifStatusText.textContent =
-            'Make sure your phone is running iOS 16.4+ or a modern Android browser to enable Web Push.';
-          els.recheckSetupBtn.classList.remove('hidden');
-        }
+        els.stepSetupChecklist.classList.add('hidden');
+        els.bottomNav.classList.remove('hidden');
+        const normalized = activeTab === 'Settings' ? 'Settings' : 'Devices';
+        activeTab = normalized;
+        document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === normalized));
+        if (els.appMain) els.appMain.classList.toggle('wide-devices', normalized === 'Devices');
+        els.tabDevices.classList.toggle('hidden', normalized !== 'Devices');
+        els.tabSettings.classList.toggle('hidden', normalized !== 'Settings');
       }
 
-      // Render all 5 separate readiness checks clearly
+      els.homeHostTitle.textContent = state.hostDisplayName || 'Protected Laptop';
+      hideAllSetupActions();
+      renderConnectionStateUi(r);
+
+      let recoveryText = '';
+      let recoveryBtnLabel = 'Repair';
+      let compactDeliverySummary = 'Active for lock screen & background';
+
+      if (r.notificationsEnabled) {
+        els.homeNotifStatusText.textContent =
+          'Alerts are active for ' + (state.hostDisplayName || 'your laptop') + '.';
+      } else if (!r.httpsReady) {
+        compactDeliverySummary = 'Requires HTTPS connection';
+        recoveryText = 'Notifications require opening WATSafe over HTTPS.';
+        recoveryBtnLabel = (state.httpsPublicOrigin && state.httpsPublicOrigin.indexOf('https://') === 0) ? 'Open HTTPS' : 'Details';
+        els.homeNotifStatusText.textContent =
+          'Paired with ' + (state.hostDisplayName || 'your laptop') + ', but lock-screen notifications require an HTTPS connection.';
+        els.nextStepBox.innerHTML =
+          '<strong>Step 1: Switch from plain HTTP to HTTPS</strong>' +
+          '<p style="margin:8px 0 0 0;font-size:13.5px;">This page was opened at <code>' + escapeHtml(window.location.origin) + '</code>. Open your permanent HTTPS companion URL to enable push alerts.</p>';
+        els.nextStepBox.classList.remove('hidden');
+        if (state.httpsPublicOrigin && state.httpsPublicOrigin.indexOf('https://') === 0) {
+          els.openHttpsLinkBtn.href = state.httpsPublicOrigin + '/companion';
+          els.openHttpsLinkBtn.classList.remove('hidden');
+        }
+        els.recheckSetupBtn.classList.remove('hidden');
+      } else if (!r.homeScreenInstalled) {
+        compactDeliverySummary = 'Add to Home Screen required';
+        recoveryText = 'Add WATSafe to your iPhone Home Screen to receive alerts.';
+        recoveryBtnLabel = 'Setup steps';
+        els.homeNotifStatusText.textContent =
+          'Paired with ' + (state.hostDisplayName || 'your laptop') + '. Add WATSafe to your iPhone Home Screen once to enable lock-screen notifications.';
+        const codeDisplay = state.handoffCode
+          ? '<div class="transfer-code" id="handoffCodeDisplay">' + escapeHtml(state.handoffCode) + '</div>'
+          : '<div style="font-size:13px;color:var(--muted);margin:8px 0;">Generating one-time setup code…</div>';
+        els.nextStepBox.innerHTML =
+          '<strong>Next step on iPhone: Add to Home Screen</strong>' +
+          codeDisplay +
+          '<ol>' +
+          '<li>Tap <strong>Copy Home Screen setup code</strong> below.</li>' +
+          '<li>Tap Safari’s <strong>Share</strong> button and choose <strong>Add to Home Screen → Add</strong>.</li>' +
+          '<li>Open the <strong>WATSafe</strong> Home Screen icon and paste this code.</li>' +
+          '</ol>';
+        els.nextStepBox.classList.remove('hidden');
+        els.copyHandoffBtn.classList.remove('hidden');
+        if (!state.handoffCode) {
+          ensureIosHandoffCode();
+        }
+      } else if (r.notificationPermission === 'denied') {
+        compactDeliverySummary = 'Blocked in phone settings';
+        recoveryText = 'Notifications are turned off in phone settings.';
+        recoveryBtnLabel = 'How to allow';
+        els.homeNotifStatusText.textContent =
+          'Notification permission is turned off for WATSafe on this phone.';
+        const steps = r.isIos
+          ? '<ol><li>Open iPhone <strong>Settings → Notifications → WATSafe</strong>.</li><li>Turn on <strong>Allow Notifications</strong>.</li><li>Return here and tap <strong>Re-check notification setup</strong>.</li></ol>'
+          : '<ol><li>Open browser site settings.</li><li>Set <strong>Notifications</strong> to <strong>Allow</strong>.</li><li>Tap <strong>Re-check notification setup</strong>.</li></ol>';
+        els.nextStepBox.innerHTML = '<strong>Allow notifications in phone settings</strong>' + steps;
+        els.nextStepBox.classList.remove('hidden');
+        els.recheckSetupBtn.classList.remove('hidden');
+      } else if (r.notificationPermission === 'default') {
+        compactDeliverySummary = 'Permission needed';
+        recoveryText = 'Enable notifications to receive lock-screen alerts.';
+        recoveryBtnLabel = 'Enable';
+        els.homeNotifStatusText.textContent =
+          'Almost done! Tap Enable notifications below so ' + (state.hostDisplayName || 'your laptop') + ' can alert your lock screen.';
+        els.nextStepBox.innerHTML =
+          '<strong>Next step: Enable notifications</strong>' +
+          '<p style="margin:6px 0 0 0;font-size:13.5px;">Tap the button below and choose <strong>Allow</strong>.</p>';
+        els.nextStepBox.classList.remove('hidden');
+        els.enableNotifBtn.textContent = 'Enable notifications';
+        els.enableNotifBtn.classList.remove('hidden');
+      } else if (r.needsPushRenewal || !r.pushSubscribed || !r.backendPushRegistered) {
+        compactDeliverySummary = 'Needs one-tap refresh';
+        recoveryText = 'Push delivery needs a quick refresh.';
+        recoveryBtnLabel = 'Repair';
+        if (r.needsPushRenewal || state.lastPushErrorCode) {
+          els.homeNotifStatusText.textContent =
+            'Pairing is active, but push delivery needs a one-tap refresh.';
+          els.nextStepBox.innerHTML =
+            '<strong>Refresh push notifications</strong>' +
+            '<p style="margin:6px 0 0 0;font-size:13.5px;">Tap <strong>Repair notifications</strong> below to renew push delivery without re-pairing.</p>';
+          els.nextStepBox.classList.remove('hidden');
+          els.enableNotifBtn.textContent = 'Repair notifications';
+          els.enableNotifBtn.classList.remove('hidden');
+        } else {
+          els.homeNotifStatusText.textContent =
+            'Tap below to finish registering push delivery with WATSafe.';
+          els.enableNotifBtn.textContent = 'Complete push registration';
+          els.enableNotifBtn.classList.remove('hidden');
+        }
+      } else {
+        compactDeliverySummary = 'Requires iOS 16.4+ or modern Android';
+        recoveryText = 'Update iOS or open from Home Screen to enable Web Push.';
+        recoveryBtnLabel = 'Details';
+        els.homeNotifStatusText.textContent =
+          'Make sure your phone is running iOS 16.4+ or a modern Android browser to enable Web Push.';
+        els.recheckSetupBtn.classList.remove('hidden');
+      }
+
+      // Render all 5 separate readiness checks (shown in initial setup AND under Settings -> Connection -> Setup & troubleshooting)
       const c1 = r.httpsReady ? 'ok' : 'blocked';
       const c2 = !r.httpsReady ? 'pending' : (r.homeScreenInstalled ? 'ok' : 'next');
       const c3 = (!r.httpsReady || !r.homeScreenInstalled)
@@ -2571,7 +3412,7 @@ self.addEventListener('notificationclick', (event) => {
       const c4 = c3 !== 'ok' ? 'pending' : (r.pushSubscribed ? 'ok' : 'next');
       const c5 = c4 !== 'ok' ? 'pending' : (r.backendPushRegistered ? 'ok' : 'next');
 
-      els.readinessChecklist.innerHTML =
+      const checklistHtml =
         renderChecklistItem(
           c1,
           '1. Secure HTTPS connection',
@@ -2591,7 +3432,7 @@ self.addEventListener('notificationclick', (event) => {
           '3. Notification permission',
           r.notificationPermission === 'granted'
             ? 'Allowed'
-            : (r.notificationPermission === 'denied' ? 'Blocked in phone settings' : (c3 === 'next' ? 'Tap Enable notifications above' : 'Waiting for previous step'))
+            : (r.notificationPermission === 'denied' ? 'Blocked in phone settings' : (c3 === 'next' ? 'Tap Enable notifications' : 'Waiting for previous step'))
         ) +
         renderChecklistItem(
           c4,
@@ -2604,18 +3445,73 @@ self.addEventListener('notificationclick', (event) => {
           r.backendPushRegistered ? 'Registered for ' + (state.hostDisplayName || 'paired laptop') : 'Pending subscription registration'
         );
 
-      els.settingsDeliverySummary.textContent = els.homeNotifStatusText.textContent;
-      els.settingsAddressSummary.textContent =
-        'Companion origin: ' +
-        window.location.origin +
-        (isEphemeralTunnelHost()
-          ? ' (temporary tunnel — migrate once to a permanent HTTPS address so restarts never break this Home Screen icon)'
-          : ' (permanent address)') +
-        ' · Last connected: ' +
-        formatTime(state.lastConnectedAtIso);
+      if (els.readinessChecklist) els.readinessChecklist.innerHTML = checklistHtml;
+      if (els.settingsChecklistContainer) els.settingsChecklistContainer.innerHTML = checklistHtml;
+
+      // Compact recovery banner on Devices when a requirement later fails
+      if (els.compactRecoveryBanner) {
+        if (!inOnboarding && swInspectionComplete && !r.notificationsEnabled && recoveryText) {
+          els.compactRecoveryText.textContent = recoveryText;
+          els.compactRecoveryBtn.textContent = recoveryBtnLabel;
+          els.compactRecoveryBanner.classList.remove('hidden');
+        } else {
+          els.compactRecoveryBanner.classList.add('hidden');
+        }
+      }
+
+      // First-use phone location setup prompt (shown once when undecided, never nags after skip/denial/explicit disable)
+      if (els.locationOnboardingCard) {
+        const showLocationPrompt = !inOnboarding &&
+          isHttpsReady() &&
+          typeof navigator !== 'undefined' &&
+          Boolean(navigator.geolocation) &&
+          !state.phoneLocationSharingEnabled &&
+          !state.phoneLocationExplicitlyDisabled &&
+          !state.phoneLocationSetupHandled &&
+          state.phoneLocationPermission !== 'denied';
+        els.locationOnboardingCard.classList.toggle('hidden', !showLocationPrompt);
+      }
+
+      // Compact Settings -> Connection rows
+      const lastSeenHost = state.hostLastSeenAtUtc || state.hostDisconnectedAtUtc || state.lastConnectedAtIso;
+      if (els.settingsPairedHostTitle) {
+        els.settingsPairedHostTitle.textContent = state.hostDisplayName || 'My Laptop';
+      }
+      if (els.settingsPairedHostSub) {
+        els.settingsPairedHostSub.textContent = state.hostOnline === false
+          ? ('Offline · Last seen ' + formatRelativeAge(lastSeenHost, true).replace(/^Last known · /, ''))
+          : (formatProtectionLabel(state.hostProtectionState) + ' · Connected');
+      }
+      if (els.settingsHostOnlinePill) {
+        els.settingsHostOnlinePill.textContent = state.hostOnline === false ? 'Offline' : 'Online';
+        els.settingsHostOnlinePill.className = 'pill ' + (state.hostOnline === false ? 'pill-warn' : 'pill-ok');
+      }
+      if (els.settingsDeliverySummary) {
+        els.settingsDeliverySummary.textContent = compactDeliverySummary;
+      }
+      if (els.settingsNotifPill && els.settingsRepairNotifBtn) {
+        if (r.notificationsEnabled || !swInspectionComplete) {
+          els.settingsNotifPill.textContent = r.notificationsEnabled ? 'On' : 'Checking';
+          els.settingsNotifPill.className = 'pill ' + (r.notificationsEnabled ? 'pill-ok' : 'pill-neutral');
+          els.settingsNotifPill.classList.remove('hidden');
+          els.settingsRepairNotifBtn.classList.add('hidden');
+        } else {
+          els.settingsNotifPill.classList.add('hidden');
+          els.settingsRepairNotifBtn.textContent = recoveryBtnLabel;
+          els.settingsRepairNotifBtn.classList.remove('hidden');
+        }
+      }
+      if (els.settingsAddressSummary) {
+        els.settingsAddressSummary.textContent =
+          'Origin: ' +
+          window.location.origin +
+          (isEphemeralTunnelHost() ? ' (temporary tunnel)' : ' (permanent)') +
+          ' · Last sync ' +
+          formatTime(state.lastConnectedAtIso);
+      }
+      renderAppearanceSettingsUi();
       renderPhoneLocationSettingsCard();
       renderDevicesTab();
-      renderActivityEvents();
     }
 
     function isValidCoord(loc) {
@@ -2656,7 +3552,7 @@ self.addEventListener('notificationclick', (event) => {
       if (isNaN(ts)) return isLastKnown ? 'Last known recently' : 'Updated recently';
       const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
       const prefix = isLastKnown ? 'Last known · ' : 'Updated ';
-      if (sec < 60) return isLastKnown ? 'Last known · just now' : 'Just now';
+      if (sec < 60) return isLastKnown ? 'Last known · just now' : 'Updated just now';
       const min = Math.max(1, Math.floor(sec / 60));
       if (min === 1) return prefix + '1 minute ago';
       if (min < 60) return prefix + min + ' minutes ago';
@@ -2683,6 +3579,9 @@ self.addEventListener('notificationclick', (event) => {
       }
       if (rawTracking === 'live') {
         return { label: 'Live', cls: 'pill-ok' };
+      }
+      if (rawTracking === 'recent') {
+        return null;
       }
       if (rawTracking === 'reconnecting') {
         return { label: 'Reconnecting', cls: 'pill-warn' };
@@ -2760,9 +3659,26 @@ self.addEventListener('notificationclick', (event) => {
           keepalive: Boolean(keepalive)
         });
         if (isAuthenticWatSafeHeader(res) && res.ok) {
-          fetchAuthorizedDevicesLocations(false);
+          fetchAuthorizedDevicesLocations({ requestHostRefresh: false });
         }
       } catch (_) {}
+    }
+
+    function isFreshLivePhoneCoord(loc) {
+      if (!isValidCoord(loc) || Boolean(loc.isLastKnown)) return false;
+      if (document.visibilityState !== 'visible') return false;
+      const ts = Date.parse(loc.capturedAtUtc || loc.capturedAt || '');
+      if (isNaN(ts)) return false;
+      return (Date.now() - ts) <= 90000;
+    }
+
+    function pickNewerCoord(a, b) {
+      if (!isValidCoord(a)) return isValidCoord(b) ? b : null;
+      if (!isValidCoord(b)) return a;
+      const ta = Date.parse(a.capturedAtUtc || a.capturedAt || '');
+      const tb = Date.parse(b.capturedAtUtc || b.capturedAt || '');
+      if (!isNaN(ta) && !isNaN(tb)) return tb >= ta ? b : a;
+      return b;
     }
 
     function handlePhoneGeoPosition(pos, forceUpload) {
@@ -2786,10 +3702,13 @@ self.addEventListener('notificationclick', (event) => {
       state.phoneLatestLocation = candidate;
       state.phoneLocationPermission = 'granted';
       saveState();
-      if (forceUpload || nowMs - lastPhoneGeoUploadMs >= 12000 && (movedMeters >= 12 || accImproved || !prev)) {
+      if (forceUpload ||
+          (nowMs - lastPhoneGeoUploadMs >= 12000 && (movedMeters >= 12 || accImproved || !prev)) ||
+          (nowMs - lastPhoneGeoUploadMs >= 60000)) {
         lastPhoneGeoUploadMs = nowMs;
         uploadCompanionPhoneLocationSnapshot(candidate, 'attached', false);
       } else {
+        renderPhoneLocationSettingsCard();
         renderDevicesTab();
       }
     }
@@ -2818,6 +3737,34 @@ self.addEventListener('notificationclick', (event) => {
       } catch (_) {}
     }
 
+    async function probePhoneLocationPermissionAndAutoResume() {
+      if (!isHttpsReady() || typeof navigator === 'undefined' || !navigator.geolocation) return;
+      if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+        try {
+          const permStatus = await navigator.permissions.query({ name: 'geolocation' });
+          if (permStatus && permStatus.state === 'granted') {
+            state.phoneLocationPermission = 'granted';
+            if (!state.phoneLocationExplicitlyDisabled) {
+              state.phoneLocationSharingEnabled = true;
+              state.phoneLocationSetupHandled = true;
+              saveState();
+              enableCompanionPhoneLocationSharing(false);
+              return;
+            }
+          } else if (permStatus && permStatus.state === 'denied') {
+            state.phoneLocationPermission = 'denied';
+            state.phoneLocationSharingEnabled = false;
+            saveState();
+            renderConnectedUi();
+            return;
+          }
+        } catch (_) {}
+      }
+      if (state.phoneLocationSharingEnabled && state.phoneLocationPermission === 'granted' && !state.phoneLocationExplicitlyDisabled) {
+        startForegroundPhoneLocationWatch();
+      }
+    }
+
     function enableCompanionPhoneLocationSharing(showFeedback) {
       if (!isHttpsReady() || typeof navigator === 'undefined' || !navigator.geolocation) {
         state.phoneLocationPermission = 'unsupported';
@@ -2828,6 +3775,8 @@ self.addEventListener('notificationclick', (event) => {
         return;
       }
       state.phoneLocationSharingEnabled = true;
+      state.phoneLocationExplicitlyDisabled = false;
+      state.phoneLocationSetupHandled = true;
       saveState();
       renderPhoneLocationSettingsCard();
       renderDevicesTab();
@@ -2838,7 +3787,7 @@ self.addEventListener('notificationclick', (event) => {
           startForegroundPhoneLocationWatch();
           renderPhoneLocationSettingsCard();
           if (showFeedback) {
-            showInfo('Sharing this phone’s foreground location while WATSafe is open.');
+            showInfo('Sharing phone location while WATSafe is open.');
           }
         },
         err => {
@@ -2848,9 +3797,9 @@ self.addEventListener('notificationclick', (event) => {
             state.phoneLocationSharingEnabled = false;
             saveState();
             uploadCompanionPhoneLocationSnapshot(null, 'permissionDenied', false);
-            showError('Location permission is turned off for WATSafe. Allow Location in iOS Settings → Safari / Location Services, then try again.');
+            showError('Location permission is turned off. Allow Location in iOS Settings → Safari Websites, then try again.');
           } else {
-            showError('Could not determine this phone’s current position right now. Try again with a clear Wi-Fi or GPS signal.');
+            showError('Could not determine this phone’s position right now.');
           }
           renderPhoneLocationSettingsCard();
           renderDevicesTab();
@@ -2862,6 +3811,7 @@ self.addEventListener('notificationclick', (event) => {
     async function disableCompanionPhoneLocationSharing(showFeedback) {
       stopForegroundPhoneLocationWatch();
       state.phoneLocationSharingEnabled = false;
+      state.phoneLocationExplicitlyDisabled = true;
       state.phoneLatestLocation = null;
       saveState();
       if (state.companionToken) {
@@ -2870,36 +3820,34 @@ self.addEventListener('notificationclick', (event) => {
             method: 'DELETE',
             headers: { 'Authorization': 'Bearer ' + state.companionToken }
           });
-          await fetchAuthorizedDevicesLocations(false);
+          await fetchAuthorizedDevicesLocations({ requestHostRefresh: false });
         } catch (_) {}
       }
       renderPhoneLocationSettingsCard();
       renderDevicesTab();
       if (showFeedback) {
-        showInfo('Stopped sharing this phone’s location.');
+        showInfo('Stopped sharing phone location.');
       }
     }
 
     function renderPhoneLocationSettingsCard() {
       if (!els.settingsPhoneLocationStatus || !els.togglePhoneLocationBtn) return;
-      if (state.phoneLocationSharingEnabled) {
-        const age = isValidCoord(state.phoneLatestLocation)
-          ? (' · ' + formatRelativeAge(state.phoneLatestLocation.capturedAtUtc, false))
-          : ' · Waiting for GPS fix…';
-        els.settingsPhoneLocationStatus.textContent =
-          'On while WATSafe is open' + age;
-        els.togglePhoneLocationBtn.textContent = 'Stop sharing this phone’s location';
-        els.togglePhoneLocationBtn.className = 'btn btn-danger';
+      const isOn = Boolean(state.phoneLocationSharingEnabled);
+      els.togglePhoneLocationBtn.setAttribute('aria-checked', isOn ? 'true' : 'false');
+      if (els.settingsLocationDeniedHint) {
+        els.settingsLocationDeniedHint.classList.toggle('hidden', state.phoneLocationPermission !== 'denied');
+      }
+      if (isOn) {
+        const hasCoord = isValidCoord(state.phoneLatestLocation);
+        const isLastKnown = hasCoord ? !isFreshLivePhoneCoord(state.phoneLatestLocation) : false;
+        const age = hasCoord
+          ? (' · ' + formatRelativeAge(state.phoneLatestLocation.capturedAtUtc, isLastKnown))
+          : ' · Locating…';
+        els.settingsPhoneLocationStatus.textContent = 'While app is open' + age;
       } else if (state.phoneLocationPermission === 'denied') {
-        els.settingsPhoneLocationStatus.textContent =
-          'Blocked — Location permission is turned off in browser or iOS Settings.';
-        els.togglePhoneLocationBtn.textContent = 'Retry sharing phone location';
-        els.togglePhoneLocationBtn.className = 'btn btn-secondary';
+        els.settingsPhoneLocationStatus.textContent = 'Permission turned off';
       } else {
-        els.settingsPhoneLocationStatus.textContent =
-          'Off — this phone’s position is not shared on the Devices map.';
-        els.togglePhoneLocationBtn.textContent = 'Share this phone’s location';
-        els.togglePhoneLocationBtn.className = 'btn btn-primary';
+        els.settingsPhoneLocationStatus.textContent = 'While app is open';
       }
     }
 
@@ -2926,13 +3874,17 @@ self.addEventListener('notificationclick', (event) => {
       return '<svg width="' + px + '" height="' + px + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2.5"></rect><path d="M11 18h2"></path></svg>';
     }
 
-    function computeMarkerPixelOffsets(markers) {
+    function computeMarkerPixelOffsets(markers, currentZoom) {
+      const z = isFinite(currentZoom) ? Number(currentZoom) : 15.6;
       const offsets = markers.map(() => ({ x: 0, y: 0, coLocated: false }));
       for (let i = 0; i < markers.length; i++) {
         if (offsets[i].assigned) continue;
+        const refLat = Number(markers[i].location.latitude) || 43.47;
+        const mpp = Math.max(0.05, (156543.03 * Math.cos(refLat * Math.PI / 180)) / Math.pow(2, z));
         const group = [i];
         for (let j = i + 1; j < markers.length; j++) {
-          if (haversineMeters(markers[i].location, markers[j].location) < 28) {
+          const distM = haversineMeters(markers[i].location, markers[j].location);
+          if (distM < 28 || (distM / mpp) < 44) {
             group.push(j);
           }
         }
@@ -2990,11 +3942,15 @@ self.addEventListener('notificationclick', (event) => {
         '<button type="button" class="map-ctrl-btn" data-act="in" title="Zoom in">+</button>' +
         '<button type="button" class="map-ctrl-btn" data-act="out" title="Zoom out">−</button>' +
         '</div>' +
-        '<div class="map-attrib">OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors</div>';
+        '<details class="map-fallback-attrib" style="position:absolute;right:8px;bottom:8px;z-index:4;background:rgba(255,255,255,0.88);color:#334155;border-radius:12px;padding:2px 7px;font-size:10px;border:1px solid rgba(15,23,42,0.12);">' +
+        '<summary style="cursor:pointer;list-style:none;font-weight:700;user-select:none;" aria-label="Map attribution">ⓘ</summary>' +
+        '<span style="margin-left:4px;">OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors</span>' +
+        '</details>';
 
       const canvas = stageEl.querySelector('.map-canvas');
       const vectorHost = stageEl.querySelector('.map-vector-host');
       const overlayTop = stageEl.querySelector('.map-overlay-top');
+      const fallbackAttrib = stageEl.querySelector('.map-fallback-attrib');
 
       const ctrl = {
         stageEl: stageEl,
@@ -3027,6 +3983,12 @@ self.addEventListener('notificationclick', (event) => {
             ctrl.lastLocatedSig = sig;
             fitViewportToMarkers(markers, nextOpts.primary);
           }
+          drawCanvasFallback();
+          if (ctrl.mlMap && ctrl.mlReady) {
+            syncMapLibreOverlays();
+          }
+        },
+        redrawTheme: () => {
           drawCanvasFallback();
           if (ctrl.mlMap && ctrl.mlReady) {
             syncMapLibreOverlays();
@@ -3109,7 +4071,7 @@ self.addEventListener('notificationclick', (event) => {
         const o = ctrl.opts;
         const rect = stageEl.getBoundingClientRect();
         const w = Math.max(240, rect.width || 340);
-        const h = Math.max(200, rect.height || 292);
+        const h = Math.max(200, rect.height || 360);
         const dpr = window.devicePixelRatio || 1;
         canvas.width = Math.round(w * dpr);
         canvas.height = Math.round(h * dpr);
@@ -3117,7 +4079,6 @@ self.addEventListener('notificationclick', (event) => {
         if (!ctx) return;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-        // Crisp light street-map fallback styling
         ctx.fillStyle = '#EEF2F6';
         ctx.fillRect(0, 0, w, h);
 
@@ -3127,7 +4088,6 @@ self.addEventListener('notificationclick', (event) => {
         const sx = -((cw.x % step) + step) % step;
         const sy = -((cw.y % step) + step) % step;
 
-        // Subtle park blocks for spatial orientation
         ctx.fillStyle = '#E2F1E8';
         ctx.fillRect(sx + step * 0.15, sy + step * 0.15, step * 1.7, step * 1.2);
         ctx.fillRect(w - step * 2.2, h - step * 1.8, step * 1.5, step * 1.1);
@@ -3168,7 +4128,7 @@ self.addEventListener('notificationclick', (event) => {
         }
 
         const markers = effectiveMarkers(o);
-        const offsets = computeMarkerPixelOffsets(markers);
+        const offsets = computeMarkerPixelOffsets(markers, zoom);
         const mpp = (156543.03 * Math.cos(centerLat * Math.PI / 180)) / Math.pow(2, zoom);
 
         markers.forEach((m, idx) => {
@@ -3191,9 +4151,10 @@ self.addEventListener('notificationclick', (event) => {
             ctx.fillStyle = '#334155';
             ctx.beginPath(); ctx.arc(base.x, base.y, 3, 0, Math.PI * 2); ctx.fill();
           }
-          const pinColor = m.isAlarming ? '#D6453A' : (m.role === 'protected_device' ? '#1E8254' : '#2563EB');
+          const activeSpec = getActiveThemeSpec();
+          const pinColor = m.isAlarming ? activeSpec.crimson : (m.role === 'protected_device' ? activeSpec.laptopMarker : activeSpec.phoneMarker);
           if (m.isSelected) {
-            ctx.fillStyle = 'rgba(229,142,38,0.38)';
+            ctx.fillStyle = activeSpec.accentHalo;
             ctx.beginPath(); ctx.arc(px, py, 19, 0, Math.PI * 2); ctx.fill();
           }
           ctx.fillStyle = '#FFFFFF';
@@ -3201,7 +4162,6 @@ self.addEventListener('notificationclick', (event) => {
           ctx.fillStyle = pinColor;
           ctx.beginPath(); ctx.arc(px, py, 12.5, 0, Math.PI * 2); ctx.fill();
 
-          // Distinct simplified laptop vs phone glyph inside fallback pin
           ctx.strokeStyle = '#FFFFFF';
           ctx.lineWidth = 1.8;
           if (m.role === 'protected_device') {
@@ -3273,14 +4233,18 @@ self.addEventListener('notificationclick', (event) => {
         }
 
         const markers = effectiveMarkers(o);
-        const offsets = computeMarkerPixelOffsets(markers);
+        const offsets = computeMarkerPixelOffsets(markers, ml.getZoom());
+        const activeSpec = getActiveThemeSpec();
         markers.forEach((m, idx) => {
           const off = offsets[idx];
-          const pinColor = m.isAlarming ? '#D6453A' : (m.role === 'protected_device' ? '#1E8254' : '#2563EB');
+          const pinColor = m.isAlarming ? activeSpec.crimson : (m.role === 'protected_device' ? activeSpec.laptopMarker : activeSpec.phoneMarker);
           const lblText = m.isCurrentRequester ? (m.displayName + ' · This phone') : m.displayName;
           const wrap = document.createElement('div');
           wrap.className = 'map-pin-wrap' + (m.isSelected ? ' selected' : '');
           wrap.setAttribute('data-device-id', m.deviceId);
+          wrap.setAttribute('role', 'button');
+          wrap.setAttribute('tabindex', '0');
+          wrap.setAttribute('aria-label', 'Select ' + lblText);
           const badgeHtml =
             '<div class="map-pin-badge" style="background:' + pinColor + ';">' +
             deviceSvgIcon(m.role, 16) +
@@ -3289,10 +4253,17 @@ self.addEventListener('notificationclick', (event) => {
             ? '<div class="map-pin-label" style="margin-top:0;margin-bottom:4px;">' + escapeHtml(lblText) + '</div>'
             : '<div class="map-pin-label">' + escapeHtml(lblText) + '</div>';
           wrap.innerHTML = off.labelAbove ? (labelHtml + badgeHtml) : (badgeHtml + labelHtml);
-          wrap.onclick = ev => {
+          const selectThisMarker = ev => {
             ev.stopPropagation();
             if (typeof o.onSelectDevice === 'function') {
               o.onSelectDevice(m.deviceId);
+            }
+          };
+          wrap.onclick = selectThisMarker;
+          wrap.onkeydown = ev => {
+            if (ev.key === 'Enter' || ev.key === ' ') {
+              ev.preventDefault();
+              selectThisMarker(ev);
             }
           };
           const marker = new window.maplibregl.Marker({
@@ -3314,7 +4285,7 @@ self.addEventListener('notificationclick', (event) => {
       let dragLast = null;
       let dragMoved = false;
       stageEl.onpointerdown = e => {
-        if (e.target && (e.target.closest('.map-ctrl-btn') || e.target.closest('.map-pin-wrap'))) return;
+        if (e.target && (e.target.closest('.map-ctrl-btn') || e.target.closest('.map-pin-wrap') || e.target.closest('.map-fallback-attrib'))) return;
         dragLast = { x: e.clientX, y: e.clientY };
         dragMoved = false;
       };
@@ -3368,13 +4339,27 @@ self.addEventListener('notificationclick', (event) => {
             zoom: zoom,
             attributionControl: false
           });
+          if (typeof window.maplibregl.AttributionControl === 'function') {
+            ml.addControl(
+              new window.maplibregl.AttributionControl({
+                compact: true,
+                customAttribution: 'OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors'
+              }),
+              'bottom-right'
+            );
+          }
           ctrl.mlMap = ml;
           ml.on('dragstart', () => { ctrl.userInteracted = true; });
           ml.on('zoomstart', e => {
             if (e && e.originalEvent) ctrl.userInteracted = true;
           });
+          ml.on('zoomend', () => {
+            zoom = ml.getZoom();
+            if (ctrl.mlReady) syncMapLibreOverlays();
+          });
           ml.on('load', () => {
             ctrl.mlReady = true;
+            if (fallbackAttrib) fallbackAttrib.classList.add('hidden');
             const curMarkers = effectiveMarkers(ctrl.opts);
             if (!ctrl.userInteracted && curMarkers.length >= 2) {
               fitViewportToMarkers(curMarkers, ctrl.opts.primary);
@@ -3385,6 +4370,7 @@ self.addEventListener('notificationclick', (event) => {
             if (!ctrl.mlReady) {
               try { ml.remove(); } catch (_) {}
               ctrl.mlMap = null;
+              if (fallbackAttrib) fallbackAttrib.classList.remove('hidden');
             }
           });
         } catch (_) {}
@@ -3394,10 +4380,14 @@ self.addEventListener('notificationclick', (event) => {
       return ctrl;
     }
 
-    async function fetchAuthorizedDevicesLocations(showFeedback) {
+    async function fetchAuthorizedDevicesLocations(optsOrBool) {
       if (!state.companionToken) return;
+      const opts = (optsOrBool && typeof optsOrBool === 'object')
+        ? optsOrBool
+        : { requestHostRefresh: Boolean(optsOrBool), manualTap: Boolean(optsOrBool) };
+      const url = '/v1/devices/locations' + (opts.requestHostRefresh ? '?requestRefresh=1' : '');
       try {
-        const res = await fetch('/v1/devices/locations', {
+        const res = await fetch(url, {
           headers: { 'Authorization': 'Bearer ' + state.companionToken },
           cache: 'no-store'
         });
@@ -3411,11 +4401,19 @@ self.addEventListener('notificationclick', (event) => {
             state.authorizedDevices = data.devices;
             saveState();
           }
-          if (showFeedback) showInfo('Device locations refreshed.');
+          if (data.hostLocationRefreshQueued) {
+            if (hostRefreshFollowupTimer) clearTimeout(hostRefreshFollowupTimer);
+            hostRefreshFollowupTimer = setTimeout(() => {
+              hostRefreshFollowupTimer = null;
+              fetchAuthorizedDevicesLocations({ requestHostRefresh: false });
+            }, 3200);
+          }
           renderDevicesTab();
         }
       } catch (_) {
-        if (showFeedback) showError('Service temporarily unavailable — showing last saved device info.');
+        if (opts.manualTap) {
+          showError('Service temporarily unavailable — showing last saved device info.');
+        }
       }
     }
 
@@ -3441,7 +4439,7 @@ self.addEventListener('notificationclick', (event) => {
             locationTrail: evWithLoc && Array.isArray(evWithLoc.locationTrail) ? evWithLoc.locationTrail : [],
             locationStatus: evWithLoc ? 'attached' : 'notRequested',
             statusExplanation: hostOnline
-              ? 'Arm protection or allow Location access on your laptop to report its position.'
+              ? 'Allow Location access on your laptop in WATSafe Settings to display its position.'
               : 'Laptop is currently offline or sleeping. New coordinates arrive when it reconnects.'
           },
           {
@@ -3457,18 +4455,20 @@ self.addEventListener('notificationclick', (event) => {
             trackingState: 'unavailable',
             latestLocation: null,
             locationStatus: 'notRequested',
-            statusExplanation: 'Location not shared. Tap "Share this phone’s location" to show this phone alongside your laptop while WATSafe is open.'
+            statusExplanation: 'Turn on Share phone location in Settings to show this phone while WATSafe is open.'
           }
         ];
       }
       if (state.phoneLocationSharingEnabled && isValidCoord(state.phoneLatestLocation)) {
         base = base.map(d => {
           if (d.isCurrentRequester || (state.deviceId && d.deviceId === state.deviceId)) {
+            const effectiveLoc = pickNewerCoord(d.latestLocation, state.phoneLatestLocation);
+            const isLive = isFreshLivePhoneCoord(effectiveLoc) && d.trackingState !== 'unavailable';
             return Object.assign({}, d, {
               isCurrentRequester: true,
               locationSharingEnabled: true,
-              latestLocation: isValidCoord(d.latestLocation) ? d.latestLocation : state.phoneLatestLocation,
-              trackingState: document.visibilityState === 'visible' ? 'live' : 'last_known',
+              latestLocation: effectiveLoc,
+              trackingState: isLive ? 'live' : 'last_known',
               locationStatus: 'attached'
             });
           }
@@ -3489,22 +4489,124 @@ self.addEventListener('notificationclick', (event) => {
 
     function eventKindMeta(ev) {
       if (ev && ev.isTest) return { label: 'Test alert', cls: 'pill-warn' };
+      const summary = String((ev && ev.triggerSummary) || '').toLowerCase();
       const kind = String((ev && ev.kind) || '').trim();
-      if (kind === 'protectionInterrupted') return { label: 'Protection interrupted', cls: 'pill-alert' };
-      if (kind === 'detectorFailureDuringMonitoring') return { label: 'Monitoring stopped', cls: 'pill-warn' };
+      if (summary.indexOf('camera') >= 0 &&
+          (summary.indexOf('blocked') >= 0 || summary.indexOf('covered') >= 0 || summary.indexOf('obstructed') >= 0)) {
+        return { label: 'Camera blocked', cls: 'pill-alert' };
+      }
+      if (kind === 'protectionInterrupted' || kind === 'detectorFailureDuringMonitoring') {
+        return { label: 'Protection interrupted', cls: 'pill-alert' };
+      }
       return { label: 'Alarm triggered', cls: 'pill-alert' };
+    }
+
+    function resolveActiveBannerIncident(devices) {
+      const dismissed = state.dismissedBannerIncidentIds || {};
+      if (focusedIncidentId && !dismissed[focusedIncidentId]) {
+        const found = state.events.find(e => e.incidentId === focusedIncidentId);
+        if (found) return found;
+        return { incidentId: focusedIncidentId, _loading: true };
+      }
+      const hostDev = (devices || []).find(d => d.role === 'protected_device');
+      const hostProt = String(state.hostProtectionState || '').toLowerCase();
+      const hostActive = Boolean(
+        (hostDev && (hostDev.isAlarming || String(hostDev.protectionStatusLabel || '').toLowerCase().indexOf('interrupted') >= 0)) ||
+        hostProt === 'triggered' ||
+        hostProt === 'interrupted'
+      );
+      if (hostActive) {
+        const activeId = (hostDev && hostDev.activeIncidentId) || (state.events[0] && state.events[0].incidentId) || null;
+        if (activeId && !dismissed[activeId]) {
+          const match = state.events.find(e => e.incidentId === activeId);
+          if (match) return match;
+        }
+      }
+      return null;
+    }
+
+    function renderActiveAlarmBanner(devices) {
+      if (!els.activeAlarmBanner) return null;
+      const ev = resolveActiveBannerIncident(devices);
+      if (!ev) {
+        els.activeAlarmBanner.classList.add('hidden');
+        els.activeAlarmBanner.innerHTML = '';
+        return null;
+      }
+      if (ev._loading) {
+        els.activeAlarmBanner.innerHTML =
+          '<div class="alarm-banner-top">' +
+          '<span class="pill pill-alert">Alert</span>' +
+          '<span style="font-size:12.5px;color:var(--muted);">Loading incident details…</span>' +
+          '</div>';
+        els.activeAlarmBanner.classList.remove('hidden');
+        return null;
+      }
+      const meta = eventKindMeta(ev);
+      const hostDev = (devices || []).find(d => d.role === 'protected_device');
+      const devName = ev.hostDisplayName || (hostDev && hostDev.displayName) || state.hostDisplayName || 'Protected laptop';
+      const latestLoc = pickNewerCoord(ev.location, hostDev ? hostDev.latestLocation : null);
+      const alarmOrigin = isValidCoord(ev.alarmLocation) ? ev.alarmLocation : latestLoc;
+      const isLastKnown = !hostDev || hostDev.trackingState === 'last_known' || Boolean(latestLoc && latestLoc.isLastKnown);
+      let locMetaLine = 'Location unavailable';
+      if (isValidCoord(latestLoc)) {
+        locMetaLine =
+          getReadableLocationSummary(latestLoc) +
+          ' · ' +
+          formatAccuracyLabel(latestLoc) +
+          ' · ' +
+          formatRelativeAge(latestLoc.capturedAtUtc, isLastKnown);
+        if (isValidCoord(alarmOrigin) && differsMeaningfully(latestLoc, alarmOrigin)) {
+          locMetaLine += ' (moved since alarm)';
+        }
+      } else if (ev.locationStatus === 'pending') {
+        locMetaLine = 'Getting device location…';
+      }
+
+      els.activeAlarmBanner.innerHTML =
+        '<div class="alarm-banner-top">' +
+        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
+        '<span class="pill ' + meta.cls + '">' + escapeHtml(meta.label) + '</span>' +
+        '<strong style="font-size:13.5px;color:var(--text);">' + escapeHtml(devName) + '</strong>' +
+        '</div>' +
+        '<button type="button" id="dismissAlarmBannerBtn" class="btn btn-secondary btn-compact" style="padding:4px 9px;font-size:11.5px;min-height:28px;" aria-label="Dismiss alert">Dismiss</button>' +
+        '</div>' +
+        '<div style="font-size:13px;color:var(--text);margin-top:5px;line-height:1.35;">' +
+        escapeHtml(ev.triggerSummary || meta.label) +
+        '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:4px;">' +
+        escapeHtml(locMetaLine) +
+        '</div>';
+      els.activeAlarmBanner.classList.remove('hidden');
+
+      const dismissBtn = document.getElementById('dismissAlarmBannerBtn');
+      if (dismissBtn) {
+        dismissBtn.onclick = () => {
+          if (!state.dismissedBannerIncidentIds) state.dismissedBannerIncidentIds = {};
+          state.dismissedBannerIncidentIds[ev.incidentId] = true;
+          if (focusedIncidentId === ev.incidentId) {
+            focusedIncidentId = null;
+            try { window.history.replaceState({}, '', '/companion'); } catch (_) {}
+          }
+          saveState();
+          renderDevicesTab();
+        };
+      }
+      return ev;
     }
 
     function renderDevicesTab() {
       if (!els.tabDevices || els.tabDevices.classList.contains('hidden')) return;
       const devices = buildEffectiveDevicesRoster();
+      const activeBannerEv = renderActiveAlarmBanner(devices);
+
       let selected = devices.find(d => d.deviceId === selectedDeviceId) ||
         devices.find(d => d.role === 'protected_device') ||
         devices[0];
       if (!selected) return;
       selectedDeviceId = selected.deviceId;
 
-      // 1. Single horizontal device selector strip (>= 44px touch targets, zero duplicate cards)
+      // 1. Single horizontal device selector strip (>= 44px touch targets)
       els.devicesRosterList.innerHTML = '';
       devices.forEach(dev => {
         const chip = document.createElement('button');
@@ -3512,7 +4614,7 @@ self.addEventListener('notificationclick', (event) => {
         chip.setAttribute('role', 'tab');
         chip.setAttribute('aria-selected', dev.deviceId === selected.deviceId ? 'true' : 'false');
         chip.className = 'device-chip' + (dev.deviceId === selected.deviceId ? ' selected' : '');
-        const dotColor = dev.isAlarming ? '#D6453A' : (dev.online ? '#2E9B68' : '#E58E26');
+        const dotColor = dev.isAlarming ? 'var(--crimson)' : (dev.online ? 'var(--emerald)' : 'var(--warning)');
         const chipTitle = dev.isCurrentRequester ? (dev.displayName + ' · This phone') : dev.displayName;
         chip.innerHTML =
           deviceSvgIcon(dev.role, 16) +
@@ -3528,30 +4630,38 @@ self.addEventListener('notificationclick', (event) => {
         els.devicesRosterList.appendChild(chip);
       });
 
-      // 2. Multi-device interactive light map (keeps located devices visible even if an unlocated chip is selected)
+      // 2. Multi-device interactive light map (expanded, compact collapsible attribution, no external links)
       const locatedDevices = devices.filter(d => isValidCoord(d.latestLocation));
       const selectedHasCoord = isValidCoord(selected.latestLocation);
       if (locatedDevices.length > 0) {
         const mapPrimaryDev = selectedHasCoord ? selected : locatedDevices[0];
         const badge = trackingBadgeMeta(mapPrimaryDev.trackingState);
         const secondaryBadge = !selectedHasCoord
-          ? ((selected.isCurrentRequester ? 'This phone' : selected.displayName) + ' · location not shared')
+          ? ((selected.isCurrentRequester ? 'This phone' : selected.displayName) + ' · location off')
           : (locatedDevices.length >= 2 ? (locatedDevices.length + ' devices on map') : '');
+        const effectiveAlarmOrigin = (selectedHasCoord ? selected.alarmLocation : mapPrimaryDev.alarmLocation) ||
+          (activeBannerEv && mapPrimaryDev.role === 'protected_device' ? activeBannerEv.alarmLocation : null);
+        const rawTrail = selectedHasCoord ? selected.locationTrail : mapPrimaryDev.locationTrail;
+        const effectiveTrail = (Array.isArray(rawTrail) && rawTrail.length > 0)
+          ? rawTrail
+          : (activeBannerEv && mapPrimaryDev.role === 'protected_device' && Array.isArray(activeBannerEv.locationTrail)
+              ? activeBannerEv.locationTrail
+              : []);
         mountInteractiveMap(els.devicesMapStage, 'devices', {
           primary: mapPrimaryDev.latestLocation,
           label: mapPrimaryDev.displayName,
-          alarmOrigin: selectedHasCoord ? selected.alarmLocation : mapPrimaryDev.alarmLocation,
-          trail: selectedHasCoord ? selected.locationTrail : mapPrimaryDev.locationTrail,
+          alarmOrigin: effectiveAlarmOrigin,
+          trail: effectiveTrail,
           badge: badge,
           secondaryBadge: secondaryBadge,
-          isAlarming: Boolean(mapPrimaryDev.isAlarming),
+          isAlarming: Boolean(mapPrimaryDev.isAlarming || (activeBannerEv && mapPrimaryDev.role === 'protected_device' && !activeBannerEv.isTest)),
           markers: locatedDevices.map(d => ({
             deviceId: d.deviceId,
             displayName: d.displayName,
             role: d.role,
             isCurrentRequester: Boolean(d.isCurrentRequester),
             isSelected: d.deviceId === selected.deviceId,
-            isAlarming: Boolean(d.isAlarming),
+            isAlarming: Boolean(d.isAlarming || (activeBannerEv && d.role === 'protected_device' && !activeBannerEv.isTest)),
             location: d.latestLocation
           })),
           onSelectDevice: id => {
@@ -3565,11 +4675,11 @@ self.addEventListener('notificationclick', (event) => {
           '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center;color:#0F172A;">' +
           '<div style="font-weight:800;font-size:16px;margin-bottom:6px;">Location unavailable</div>' +
           '<div style="font-size:13.5px;color:#475569;max-width:300px;line-height:1.45;">' +
-          escapeHtml(selected.statusExplanation || 'Allow Location access on your protected laptop or share this phone’s location while WATSafe is open.') +
+          escapeHtml(selected.statusExplanation || 'Enable Location in Settings on your laptop or phone to display device positions.') +
           '</div></div>';
       }
 
-      // 3. Single concise selected-device detail card
+      // 3. Compact selected-device detail card (in-app map only)
       const connPill = '<span class="pill ' + (selected.online ? 'pill-ok' : 'pill-warn') + '">' +
         (selected.online ? 'Online' : 'Offline') + '</span>';
       const protPill = '<span class="pill ' + protectionBadgeClass(selected) + '">' +
@@ -3580,30 +4690,25 @@ self.addEventListener('notificationclick', (event) => {
 
       if (selectedHasCoord) {
         const loc = selected.latestLocation;
-        const isLastKnown = selected.trackingState !== 'live' || Boolean(loc.isLastKnown);
+        const isLastKnown = selected.trackingState === 'last_known' || Boolean(loc.isLastKnown);
         const placeText = getReadableLocationSummary(loc);
-        const mapsHref = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(loc.latitude + ',' + loc.longitude);
-        const stopBtnHtml = selected.isCurrentRequester && state.phoneLocationSharingEnabled
-          ? '<button type="button" id="stopPhoneLocInlineBtn" class="btn btn-secondary" style="margin-top:8px;font-size:13.5px;">Stop sharing phone location</button>'
-          : '';
         els.selectedDeviceCard.innerHTML =
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
           '<span style="color:var(--muted);display:inline-flex;">' + deviceSvgIcon(selected.role, 18) + '</span>' +
-          '<h2 style="margin:0;">' + escapeHtml(selected.displayName) + '</h2>' + thisPhoneTag +
+          '<h2 style="margin:0;font-size:16px;">' + escapeHtml(selected.displayName) + '</h2>' + thisPhoneTag +
           '</div>' +
+          '<div style="display:flex;gap:6px;align-items:center;">' +
           '<span class="pill pill-neutral">' + escapeHtml(formatAccuracyLabel(loc)) + '</span>' +
+          '<button type="button" id="centerSelectedDeviceBtn" class="btn btn-secondary btn-compact" style="padding:6px 11px;font-size:12.5px;">Center on device</button>' +
           '</div>' +
-          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">' + connPill + protPill + '</div>' +
-          '<div style="margin-top:12px;font-size:15px;font-weight:700;color:var(--text);">' + escapeHtml(placeText) + '</div>' +
-          '<div style="font-size:13px;color:var(--muted);margin-top:3px;">' +
-          escapeHtml(formatRelativeAge(loc.capturedAtUtc, isLastKnown)) +
           '</div>' +
-          '<div class="btn-row">' +
-          '<button type="button" id="centerSelectedDeviceBtn" class="btn btn-secondary">Center on device</button>' +
-          '<a class="btn btn-primary" target="_blank" rel="noopener" href="' + mapsHref + '">Open in Maps</a>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px;">' +
+          connPill + protPill +
+          '<span style="font-size:12.5px;color:var(--muted);margin-left:2px;">' +
+          escapeHtml(placeText) + ' · ' + escapeHtml(formatRelativeAge(loc.capturedAtUtc, isLastKnown)) +
+          '</span>' +
           '</div>' +
-          stopBtnHtml +
           '<details class="coords-disclosure">' +
           '<summary>Coordinates</summary>' +
           '<div class="coords-mono">' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + '</div>' +
@@ -3615,155 +4720,47 @@ self.addEventListener('notificationclick', (event) => {
             if (mapControllers.devices) mapControllers.devices.centerOnDevice(loc);
           };
         }
-        const stopInlineBtn = document.getElementById('stopPhoneLocInlineBtn');
-        if (stopInlineBtn) {
-          stopInlineBtn.onclick = () => disableCompanionPhoneLocationSharing(true);
-        }
       } else {
         const isCurrentPhone = Boolean(selected.isCurrentRequester);
         const denied = selected.locationStatus === 'permissionDenied' || (isCurrentPhone && state.phoneLocationPermission === 'denied');
-        let actionHtml = '';
-        if (isCurrentPhone) {
-          if (denied) {
-            actionHtml =
-              '<div class="guide-box" style="margin:10px 0 0;">' +
-              '<strong>Location permission turned off</strong>' +
-              '<p style="margin:5px 0 0;font-size:13px;">Open iOS <strong>Settings → Privacy &amp; Security → Location Services → Safari Websites</strong>, allow access while using the app, then tap below.</p>' +
-              '</div>' +
-              '<button type="button" id="shareThisPhoneLocationBtn" class="btn btn-secondary">Retry sharing phone location</button>';
-          } else {
-            actionHtml =
-              '<button type="button" id="shareThisPhoneLocationBtn" class="btn btn-primary" style="margin-top:12px;">Share this phone’s location</button>' +
-              '<p style="margin:8px 0 0;font-size:12px;color:var(--subtle);">Updates only while WATSafe is open on screen.</p>';
-          }
-        }
+        const actionHtml = (isCurrentPhone && !denied)
+          ? '<button type="button" id="shareThisPhoneLocationBtn" class="btn btn-primary btn-compact" style="margin-top:10px;">Enable location</button>'
+          : '';
         els.selectedDeviceCard.innerHTML =
+          '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">' +
           '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
           '<span style="color:var(--muted);display:inline-flex;">' + deviceSvgIcon(selected.role, 18) + '</span>' +
-          '<h2 style="margin:0;">' + escapeHtml(selected.displayName) + '</h2>' + thisPhoneTag +
+          '<h2 style="margin:0;font-size:16px;">' + escapeHtml(selected.displayName) + '</h2>' + thisPhoneTag +
           '</div>' +
-          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">' + connPill + protPill + '</div>' +
-          '<div style="margin-top:12px;font-size:14px;font-weight:700;color:var(--text);">' +
-          (denied ? 'Location permission turned off' : (isCurrentPhone ? 'Location not shared' : 'Location unavailable')) +
+          '<div style="display:flex;gap:6px;">' + connPill + protPill + '</div>' +
           '</div>' +
-          '<p style="margin:4px 0 0;font-size:13.5px;">' +
-          escapeHtml(selected.statusExplanation || 'No valid position has been reported for this device yet.') +
-          '</p>' +
+          '<div style="margin-top:8px;font-size:13px;color:var(--muted);line-height:1.4;">' +
+          escapeHtml(
+            denied
+              ? 'Location permission is turned off in phone settings.'
+              : (selected.statusExplanation || 'No valid position reported yet.')
+          ) +
+          '</div>' +
           actionHtml;
         const shareBtn = document.getElementById('shareThisPhoneLocationBtn');
         if (shareBtn) {
-          shareBtn.onclick = () => enableCompanionPhoneLocationSharing(true);
+          shareBtn.onclick = () => {
+            state.phoneLocationSetupHandled = true;
+            state.phoneLocationExplicitlyDisabled = false;
+            saveState();
+            enableCompanionPhoneLocationSharing(false);
+          };
         }
       }
-    }
-
-    function renderActivityEvents() {
-      els.eventsList.innerHTML = '';
-      if (!state.events.length) {
-        els.eventDetailCard.classList.add('hidden');
-        els.eventsList.innerHTML = '<div class="card"><p style="margin:0;">No alarm events yet. Test alerts and real alarms from ' + escapeHtml(state.hostDisplayName || 'your laptop') + ' will appear here.</p></div>';
-        return;
-      }
-
-      if (!selectedIncidentId && state.events.length > 0) {
-        selectedIncidentId = state.events[0].incidentId;
-      }
-
-      if (selectedIncidentId) {
-        const ev = state.events.find(e => e.incidentId === selectedIncidentId);
-        if (ev) {
-          const kindMeta = eventKindMeta(ev);
-          let locHtml = '<div class="guide-box"><strong>Location unavailable</strong><p style="margin:6px 0 0 0;font-size:13.5px;">Location permission was turned off or unavailable on the protected device when this event was recorded.</p></div>';
-          if (ev.locationStatus === 'pending' && !isValidCoord(ev.location)) {
-            locHtml = '<div class="guide-box" style="border-color:var(--amber);"><strong>Getting device location…</strong><p style="margin:6px 0 0 0;font-size:13.5px;">Waiting for your protected laptop to report coordinates. This view updates automatically.</p></div>';
-          } else if (ev.locationStatus === 'notRequested' && !isValidCoord(ev.location)) {
-            locHtml = '<div class="guide-box"><strong>Location unavailable</strong><p style="margin:6px 0 0 0;font-size:13.5px;">Location sharing on alarm was turned off in Settings on the protected device.</p></div>';
-          } else if (isValidCoord(ev.location)) {
-            const loc = ev.location;
-            const alarmOrigin = isValidCoord(ev.alarmLocation) ? ev.alarmLocation : loc;
-            const hasDistinct = differsMeaningfully(loc, alarmOrigin);
-            const trail = Array.isArray(ev.locationTrail) ? ev.locationTrail.filter(isValidCoord) : [];
-            const mapsHref = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(loc.latitude + ',' + loc.longitude);
-            const comparisonHtml = hasDistinct
-              ? ('<div class="guide-box" style="margin:10px 0;">' +
-                 '<div style="font-size:12.5px;color:var(--muted);">Alarm-time location: <strong style="color:var(--text);">' + Number(alarmOrigin.latitude).toFixed(5) + ', ' + Number(alarmOrigin.longitude).toFixed(5) + '</strong> (' + escapeHtml(formatTime(alarmOrigin.capturedAtUtc)) + ')</div>' +
-                 '<div style="font-size:12.5px;color:var(--muted);margin-top:6px;">Latest known location: <strong style="color:var(--text);">' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + '</strong> · ' + escapeHtml(formatAccuracyLabel(loc)) + '</div>' +
-                 '</div>')
-              : ('<div style="font-size:14px;font-weight:700;margin-top:10px;">' + escapeHtml(getReadableLocationSummary(loc)) + ' · ' + escapeHtml(formatAccuracyLabel(loc)) + '</div>');
-            const trailNote = trail.length >= 2
-              ? ('<div style="font-size:12.5px;color:var(--amber);font-weight:700;margin-top:4px;">' + trail.length + ' verified movement updates recorded</div>')
-              : '';
-            locHtml = '<div style="margin-top:12px;">' +
-              '<div id="incidentMapStage" class="map-stage" style="height:240px;"></div>' +
-              comparisonHtml +
-              trailNote +
-              '<div style="font-size:12.5px;color:var(--muted);margin-top:4px;">' + escapeHtml(formatRelativeAge(loc.capturedAtUtc, ev.locationTrackingState !== 'live')) + ' (' + escapeHtml(formatTime(loc.capturedAtUtc)) + ')</div>' +
-              '<div class="btn-row">' +
-              '<button type="button" id="incidentCenterBtn" class="btn btn-secondary">Center on device</button>' +
-              '<a class="btn btn-primary" target="_blank" rel="noopener" href="' + mapsHref + '">Open in Maps</a>' +
-              '</div>' +
-              '<details class="coords-disclosure"><summary>Coordinates</summary><div class="coords-mono">' + Number(loc.latitude).toFixed(5) + ', ' + Number(loc.longitude).toFixed(5) + '</div></details>' +
-              '</div>';
-          }
-          const receiptBadge = ev.receiptConfirmed
-            ? '<span class="pill pill-ok" style="margin-left:8px;">Phone receipt confirmed</span>'
-            : '<span class="pill pill-warn" style="margin-left:8px;">Awaiting phone push receipt</span>';
-          els.eventDetailCard.innerHTML =
-            '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">' +
-            '<span class="pill ' + kindMeta.cls + '">' + escapeHtml(kindMeta.label) + '</span>' +
-            receiptBadge +
-            '</div>' +
-            '<h2 style="margin-top:10px;">' + escapeHtml(ev.hostDisplayName || state.hostDisplayName) + '</h2>' +
-            '<p style="margin-bottom:6px;">' + escapeHtml(formatTime(ev.triggeredAtUtc)) + '</p>' +
-            '<p style="margin-bottom:8px;">' + escapeHtml(ev.triggerSummary || kindMeta.label) + '</p>' + locHtml;
-          els.eventDetailCard.classList.remove('hidden');
-
-          if (isValidCoord(ev.location) && !els.tabActivity.classList.contains('hidden')) {
-            const stage = document.getElementById('incidentMapStage');
-            const badge = trackingBadgeMeta(ev.locationTrackingState);
-            const ctrl = mountInteractiveMap(stage, 'incident', {
-              primary: ev.location,
-              label: ev.hostDisplayName || state.hostDisplayName,
-              alarmOrigin: isValidCoord(ev.alarmLocation) ? ev.alarmLocation : ev.location,
-              trail: Array.isArray(ev.locationTrail) ? ev.locationTrail : [],
-              badge: badge,
-              isAlarming: !ev.isTest
-            });
-            const centerBtn = document.getElementById('incidentCenterBtn');
-            if (centerBtn && ctrl) {
-              centerBtn.onclick = () => ctrl.centerOnDevice(ev.location);
-            }
-          }
-        }
-      } else {
-        els.eventDetailCard.classList.add('hidden');
-      }
-
-      state.events.forEach(ev => {
-        const div = document.createElement('div');
-        div.className = 'event-item' + (ev.incidentId === selectedIncidentId ? ' selected' : '');
-        const hasLoc = isValidCoord(ev.location);
-        const kindMeta = eventKindMeta(ev);
-        div.innerHTML =
-          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;">' +
-          '<strong>' + escapeHtml(kindMeta.label) + ' · ' + escapeHtml(ev.hostDisplayName || state.hostDisplayName) + '</strong>' +
-          '<span style="font-size:12px;color:var(--muted);">' + escapeHtml(formatTime(ev.triggeredAtUtc)) + '</span>' +
-          '</div>' +
-          '<div style="font-size:13.5px;color:var(--muted);">' + escapeHtml(ev.triggerSummary || '') + '</div>' +
-          (hasLoc
-            ? '<div style="margin-top:8px;color:var(--amber);font-size:13px;font-weight:700;">View map &amp; location →</div>'
-            : '<div style="margin-top:6px;color:var(--subtle);font-size:12px;">' + escapeHtml(ev.locationStatus === 'pending' ? 'Getting device location…' : 'Location unavailable') + '</div>');
-        div.addEventListener('click', () => {
-          selectedIncidentId = ev.incidentId;
-          renderConnectedUi();
-        });
-        els.eventsList.appendChild(div);
-      });
     }
 
     async function fetchSingleIncidentIfMissing(incidentId) {
       if (!incidentId || !state.companionToken) return;
-      if (state.events.some(e => e.incidentId === incidentId)) {
+      const existing = state.events.find(e => e.incidentId === incidentId);
+      if (existing) {
+        if (!existing.receiptConfirmed) {
+          acknowledgeEventReceipt(existing.incidentId, 'companion_poll');
+        }
         renderConnectedUi();
         return;
       }
@@ -3784,18 +4781,22 @@ self.addEventListener('notificationclick', (event) => {
           }
           saveState();
           renderConnectedUi();
+          const hostDev = (state.authorizedDevices || []).find(d => d.role === 'protected_device');
+          const targetLoc = pickNewerCoord(item.location, hostDev ? hostDev.latestLocation : null);
+          if (isValidCoord(targetLoc) && mapControllers.devices) {
+            mapControllers.devices.centerOnDevice(targetLoc);
+          }
         }
       } catch (_) {}
     }
 
     function triggerFallbackForegroundNotification(ev) {
       const r = evaluateReadiness();
-      // If real Web Push is active, the Service Worker push listener handles displaying the notification!
       if (r.notificationsEnabled) return;
       if (r.notificationPermission !== 'granted') return;
       const title = ev.hostDisplayName || state.hostDisplayName || 'WATSafe Alert';
       const kindMeta = eventKindMeta(ev);
-      const body = kindMeta.label + ' — tap to view in Activity';
+      const body = kindMeta.label + ' — tap to view location';
       if (swRegistration && swRegistration.showNotification) {
         swRegistration.showNotification(title, {
           body: body,
@@ -3851,13 +4852,11 @@ self.addEventListener('notificationclick', (event) => {
         );
         if (timer) clearTimeout(timer);
 
-        // Require pairing again ONLY on an authentic WATSafe 401 session revocation!
         if (await isAuthenticUnauthorizedSession(res)) {
           await handleServerRevokedSession();
           return;
         }
 
-        // Non-WATSafe proxy pages (e.g. Cloudflare 530 / 502) or server 5xx keep pairing intact!
         if (!isAuthenticWatSafeHeader(res) || !res.ok) {
           consecutiveFailures += 1;
           connState = 'service_unavailable';
@@ -3872,6 +4871,7 @@ self.addEventListener('notificationclick', (event) => {
         if (data.deviceId) state.deviceId = data.deviceId;
         if (typeof data.backendPushRegistered === 'boolean') {
           state.backendPushRegistered = data.backendPushRegistered;
+          if (state.backendPushRegistered) state.setupCompletedOnce = true;
         }
         if (data.companionLocation && isValidCoord(data.companionLocation)) {
           state.phoneLatestLocation = data.companionLocation;
@@ -3894,19 +4894,18 @@ self.addEventListener('notificationclick', (event) => {
           } else if (!state.seenIds[item.incidentId]) {
             state.seenIds[item.incidentId] = true;
             state.events.unshift(item);
+            if (!state.dismissedBannerIncidentIds || !state.dismissedBannerIncidentIds[item.incidentId]) {
+              focusedIncidentId = item.incidentId;
+            }
             triggerFallbackForegroundNotification(item);
           }
-          // Only auto-acknowledge via foreground poll when no background push test is waiting on push_sw receipt
-          if (!item.receiptConfirmed && item.incidentId !== pendingTestIncidentId) {
+          if (!item.receiptConfirmed) {
             acknowledgeEventReceipt(item.incidentId, 'companion_poll');
-          } else if (item.receiptConfirmed && pendingTestIncidentId && item.incidentId === pendingTestIncidentId) {
-            pendingTestIncidentId = null;
-            showInfo('Phone receipt confirmed — test notification arrived on this phone.');
           }
         }
         if ((data.latestSeq || 0) > state.lastSeq) state.lastSeq = data.latestSeq;
         if (activeTab === 'Devices') {
-          fetchAuthorizedDevicesLocations(false);
+          fetchAuthorizedDevicesLocations({ requestHostRefresh: false });
         }
         saveState();
         renderConnectedUi();
@@ -3930,6 +4929,7 @@ self.addEventListener('notificationclick', (event) => {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         if (state.companionToken) {
+          consumePendingNotificationIncident();
           triggerImmediateReconnect();
         }
         if (state.phoneLocationSharingEnabled && state.phoneLocationPermission === 'granted') {
@@ -3947,6 +4947,7 @@ self.addEventListener('notificationclick', (event) => {
     });
     window.addEventListener('pageshow', () => {
       if (state.companionToken) {
+        consumePendingNotificationIncident();
         triggerImmediateReconnect();
         if (state.phoneLocationSharingEnabled && state.phoneLocationPermission === 'granted') {
           startForegroundPhoneLocationWatch();
@@ -3992,8 +4993,11 @@ self.addEventListener('notificationclick', (event) => {
         await maybeRefreshCompanionToken();
         await ensureIosHandoffCode();
         await syncCompanionReadinessToBackend();
-        if (selectedIncidentId) {
-          fetchSingleIncidentIfMissing(selectedIncidentId);
+        if (focusedIncidentId) {
+          fetchSingleIncidentIfMissing(focusedIncidentId);
+        }
+        if (state.phoneLocationSharingEnabled && state.phoneLocationPermission === 'granted') {
+          startForegroundPhoneLocationWatch();
         }
         scheduleNextPoll(0);
       } else {

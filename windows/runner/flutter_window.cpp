@@ -2248,8 +2248,62 @@ class WindowsCameraMotionBridge {
     int64_t last_ac_unplug_ms = 0;
     int32_t consecutive_above_threshold = 0;
     int32_t consecutive_poor_input = 0;
+    int32_t consecutive_obstructed_frames = 0;
+    int32_t unobstructed_frame_streak = 0;
     bool is_input_degraded = false;
+    bool is_camera_obstructed = false;
+    bool is_obstructed_at_calibration = false;
+    bool was_unobstructed_during_session = false;
+    int32_t baseline_textured_blocks = 0;
+    double baseline_mean_grad = 0.0;
     int32_t processed_frame_count = 0;
+
+    auto compute_grid_texture_stats = [&](const std::vector<float>& grid,
+                                          int32_t* out_textured,
+                                          double* out_mean_grad) {
+      double grad_sum[16] = {0.0};
+      int32_t grad_count[16] = {0};
+      if (grid_w > 1 && grid_h > 1 &&
+          grid.size() >= static_cast<size_t>(grid_w * grid_h)) {
+        for (int32_t gy = 0; gy + 1 < grid_h; ++gy) {
+          const int32_t by = std::min(3, (gy * 4) / std::max(1, grid_h));
+          for (int32_t gx = 0; gx + 1 < grid_w; ++gx) {
+            const int32_t bx = std::min(3, (gx * 4) / std::max(1, grid_w));
+            const int32_t b_idx = by * 4 + bx;
+            const size_t i =
+                static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
+                static_cast<size_t>(gx);
+            const double v = static_cast<double>(grid[i]);
+            const double dx =
+                std::abs(v - static_cast<double>(grid[i + 1u]));
+            const double dy = std::abs(
+                v - static_cast<double>(
+                        grid[i + static_cast<size_t>(grid_w)]));
+            grad_sum[b_idx] += 0.5 * (dx + dy);
+            grad_count[b_idx] += 1;
+          }
+        }
+      }
+      int32_t textured = 0;
+      double total_grad = 0.0;
+      int32_t active_blocks = 0;
+      for (int32_t b = 0; b < 16; ++b) {
+        if (grad_count[b] > 0) {
+          const double g =
+              grad_sum[b] / static_cast<double>(grad_count[b]);
+          total_grad += g;
+          active_blocks += 1;
+          if (g >= 3.2) {
+            textured += 1;
+          }
+        }
+      }
+      *out_textured = textured;
+      *out_mean_grad =
+          active_blocks > 0
+              ? (total_grad / static_cast<double>(active_blocks))
+              : 0.0;
+    };
 
     while (running_.load()) {
       DWORD stream_index = 0;
@@ -2270,7 +2324,9 @@ class WindowsCameraMotionBridge {
         break;
       }
 
-      if (FAILED(hr) || (stream_flags & MF_SOURCE_READERF_ERROR)) {
+      if (FAILED(hr) || (stream_flags & MF_SOURCE_READERF_ERROR) ||
+          (has_delivered_first_frame &&
+           (stream_flags & MF_SOURCE_READERF_ENDOFSTREAM))) {
         const bool access_denied =
             (hr == E_ACCESSDENIED ||
              hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED));
@@ -2326,6 +2382,23 @@ class WindowsCameraMotionBridge {
               "Camera opened on " + device_name +
                   ", but no video frames arrived within 4 seconds.",
               "FRAME_TIMEOUT");
+          break;
+        }
+        if (has_delivered_first_frame &&
+            (now_ms - last_frame_processed_ms) >= 5000) {
+          EmitEvent(flutter::EncodableMap{
+              {flutter::EncodableValue("sessionId"),
+               flutter::EncodableValue(session_id)},
+              {flutter::EncodableValue("eventType"),
+               flutter::EncodableValue("detectorFailed")},
+              {flutter::EncodableValue("summary"),
+               flutter::EncodableValue(
+                   "Windows webcam stopped delivering frames.")},
+              {flutter::EncodableValue("errorCode"),
+               flutter::EncodableValue("FRAME_TIMEOUT")},
+              {flutter::EncodableValue("timestampMs"),
+               flutter::EncodableValue(now_ms)},
+          });
           break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(15));
@@ -2459,27 +2532,86 @@ class WindowsCameraMotionBridge {
         previous_mean_255 = curr_mean;
         if (elapsed_ms >= calibration_ms && processed_frame_count >= 4) {
           is_calibration_done = true;
+          compute_grid_texture_stats(reference_grid, &baseline_textured_blocks,
+                                     &baseline_mean_grad);
+          std::string initial_obstruction;
+          if (normalized_luminance < 0.032) {
+            initial_obstruction = "dark";
+          } else if (normalized_luminance > 0.92 &&
+                     normalized_deviation < 0.065 &&
+                     baseline_textured_blocks <= 1) {
+            initial_obstruction = "bright_glare";
+          } else if (normalized_deviation < 0.012 &&
+                     baseline_textured_blocks == 0) {
+            initial_obstruction = "opaque_cover";
+          }
           recent_grids.clear();
           recent_grids.push_back(reference_grid);
-          EmitEvent(flutter::EncodableMap{
-              {flutter::EncodableValue("sessionId"),
-               flutter::EncodableValue(session_id)},
-              {flutter::EncodableValue("eventType"),
-               flutter::EncodableValue("calibrationCompleted")},
-              {flutter::EncodableValue("summary"),
-               flutter::EncodableValue(
-                   "Scene baseline calibrated. Ego-motion optical flow filtering enabled.")},
-              {flutter::EncodableValue("motionScore"),
-               flutter::EncodableValue(0.0)},
-              {flutter::EncodableValue("threshold"),
-               flutter::EncodableValue(active_threshold)},
-              {flutter::EncodableValue("averageLuminance"),
-               flutter::EncodableValue(normalized_luminance)},
-              {flutter::EncodableValue("consecutiveFrames"),
-               flutter::EncodableValue(static_cast<int32_t>(0))},
-              {flutter::EncodableValue("timestampMs"),
-               flutter::EncodableValue(now_ms)},
-          });
+          if (!initial_obstruction.empty()) {
+            is_obstructed_at_calibration = true;
+            was_unobstructed_during_session = false;
+            is_input_degraded = true;
+            EmitEvent(flutter::EncodableMap{
+                {flutter::EncodableValue("sessionId"),
+                 flutter::EncodableValue(session_id)},
+                {flutter::EncodableValue("eventType"),
+                 flutter::EncodableValue("calibrationCompleted")},
+                {flutter::EncodableValue("summary"),
+                 flutter::EncodableValue(
+                     "Camera appears covered or too dark. Uncover the camera for visual motion detection — lid and connection alerts remain active.")},
+                {flutter::EncodableValue("motionScore"),
+                 flutter::EncodableValue(0.0)},
+                {flutter::EncodableValue("threshold"),
+                 flutter::EncodableValue(active_threshold)},
+                {flutter::EncodableValue("averageLuminance"),
+                 flutter::EncodableValue(normalized_luminance)},
+                {flutter::EncodableValue("consecutiveFrames"),
+                 flutter::EncodableValue(static_cast<int32_t>(0))},
+                {flutter::EncodableValue("obstructionKind"),
+                 flutter::EncodableValue(initial_obstruction)},
+                {flutter::EncodableValue("timestampMs"),
+                 flutter::EncodableValue(now_ms)},
+            });
+            EmitEvent(flutter::EncodableMap{
+                {flutter::EncodableValue("sessionId"),
+                 flutter::EncodableValue(session_id)},
+                {flutter::EncodableValue("eventType"),
+                 flutter::EncodableValue("poorInputWarning")},
+                {flutter::EncodableValue("summary"),
+                 flutter::EncodableValue(
+                     "Camera appears covered or too dark. Uncover the camera for visual motion detection — lid and connection alerts remain active.")},
+                {flutter::EncodableValue("averageLuminance"),
+                 flutter::EncodableValue(normalized_luminance)},
+                {flutter::EncodableValue("threshold"),
+                 flutter::EncodableValue(active_threshold)},
+                {flutter::EncodableValue("obstructionKind"),
+                 flutter::EncodableValue(initial_obstruction)},
+                {flutter::EncodableValue("timestampMs"),
+                 flutter::EncodableValue(now_ms)},
+            });
+          } else {
+            is_obstructed_at_calibration = false;
+            was_unobstructed_during_session = true;
+            EmitEvent(flutter::EncodableMap{
+                {flutter::EncodableValue("sessionId"),
+                 flutter::EncodableValue(session_id)},
+                {flutter::EncodableValue("eventType"),
+                 flutter::EncodableValue("calibrationCompleted")},
+                {flutter::EncodableValue("summary"),
+                 flutter::EncodableValue(
+                     "Scene baseline calibrated. Ego-motion optical flow filtering enabled.")},
+                {flutter::EncodableValue("motionScore"),
+                 flutter::EncodableValue(0.0)},
+                {flutter::EncodableValue("threshold"),
+                 flutter::EncodableValue(active_threshold)},
+                {flutter::EncodableValue("averageLuminance"),
+                 flutter::EncodableValue(normalized_luminance)},
+                {flutter::EncodableValue("consecutiveFrames"),
+                 flutter::EncodableValue(static_cast<int32_t>(0))},
+                {flutter::EncodableValue("timestampMs"),
+                 flutter::EncodableValue(now_ms)},
+            });
+          }
         }
         continue;
       }
@@ -2507,6 +2639,7 @@ class WindowsCameraMotionBridge {
       double block_win_sum[kTotalBlocks] = {0.0};
       int32_t block_pixel_count[kTotalBlocks] = {0};
 
+      double raw_diff_sum = 0.0;
       for (int32_t gy = 0; gy < grid_h; ++gy) {
         const int32_t by =
             std::min(kBlocksY - 1, (gy * kBlocksY) / std::max(1, grid_h));
@@ -2522,6 +2655,8 @@ class WindowsCameraMotionBridge {
           block_prev_sum[b_idx] += static_cast<double>(previous_grid[i]);
           block_win_sum[b_idx] += static_cast<double>(window_grid[i]);
           block_pixel_count[b_idx] += 1;
+          raw_diff_sum += std::abs(static_cast<double>(current_grid[i]) -
+                                   static_cast<double>(reference_grid[i]));
         }
       }
 
@@ -2652,11 +2787,17 @@ class WindowsCameraMotionBridge {
       const int32_t block_h = grid_h / kBlocksY;
 
       int32_t textured_ref_blocks = 0;
+      int32_t textured_curr_blocks = 0;
       int32_t anchored_textured_blocks = 0;
       int32_t textured_perimeter_blocks = 0;
       int32_t anchored_perimeter_blocks = 0;
       int32_t active_moving_blocks = 0;
+      int32_t displaced_or_changed_blocks = 0;
       double textured_ref_score_sum = 0.0;
+      double curr_grad_sum_all = 0.0;
+      int32_t curr_grad_blocks_count = 0;
+      double ref_mean_sum_all = 0.0;
+      int32_t ref_mean_blocks_count = 0;
       std::vector<double> dx_list;
       std::vector<double> dy_list;
       std::vector<int32_t> bx_list;
@@ -2692,6 +2833,19 @@ class WindowsCameraMotionBridge {
                   ? (block_curr_grad_sum[b] /
                      static_cast<double>(block_grad_count[b]))
                   : 0.0;
+          if (block_grad_count[b] > 0) {
+            curr_grad_sum_all += curr_grad;
+            curr_grad_blocks_count += 1;
+            if (curr_grad >= 3.2) {
+              textured_curr_blocks += 1;
+            }
+          }
+          ref_mean_sum_all += block_ref_mean[b];
+          ref_mean_blocks_count += 1;
+          if (ref_score >= static_block_threshold ||
+              std::abs(block_curr_mean[b] - block_ref_mean[b]) >= 14.0) {
+            displaced_or_changed_blocks += 1;
+          }
           const bool is_textured = mean_grad >= 3.2;
           const bool is_perimeter =
               bx == 0 || bx == (kBlocksX - 1) || by == 0 || by == (kBlocksY - 1);
@@ -2818,10 +2972,92 @@ class WindowsCameraMotionBridge {
         has_prev_mean_flow = false;
       }
 
+      const double raw_scene_score =
+          raw_diff_sum / static_cast<double>(count * 255u);
       const double full_scene_struct_score =
           norm_ref_diff_sum / static_cast<double>(count * 255u);
       const double mean_step_score =
           norm_step_diff_sum / static_cast<double>(count * 255u);
+      const double mean_curr_grad =
+          curr_grad_blocks_count > 0
+              ? (curr_grad_sum_all /
+                 static_cast<double>(curr_grad_blocks_count))
+              : 0.0;
+      const double ref_global_mean =
+          ref_mean_blocks_count > 0
+              ? (ref_mean_sum_all /
+                 static_cast<double>(ref_mean_blocks_count))
+              : static_cast<double>(curr_mean);
+
+      std::string candidate_obstruction;
+      if (normalized_luminance < 0.032) {
+        candidate_obstruction = "dark";
+      } else if ((normalized_luminance > 0.92 && normalized_deviation < 0.065 &&
+                  textured_curr_blocks <= 1) ||
+                 (normalized_luminance > 0.86 &&
+                  anchored_textured_blocks == 0 && textured_curr_blocks == 0 &&
+                  std::abs(static_cast<double>(curr_mean) - ref_global_mean) >=
+                      45.0)) {
+        candidate_obstruction = "bright_glare";
+      } else if (normalized_deviation < 0.012 && textured_curr_blocks == 0 &&
+                 (textured_ref_blocks == 0 || anchored_textured_blocks == 0)) {
+        candidate_obstruction = "opaque_cover";
+      } else if (baseline_textured_blocks >= 2 &&
+                 anchored_textured_blocks == 0 && textured_curr_blocks <= 1 &&
+                 (textured_curr_blocks == 0 || baseline_textured_blocks >= 5) &&
+                 mean_curr_grad < std::min(2.35, baseline_mean_grad * 0.42) &&
+                 coherent_translated_blocks <= 1 &&
+                 (raw_scene_score >= 0.045 || full_scene_struct_score >= 0.032 ||
+                  displaced_or_changed_blocks >= 11)) {
+        candidate_obstruction = "texture_collapse";
+      }
+
+      bool obstruction_just_triggered = false;
+      if (!candidate_obstruction.empty()) {
+        unobstructed_frame_streak = 0;
+        if (was_unobstructed_during_session) {
+          consecutive_obstructed_frames += 1;
+          if (consecutive_obstructed_frames >= 6 && !is_input_degraded) {
+            is_input_degraded = true;
+            EmitEvent(flutter::EncodableMap{
+                {flutter::EncodableValue("sessionId"),
+                 flutter::EncodableValue(session_id)},
+                {flutter::EncodableValue("eventType"),
+                 flutter::EncodableValue("poorInputWarning")},
+                {flutter::EncodableValue("summary"),
+                 flutter::EncodableValue(
+                     "Low light or covered camera lens detected.")},
+                {flutter::EncodableValue("averageLuminance"),
+                 flutter::EncodableValue(normalized_luminance)},
+                {flutter::EncodableValue("threshold"),
+                 flutter::EncodableValue(active_threshold)},
+                {flutter::EncodableValue("obstructionKind"),
+                 flutter::EncodableValue(candidate_obstruction)},
+                {flutter::EncodableValue("timestampMs"),
+                 flutter::EncodableValue(now_ms)},
+            });
+          }
+          if (consecutive_obstructed_frames >= 10 && !is_camera_obstructed) {
+            is_camera_obstructed = true;
+            obstruction_just_triggered = true;
+          }
+        }
+      } else {
+        consecutive_obstructed_frames = 0;
+        unobstructed_frame_streak += 1;
+        if (!was_unobstructed_during_session &&
+            unobstructed_frame_streak >= 3) {
+          was_unobstructed_during_session = true;
+          is_obstructed_at_calibration = false;
+          reference_grid = current_grid;
+          compute_grid_texture_stats(reference_grid, &baseline_textured_blocks,
+                                     &baseline_mean_grad);
+        }
+        if (is_camera_obstructed && unobstructed_frame_streak >= 2) {
+          is_camera_obstructed = false;
+        }
+      }
+
       const double textured_struct_score =
           textured_ref_blocks > 0
               ? (textured_ref_score_sum /
@@ -2874,8 +3110,9 @@ class WindowsCameraMotionBridge {
           (active_moving_blocks <= 2 || mean_step_score < 0.009);
 
       double ego_weight = 0.32;
-      if (is_lighting_transient || is_input_degraded) {
-        ego_weight = 0.10;
+      if (!candidate_obstruction.empty() || is_lighting_transient ||
+          is_input_degraded) {
+        ego_weight = 0.08;
       } else if (has_strong_static_anchors) {
         ego_weight = 0.14;
       } else if (looming_rejected) {
@@ -2931,42 +3168,49 @@ class WindowsCameraMotionBridge {
         motion_score = std::min(motion_score, active_threshold * 0.72);
       }
 
-      const float base_adapt_rate = is_lighting_transient ? 0.30f : 0.06f;
-      if (motion_score >= active_threshold) {
-        consecutive_above_threshold += 1;
-        for (size_t i = 0; i < count; ++i) {
-          reference_grid[i] =
-              (0.98f * reference_grid[i]) + (0.02f * current_grid[i]);
-          previous_grid[i] = current_grid[i];
-        }
-      } else {
+      if (!candidate_obstruction.empty()) {
         consecutive_above_threshold = 0;
-        for (int32_t gy = 0; gy < grid_h; ++gy) {
-          const int32_t by =
-              std::min(kBlocksY - 1, (gy * kBlocksY) / std::max(1, grid_h));
-          for (int32_t gx = 0; gx < grid_w; ++gx) {
-            const int32_t bx =
-                std::min(kBlocksX - 1, (gx * kBlocksX) / std::max(1, grid_w));
-            const int32_t b_idx = by * kBlocksX + bx;
-            const int32_t px_count = block_pixel_count[b_idx];
-            const double block_ref_score =
-                px_count > 0
-                    ? (block_ref_diff_sum[b_idx] /
-                       static_cast<double>(px_count * 255))
-                    : 0.0;
-            float alpha = base_adapt_rate;
-            if (settled_block_streak[b_idx] >= 4 && is_scene_presently_still) {
-              alpha = 0.16f;
-            } else if (has_strong_static_anchors &&
-                       block_ref_score >= static_block_threshold) {
-              alpha = 0.01f;
-            }
-            const size_t i =
-                static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
-                static_cast<size_t>(gx);
+        motion_score = std::min(motion_score, active_threshold * 0.45);
+        previous_grid = current_grid;
+      } else {
+        const float base_adapt_rate = is_lighting_transient ? 0.30f : 0.06f;
+        if (motion_score >= active_threshold) {
+          consecutive_above_threshold += 1;
+          for (size_t i = 0; i < count; ++i) {
             reference_grid[i] =
-                ((1.0f - alpha) * reference_grid[i]) + (alpha * current_grid[i]);
+                (0.98f * reference_grid[i]) + (0.02f * current_grid[i]);
             previous_grid[i] = current_grid[i];
+          }
+        } else {
+          consecutive_above_threshold = 0;
+          for (int32_t gy = 0; gy < grid_h; ++gy) {
+            const int32_t by =
+                std::min(kBlocksY - 1, (gy * kBlocksY) / std::max(1, grid_h));
+            for (int32_t gx = 0; gx < grid_w; ++gx) {
+              const int32_t bx =
+                  std::min(kBlocksX - 1, (gx * kBlocksX) / std::max(1, grid_w));
+              const int32_t b_idx = by * kBlocksX + bx;
+              const int32_t px_count = block_pixel_count[b_idx];
+              const double block_ref_score =
+                  px_count > 0
+                      ? (block_ref_diff_sum[b_idx] /
+                         static_cast<double>(px_count * 255))
+                      : 0.0;
+              float alpha = base_adapt_rate;
+              if (settled_block_streak[b_idx] >= 4 &&
+                  is_scene_presently_still) {
+                alpha = 0.16f;
+              } else if (has_strong_static_anchors &&
+                         block_ref_score >= static_block_threshold) {
+                alpha = 0.01f;
+              }
+              const size_t i =
+                  static_cast<size_t>(gy) * static_cast<size_t>(grid_w) +
+                  static_cast<size_t>(gx);
+              reference_grid[i] = ((1.0f - alpha) * reference_grid[i]) +
+                                  (alpha * current_grid[i]);
+              previous_grid[i] = current_grid[i];
+            }
           }
         }
       }
@@ -2974,6 +3218,31 @@ class WindowsCameraMotionBridge {
       recent_grids.push_back(current_grid);
       if (recent_grids.size() > 4) {
         recent_grids.pop_front();
+      }
+
+      if (obstruction_just_triggered) {
+        EmitEvent(flutter::EncodableMap{
+            {flutter::EncodableValue("sessionId"),
+             flutter::EncodableValue(session_id)},
+            {flutter::EncodableValue("eventType"),
+             flutter::EncodableValue("cameraObstructed")},
+            {flutter::EncodableValue("summary"),
+             flutter::EncodableValue(
+                 "Camera blocked — webcam view obstructed while armed.")},
+            {flutter::EncodableValue("motionScore"),
+             flutter::EncodableValue(motion_score)},
+            {flutter::EncodableValue("threshold"),
+             flutter::EncodableValue(active_threshold)},
+            {flutter::EncodableValue("averageLuminance"),
+             flutter::EncodableValue(normalized_luminance)},
+            {flutter::EncodableValue("consecutiveFrames"),
+             flutter::EncodableValue(consecutive_obstructed_frames)},
+            {flutter::EncodableValue("obstructionKind"),
+             flutter::EncodableValue(candidate_obstruction)},
+            {flutter::EncodableValue("timestampMs"),
+             flutter::EncodableValue(now_ms)},
+        });
+        continue;
       }
 
       const int32_t reported_coherent = std::max(

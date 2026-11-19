@@ -592,18 +592,15 @@ void main() {
           findsOneWidget,
         );
 
-        // Scroll to and tap "Open in Maps" -> launches Google Maps coordinates URL
-        final openMapsBtn = find.byKey(const Key('open_in_maps_button'));
-        await tester.ensureVisible(openMapsBtn);
-        await tester.pumpAndSettle();
-        await tester.tap(openMapsBtn);
-        await tester.pumpAndSettle();
-
-        expect(phoneLocalNotifs.openedUrls, hasLength(1));
-        expect(
-          phoneLocalNotifs.openedUrls.first,
-          contains('43.472300,-80.544900'),
+        // Verify in-app map centering is available and external "Open in Maps" is removed
+        expect(find.byKey(const Key('open_in_maps_button')), findsNothing);
+        final centerBtn = find.byKey(
+          const Key('incident_center_on_device_button'),
         );
+        await tester.ensureVisible(centerBtn);
+        await tester.pumpAndSettle();
+        await tester.tap(centerBtn);
+        await tester.pumpAndSettle();
 
         laptopController.dispose();
         phoneController.dispose();

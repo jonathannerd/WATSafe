@@ -194,7 +194,7 @@ abstract class LocalNotificationAdapter {
   /// Returns an APNs/FCM/WebPush registration token if available on this client.
   Future<String?> getPushRegistrationToken();
 
-  /// Opens external URLs (such as Open in Maps or OS settings) safely.
+  /// Opens external URLs (such as OS settings) safely.
   Future<bool> openExternalUrl(String url);
 
   void dispose();
@@ -696,7 +696,7 @@ class AuthorizedDeviceLocationSummary {
   final String? readableLocationSummary;
   final bool isAlarming;
 
-  /// `'live'`, `'reconnecting'`, `'last_known'`, or `'unavailable'`.
+  /// `'live'`, `'recent'`, `'reconnecting'`, `'last_known'`, or `'unavailable'`.
   final String trackingState;
   final DeviceLocationSnapshot? latestLocation;
   final DeviceLocationSnapshot? alarmTimeLocation;
@@ -930,6 +930,11 @@ abstract class MutableRemoteNotificationAdapter
 
   set onStateChanged(VoidCallback? callback);
 
+  /// Invoked when the relay notifies the online laptop host (for example when
+  /// the paired phone opens or refreshes `Devices`) that a fresh host location
+  /// measurement should be reported if location sharing is enabled.
+  set onHostLocationRefreshRequested(VoidCallback? callback) {}
+
   Future<void> configureRelayEndpoint(String? endpointUrl);
 
   Future<PairingCodeInvitation> initiateHostPairing({String? hostDisplayName});
@@ -1012,7 +1017,7 @@ abstract class MutableRemoteNotificationAdapter
   });
 
   Future<List<AuthorizedDeviceLocationSummary>>
-  fetchAuthorizedDevicesLocations();
+  fetchAuthorizedDevicesLocations({bool requestHostRefresh = false});
 
   Future<bool> deleteRelayLocationHistory();
 

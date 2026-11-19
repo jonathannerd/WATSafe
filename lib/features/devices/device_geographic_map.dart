@@ -49,8 +49,9 @@ class _MarkerPixelOffset {
 }
 
 List<_MarkerPixelOffset> _computeMarkerPixelOffsets(
-  List<DeviceMapMarker> markers,
-) {
+  List<DeviceMapMarker> markers, {
+  double zoom = 15.6,
+}) {
   final assigned = List<bool>.filled(markers.length, false);
   final result = List<_MarkerPixelOffset>.filled(
     markers.length,
@@ -61,9 +62,15 @@ List<_MarkerPixelOffset> _computeMarkerPixelOffsets(
     if (assigned[i]) {
       continue;
     }
+    final refLatRad = markers[i].location.latitude * math.pi / 180.0;
+    final metersPerPixel = math.max(
+      0.05,
+      (156543.03 * math.cos(refLatRad)) / math.pow(2.0, zoom),
+    );
     final group = <int>[i];
     for (var j = i + 1; j < markers.length; j++) {
-      if (markers[i].location.distanceMetersTo(markers[j].location) < 28.0) {
+      final distM = markers[i].location.distanceMetersTo(markers[j].location);
+      if (distM < 28.0 || (distM / metersPerPixel) < 44.0) {
         group.add(j);
       }
     }
@@ -453,6 +460,8 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                         trail: validTrail,
                         markers: _validMarkers,
                         selectedMarkerId: widget.selectedMarkerId,
+                        selectedRingColor: WatSafeTheme.of(context)
+                            .accentPrimary,
                       ),
                     ),
                   ),
@@ -472,7 +481,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                             label: widget.trackingStateLabel!,
                             dotColor:
                                 widget.trackingStateTone ??
-                                WatSafeTheme.amberAccent,
+                                WatSafeTheme.of(context).accentPrimary,
                           ),
                         if (widget.secondaryBadgeLabel != null &&
                             widget.secondaryBadgeLabel!.trim().isNotEmpty)
@@ -482,10 +491,12 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                             dotColor: const Color(0xFF2563EB),
                           ),
                         if (hasDistinctAlarmOrigin)
-                          const _MapBadge(
-                            badgeKey: Key('map_alarm_origin_marker_legend'),
+                          _MapBadge(
+                            badgeKey: const Key(
+                              'map_alarm_origin_marker_legend',
+                            ),
                             label: 'Start → Latest shown',
-                            dotColor: WatSafeTheme.amberAccent,
+                            dotColor: WatSafeTheme.of(context).warningColor,
                           ),
                       ],
                     ),
@@ -531,30 +542,26 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
                     child: _ScaleBarLabel(latitude: _centerLat, zoom: _zoom),
                   ),
 
-                  // 7. Bottom-right required OpenStreetMap attribution
+                  // 7. Bottom-right required OpenStreetMap attribution (compact micro-credit)
                   Positioned(
-                    bottom: 8,
-                    right: 10,
+                    bottom: 6,
+                    right: 8,
                     child: Container(
                       key: const Key('map_attribution_badge'),
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 3,
+                        horizontal: 5,
+                        vertical: 2,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.9),
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(
-                          color: const Color(0xFF0F172A)
-                              .withValues(alpha: 0.12),
-                        ),
+                        color: Colors.white.withValues(alpha: 0.78),
+                        borderRadius: BorderRadius.circular(4),
                       ),
                       child: const Text(
                         '© OpenStreetMap contributors',
                         style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFF334155),
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w500,
+                          color: Color(0xFF475569),
                         ),
                       ),
                     ),
@@ -573,7 +580,7 @@ class DeviceGeographicMapState extends State<DeviceGeographicMap> {
   @visibleForTesting
   Map<String, Offset> computeMarkerScreenPositions(Size viewport) {
     final valid = _validMarkers;
-    final offsets = _computeMarkerPixelOffsets(valid);
+    final offsets = _computeMarkerPixelOffsets(valid, zoom: _zoom);
     final scale = 256.0 * math.pow(2.0, _zoom);
     final centerWorld = _WebMercator.project(_centerLat, _centerLon, scale);
     final out = <String, Offset>{};
@@ -799,6 +806,7 @@ class _DeviceOverlayPainter extends CustomPainter {
     required this.trail,
     required this.markers,
     required this.selectedMarkerId,
+    required this.selectedRingColor,
   });
 
   final double centerLat;
@@ -809,6 +817,7 @@ class _DeviceOverlayPainter extends CustomPainter {
   final List<DeviceLocationSnapshot> trail;
   final List<DeviceMapMarker> markers;
   final String? selectedMarkerId;
+  final Color selectedRingColor;
 
   Offset _toScreen(
     DeviceLocationSnapshot loc,
@@ -877,7 +886,7 @@ class _DeviceOverlayPainter extends CustomPainter {
 
     // 3. Draw multi-device markers (with distinct laptop vs phone icons + co-located fan-out).
     if (markers.isNotEmpty) {
-      final offsets = _computeMarkerPixelOffsets(markers);
+      final offsets = _computeMarkerPixelOffsets(markers, zoom: zoom);
       for (var i = 0; i < markers.length; i++) {
         final marker = markers[i];
         final isSelected = marker.id == selectedMarkerId || marker.isSelected;
@@ -970,7 +979,7 @@ class _DeviceOverlayPainter extends CustomPainter {
       canvas.drawCircle(
         pinPos,
         19.5,
-        Paint()..color = WatSafeTheme.amberAccent.withValues(alpha: 0.38),
+        Paint()..color = selectedRingColor.withValues(alpha: 0.42),
       );
     }
 
@@ -1075,6 +1084,7 @@ class _DeviceOverlayPainter extends CustomPainter {
         oldDelegate.primaryLocation != primaryLocation ||
         oldDelegate.alarmTimeLocation != alarmTimeLocation ||
         oldDelegate.selectedMarkerId != selectedMarkerId ||
+        oldDelegate.selectedRingColor != selectedRingColor ||
         oldDelegate.trail.length != trail.length ||
         oldDelegate.markers != markers;
   }
@@ -1152,19 +1162,21 @@ class _MapIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
     return Material(
-      color: Colors.white.withValues(alpha: 0.95),
+      color: Colors.white.withValues(alpha: 0.96),
       elevation: 2,
       shadowColor: const Color(0xFF0F172A).withValues(alpha: 0.2),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: BorderSide(
-          color: const Color(0xFF0F172A).withValues(alpha: 0.16),
-        ),
+        side: BorderSide(color: palette.accentPrimary.withValues(alpha: 0.32)),
       ),
       child: InkWell(
         key: buttonKey,
         borderRadius: BorderRadius.circular(10),
+        hoverColor: palette.accentPrimary.withValues(alpha: 0.14),
+        focusColor: palette.accentPrimary.withValues(alpha: 0.20),
+        splashColor: palette.accentPrimary.withValues(alpha: 0.22),
         onTap: onPressed,
         child: Tooltip(
           message: tooltip,
