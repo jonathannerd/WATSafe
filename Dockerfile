@@ -17,6 +17,7 @@ RUN printf '%s\n' \
 
 RUN dart pub get
 
+COPY lib/core/models/theme_palette_catalog.dart ./lib/core/models/theme_palette_catalog.dart
 COPY lib/relay ./lib/relay
 COPY backend ./backend
 
