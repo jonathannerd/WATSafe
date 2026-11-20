@@ -75,7 +75,7 @@ void main() {
 
     test('JSON request bodies larger than 2 MiB are rejected with 413', () async {
       final payload = jsonEncode(<String, Object?>{
-        'hostDisplayName': 'x' * (2 * 1024 * 1024),
+        'hostDisplayName': ''.padRight(2 * 1024 * 1024, 'x'),
       });
       final bytes = utf8.encode(payload);
       final request = await client.postUrl(
