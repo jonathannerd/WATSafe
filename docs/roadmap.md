@@ -22,17 +22,17 @@ These are code-level implementation statements, not a claim that every path has 
 ### 2.1 Persist PIN lockouts and review KDF strength
 [Issue #23](https://github.com/jonathannerd/WATSafe/issues/23)
 
-### 2.2 Review macOS Keychain / Application Support duplication
-[Issue #26](https://github.com/jonathannerd/WATSafe/issues/26)
-
-- The native macOS bridge currently writes a protected Application Support copy even when the Keychain write succeeds.
-- Decide whether the copy should be fallback-only or remain as a documented recovery mirror; retain safe migration behavior either way.
-
 - Persist failed-attempt count and lockout deadline using protected local storage.
 - Preserve lockout state across app restart / service recreation.
 - Benchmark higher PBKDF2 work factors or Argon2id on real supported devices.
 - Migrate old verifier records without forcing users to reset their PIN.
 - Verify that storage failures do not silently clear security state.
+
+### 2.2 Review macOS Keychain / Application Support duplication
+[Issue #26](https://github.com/jonathannerd/WATSafe/issues/26)
+
+- The native macOS bridge currently writes a protected Application Support copy even when the Keychain write succeeds.
+- Decide whether the copy should be fallback-only or remain as a documented recovery mirror; retain safe migration behavior either way.
 
 ### 2.3 Native builds are now part of CI
 [PR #24 — Add native platform build validation](https://github.com/jonathannerd/WATSafe/pull/24)
