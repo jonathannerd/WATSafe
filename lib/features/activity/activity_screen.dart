@@ -10,10 +10,20 @@ import '../theme/watsafe_theme.dart';
 /// both this device and any paired laptop, with an interactive incident map,
 /// alarm-time vs latest location comparison, filtered movement trail, and
 /// **Center on device**.
-class ActivityScreen extends StatelessWidget {
+enum _ActivityFilter { all, alarms, testAlerts, interruptions }
+
+class ActivityScreen extends StatefulWidget {
   const ActivityScreen({super.key, required this.controller});
 
   final AlarmController controller;
+
+  @override
+  State<ActivityScreen> createState() => _ActivityScreenState();
+}
+
+class _ActivityScreenState extends State<ActivityScreen> {
+  AlarmController get controller => widget.controller;
+  _ActivityFilter _filter = _ActivityFilter.all;
 
   List<_ActivityEntry> _buildMergedEntries() {
     final byId = <String, _ActivityEntry>{};
@@ -61,7 +71,15 @@ class ActivityScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final entries = _buildMergedEntries();
+    final allEntries = _buildMergedEntries();
+    final entries = allEntries.where((entry) {
+      return switch (_filter) {
+        _ActivityFilter.all => true,
+        _ActivityFilter.alarms => !entry.isTest && !entry.isFailure,
+        _ActivityFilter.testAlerts => entry.isTest,
+        _ActivityFilter.interruptions => entry.isFailure,
+      };
+    }).toList(growable: false);
     final palette = WatSafeTheme.of(context);
     final selectedId = controller.selectedActivityIncidentId;
     final selectedEntry = selectedId == null
@@ -86,7 +104,11 @@ class ActivityScreen extends StatelessWidget {
                 'Recent alarms and test alerts from your protected devices.',
                 style: TextStyle(color: palette.textMuted),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 14),
+              if (allEntries.isNotEmpty) ...<Widget>[
+                _buildFilterBar(),
+                const SizedBox(height: 16),
+              ],
               if (selectedEntry != null) ...<Widget>[
                 _SelectedEventDetailCard(
                   entry: selectedEntry,
@@ -94,8 +116,10 @@ class ActivityScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 20),
               ],
-              if (entries.isEmpty)
+              if (allEntries.isEmpty)
                 const _EmptyActivityCard()
+              else if (entries.isEmpty)
+                _FilteredActivityEmptyCard(filter: _filter)
               else
                 ...entries.map(
                   (entry) => Padding(
@@ -110,6 +134,77 @@ class ActivityScreen extends StatelessWidget {
                 ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+
+  Widget _buildFilterBar() {
+    return Wrap(
+      key: const Key('activity_filter_bar'),
+      spacing: 8,
+      runSpacing: 8,
+      children: <Widget>[
+        _filterChip(_ActivityFilter.all, 'All', 'activity_filter_all'),
+        _filterChip(_ActivityFilter.alarms, 'Alarms', 'activity_filter_alarms'),
+        _filterChip(
+          _ActivityFilter.testAlerts,
+          'Test alerts',
+          'activity_filter_test_alerts',
+        ),
+        _filterChip(
+          _ActivityFilter.interruptions,
+          'Interruptions',
+          'activity_filter_interruptions',
+        ),
+      ],
+    );
+  }
+
+  Widget _filterChip(_ActivityFilter filter, String label, String key) {
+    return FilterChip(
+      key: Key(key),
+      label: Text(label),
+      selected: _filter == filter,
+      onSelected: (_) {
+        setState(() {
+          _filter = filter;
+        });
+      },
+    );
+  }
+}
+
+class _FilteredActivityEmptyCard extends StatelessWidget {
+  const _FilteredActivityEmptyCard({required this.filter});
+
+  final _ActivityFilter filter;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = switch (filter) {
+      _ActivityFilter.all => 'events',
+      _ActivityFilter.alarms => 'alarm events',
+      _ActivityFilter.testAlerts => 'test alerts',
+      _ActivityFilter.interruptions => 'interruptions',
+    };
+    return Card(
+      key: const Key('activity_filtered_empty_state'),
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          children: <Widget>[
+            const Icon(Icons.filter_list_off_rounded, size: 28),
+            const SizedBox(height: 8),
+            Text(
+              'No $label in this filter',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
         ),
       ),
     );
