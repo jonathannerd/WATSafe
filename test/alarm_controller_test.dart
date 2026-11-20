@@ -1003,68 +1003,65 @@ void main() {
       );
     });
 
-    test(
-      'Keychain read/write failures never fall back to a stale generic PIN file',
-      () async {
-        final legacyStorage = PlatformSecurePinStorage(
-          channel: testChannel,
-          fallbackDirectory: tempDir,
-          supportsNativeChannelOverride: false,
-        );
-        await legacyStorage.writePinRecord(sampleRecord);
-        expect(await fallbackFile.exists(), isTrue);
-        final originalFallback = await fallbackFile.readAsString();
+    test('Keychain read/write failures never fall back to a stale generic PIN file', () async {
+      final legacyStorage = PlatformSecurePinStorage(
+        channel: testChannel,
+        fallbackDirectory: tempDir,
+        supportsNativeChannelOverride: false,
+      );
+      await legacyStorage.writePinRecord(sampleRecord);
+      expect(await fallbackFile.exists(), isTrue);
+      final originalFallback = await fallbackFile.readAsString();
 
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(testChannel, (MethodCall call) async {
-              switch (call.method) {
-                case 'readPinRecord':
-                  throw PlatformException(
-                    code: 'KEYCHAIN_READ_FAILED',
-                    message: 'Simulated locked Keychain',
-                  );
-                case 'writePinRecord':
-                  throw PlatformException(
-                    code: 'SECURE_STORAGE_WRITE_FAILED',
-                    message: 'Simulated Keychain write failure',
-                  );
-              }
-              return null;
-            });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(testChannel, (MethodCall call) async {
+            switch (call.method) {
+              case 'readPinRecord':
+                throw PlatformException(
+                  code: 'KEYCHAIN_READ_FAILED',
+                  message: 'Simulated locked Keychain',
+                );
+              case 'writePinRecord':
+                throw PlatformException(
+                  code: 'SECURE_STORAGE_WRITE_FAILED',
+                  message: 'Simulated Keychain write failure',
+                );
+            }
+            return null;
+          });
 
-        final nativeStorage = PlatformSecurePinStorage(
-          channel: testChannel,
-          fallbackDirectory: tempDir,
-          supportsNativeChannelOverride: true,
-        );
+      final nativeStorage = PlatformSecurePinStorage(
+        channel: testChannel,
+        fallbackDirectory: tempDir,
+        supportsNativeChannelOverride: true,
+      );
 
-        await expectLater(
-          nativeStorage.readPinRecord(),
-          throwsA(
-            isA<PlatformException>().having(
-              (error) => error.code,
-              'code',
-              'KEYCHAIN_READ_FAILED',
-            ),
+      await expectLater(
+        nativeStorage.readPinRecord(),
+        throwsA(
+          isA<PlatformException>().having(
+            (error) => error.code,
+            'code',
+            'KEYCHAIN_READ_FAILED',
           ),
-        );
-        expect(await fallbackFile.exists(), isTrue);
-        expect(await fallbackFile.readAsString(), originalFallback);
+        ),
+      );
+      expect(await fallbackFile.exists(), isTrue);
+      expect(await fallbackFile.readAsString(), originalFallback);
 
-        await expectLater(
-          nativeStorage.writePinRecord(sampleRecord),
-          throwsA(
-            isA<PlatformException>().having(
-              (error) => error.code,
-              'code',
-              'SECURE_STORAGE_WRITE_FAILED',
-            ),
+      await expectLater(
+        nativeStorage.writePinRecord(sampleRecord),
+        throwsA(
+          isA<PlatformException>().having(
+            (error) => error.code,
+            'code',
+            'SECURE_STORAGE_WRITE_FAILED',
           ),
-        );
-        expect(await fallbackFile.exists(), isTrue);
-        expect(await fallbackFile.readAsString(), originalFallback);
-      },
-    );
+        ),
+      );
+      expect(await fallbackFile.exists(), isTrue);
+      expect(await fallbackFile.readAsString(), originalFallback);
+    });
 
     test(
       '4. deletePinRecord removes both native and fallback records',
