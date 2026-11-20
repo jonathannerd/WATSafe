@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import '../services/audio_alarm_service.dart';
 import '../services/local_notification_service.dart';
 import '../services/local_storage_service.dart';
@@ -12,7 +14,10 @@ import 'platform_detector_registry.dart';
 AppServices createAppServices() {
   final notifications = ConfigurableRemoteNotificationService(
     enableBackgroundPolling: true,
-    initialRelayEndpointUrl: RelayConfig.resolveDefaultRelayUrl(),
+    initialRelayEndpointUrl: RelayConfig.resolveDefaultRelayUrl(
+      allowLocalDevelopment:
+          Platform.isMacOS || Platform.isWindows || Platform.isLinux,
+    ),
   );
   return (
     detectors: PlatformDetectorRegistry.createDefaultDetectors(
