@@ -214,7 +214,9 @@ void main() {
     },
   );
 
-  test('2. Calibration and readiness failure prevents arming and never shows Protected', () async {
+  test(
+    '2. Calibration and readiness failure prevents arming and never shows Protected',
+    () async {
     // Case A: Pre-arming readiness check fails (permission required)
     fakeDetector.capability = const DetectorCapability(
       type: DetectorType.macosCameraSceneMotion,
@@ -257,7 +259,9 @@ void main() {
     expect(controller.statusMessage, contains('AVCaptureSession failed'));
   });
 
-  test('3. Duplicate detector events produce only one active incident and one siren start', () async {
+  test(
+    '3. Duplicate detector events produce only one active incident and one siren start',
+    () async {
     await armControllerToArmedState();
     final sessionId = controller.activeSessionId!;
 
@@ -313,7 +317,9 @@ void main() {
     expect(controller.activeIncident?.peakMotionScore, 0.29);
   });
 
-  test('4. Correct and incorrect PIN behavior, backoff lockout, and PIN change validation', () async {
+  test(
+    '4. Correct and incorrect PIN behavior, backoff lockout, and PIN change validation',
+    () async {
     await armControllerToArmedState();
     final sessionId = controller.activeSessionId!;
 
@@ -439,7 +445,9 @@ void main() {
     },
   );
 
-  test('6. Detector failure and lifecycle changes update status accurately and never show Protected when failed or paused', () async {
+  test(
+    '6. Detector failure and lifecycle changes update status accurately and never show Protected when failed or paused',
+    () async {
     await armControllerToArmedState();
     final sessionId = controller.activeSessionId!;
     expect(controller.state, ProtectionState.armed);
@@ -498,7 +506,9 @@ void main() {
     expect(fakeAudio.isPlaying, isFalse);
   });
 
-  test('7. Local alarm continues operating when incident saving or remote notification delivery fails', () async {
+  test(
+    '7. Local alarm continues operating when incident saving or remote notification delivery fails',
+    () async {
     await armControllerToArmedState();
     final sessionId = controller.activeSessionId!;
 
@@ -529,7 +539,9 @@ void main() {
     expect(controller.warningMessage, contains('Remote alert dispatch failed'));
   });
 
-  test('8. Disarming while siren startup is still pending stops audio and never restarts siren', () async {
+  test(
+    '8. Disarming while siren startup is still pending stops audio and never restarts siren',
+    () async {
     await armControllerToArmedState();
     final sessionId = controller.activeSessionId!;
 
@@ -583,7 +595,9 @@ void main() {
     );
   });
 
-  test('9. Invalid and repeated state transitions & concurrent PIN submissions are guarded', () async {
+  test(
+    '9. Invalid and repeated state transitions & concurrent PIN submissions are guarded',
+    () async {
     // Motion trigger while disarmed is ignored
     fakeDetector.emit(
       DetectorEvent(
@@ -664,7 +678,9 @@ void main() {
     expect(fakeAudio.stopCount, 1);
   });
 
-  test('10. Minimize/suspend during arming or armed pauses cleanly, prevents duplicate streams on repeated resume, and stays paused if restart fails', () async {
+  test(
+    '10. Minimize/suspend during arming or armed pauses cleanly, prevents duplicate streams on repeated resume, and stays paused if restart fails',
+    () async {
     // A: Minimize mid-countdown (arming, before detector ever started)
     expect(await controller.startArming(), isTrue);
     final sessionId = controller.activeSessionId!;
@@ -720,7 +736,9 @@ void main() {
     expect(fakeDetector.startCount, 2);
   });
 
-  test('11. Minimize, suspend, and repeated resume during active alarm preserve alarming state, require PIN, and never duplicate sirens', () async {
+  test(
+    '11. Minimize, suspend, and repeated resume during active alarm preserve alarming state, require PIN, and never duplicate sirens',
+    () async {
     await armControllerToArmedState();
     final sessionId = controller.activeSessionId!;
 
@@ -782,7 +800,9 @@ void main() {
     expect(fakeAudio.isPlaying, isFalse);
   });
 
-  test('12. Background-capable detector (Android Foreground Service) stays armed on app pause and exits armed if service stops', () async {
+  test(
+    '12. Background-capable detector (Android Foreground Service) stays armed on app pause and exits armed if service stops',
+    () async {
     final bgDetector = FakeMotionDetector(
       type: DetectorType.androidMotionSensors,
       supportsBackgroundMonitoring: true,
@@ -1010,7 +1030,9 @@ void main() {
       },
     );
 
-    test('4. deletePinRecord removes both native and fallback records', () async {
+    test(
+      '4. deletePinRecord removes both native and fallback records',
+      () async {
       String? nativeStoredPayload = '{"algorithm":"PBKDF2-HMAC-SHA256"}';
       var nativeDeleteCalled = false;
 
