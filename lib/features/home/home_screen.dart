@@ -107,7 +107,6 @@ class HomeScreen extends StatelessWidget {
   }
 }
 
-
 class _SetupReadinessCard extends StatelessWidget {
   const _SetupReadinessCard({required this.controller});
 
@@ -251,7 +250,10 @@ class _SetupReadinessCard extends StatelessWidget {
                   child: TextButton.icon(
                     key: const Key('home_enable_location_button'),
                     onPressed: _enableLocationSharing,
-                    icon: const Icon(Icons.location_searching_rounded, size: 17),
+                    icon: const Icon(
+                      Icons.location_searching_rounded,
+                      size: 17,
+                    ),
                     label: Text(
                       sharingCanBeEnabled
                           ? 'Enable location sharing'

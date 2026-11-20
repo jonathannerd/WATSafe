@@ -163,7 +163,9 @@ void main() {
     try {
       await controller.initialize();
       await tester.pumpWidget(
-        MaterialApp(home: Scaffold(body: HomeScreen(controller: controller))),
+        MaterialApp(
+          home: Scaffold(body: HomeScreen(controller: controller)),
+        ),
       );
       await tester.pumpAndSettle();
 

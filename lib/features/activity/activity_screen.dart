@@ -72,14 +72,16 @@ class _ActivityScreenState extends State<ActivityScreen> {
   @override
   Widget build(BuildContext context) {
     final allEntries = _buildMergedEntries();
-    final entries = allEntries.where((entry) {
-      return switch (_filter) {
-        _ActivityFilter.all => true,
-        _ActivityFilter.alarms => !entry.isTest && !entry.isFailure,
-        _ActivityFilter.testAlerts => entry.isTest,
-        _ActivityFilter.interruptions => entry.isFailure,
-      };
-    }).toList(growable: false);
+    final entries = allEntries
+        .where((entry) {
+          return switch (_filter) {
+            _ActivityFilter.all => true,
+            _ActivityFilter.alarms => !entry.isTest && !entry.isFailure,
+            _ActivityFilter.testAlerts => entry.isTest,
+            _ActivityFilter.interruptions => entry.isFailure,
+          };
+        })
+        .toList(growable: false);
     final palette = WatSafeTheme.of(context);
     final selectedId = controller.selectedActivityIncidentId;
     final selectedEntry = selectedId == null
@@ -138,7 +140,6 @@ class _ActivityScreenState extends State<ActivityScreen> {
       ),
     );
   }
-
 
   Widget _buildFilterBar() {
     return Wrap(
@@ -200,9 +201,8 @@ class _FilteredActivityEmptyCard extends StatelessWidget {
             Text(
               'No $label in this filter',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
             ),
           ],
         ),
