@@ -66,6 +66,11 @@ class HomeScreen extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               _PhoneConnectionRow(controller: controller),
+              if (controller.selectedDetectorType ==
+                  DetectorType.browserCameraSceneMotion) ...<Widget>[
+                const SizedBox(height: 10),
+                const _BrowserMonitoringLimitsCard(),
+              ],
               if (!controller.isCompanionMode) ...<Widget>[
                 const SizedBox(height: 10),
                 _ProtectionDetailsCard(controller: controller),
@@ -94,6 +99,52 @@ class HomeScreen extends StatelessWidget {
           child: _DisarmPinSheet(controller: controller),
         );
       },
+    );
+  }
+}
+
+class _BrowserMonitoringLimitsCard extends StatelessWidget {
+  const _BrowserMonitoringLimitsCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
+    return Card(
+      key: const Key('browser_monitoring_limitations'),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Icon(Icons.visibility_outlined, color: palette.warningColor),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    'Browser monitoring limits',
+                    style: TextStyle(
+                      color: palette.textPrimary,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 13.5,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Camera monitoring pauses when this tab is hidden or the browser suspends it. Keep Safari open, this tab visible, and the device awake. Check that WATSafe says “Protected” before leaving it unattended.',
+                    style: TextStyle(
+                      color: palette.textMuted,
+                      fontSize: 12.5,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

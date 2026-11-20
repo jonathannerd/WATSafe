@@ -5,6 +5,7 @@ import 'package:watsafe/core/alarm/alarm_state.dart';
 import 'package:watsafe/core/contracts/platform_contracts.dart';
 import 'package:watsafe/core/models/detector_models.dart';
 import 'package:watsafe/core/models/settings_models.dart';
+import 'package:watsafe/features/home/home_screen.dart';
 import 'package:watsafe/main.dart';
 import 'package:watsafe/services/audio_alarm_service.dart';
 import 'package:watsafe/services/local_storage_service.dart';
@@ -109,10 +110,85 @@ void main() {
       expect(find.text('Test alert'), findsOneWidget);
       expect(find.textContaining('Jonathan’s MacBook'), findsOneWidget);
 
+      await tester.tap(find.byKey(const Key('activity_filter_alarms')));
+      await tester.pumpAndSettle();
+      expect(find.text('No alarm events in this filter'), findsOneWidget);
+      expect(find.text('Test alert'), findsNothing);
+
+      await tester.tap(find.byKey(const Key('activity_filter_test_alerts')));
+      await tester.pumpAndSettle();
+      expect(find.text('Test alert'), findsOneWidget);
+
       controller.dispose();
       await fakeDetector.dispose();
     },
   );
+
+  testWidgets(
+    'browser Home explains monitoring limits without a setup checklist',
+    (WidgetTester tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 700));
+      final fakeDetector = FakeMotionDetector(
+        type: DetectorType.browserCameraSceneMotion,
+        initialCapability: const DetectorCapability(
+          type: DetectorType.browserCameraSceneMotion,
+          status: CapabilityStatus.permissionRequired,
+          permissionStatus: PermissionStatus.notDetermined,
+          summary: 'Allow camera access to arm WATSafe.',
+          guidance: 'Keep this tab visible and the device awake.',
+        ),
+      );
+      final pinService = PinSecurityService(
+        storage: InMemorySecurePinStorage(),
+        pbkdf2Iterations: 500,
+      );
+      await pinService.setupInitialPin(pin: '135790', confirmPin: '135790');
+      final controller = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.browserCameraSceneMotion: fakeDetector,
+        },
+        audioAdapter: FakeAudioAlarmAdapter(),
+        pinService: pinService,
+        incidentStorage: InMemoryIncidentStorage(),
+        settingsStorage: InMemorySettingsStorage(
+          const ProtectionSettings(
+            selectedDetector: DetectorType.browserCameraSceneMotion,
+            onboardingCompleted: true,
+            deviceDisplayName: 'My Browser',
+          ),
+        ),
+        notificationAdapter: const UnconfiguredRemoteNotificationService(),
+      );
+
+      try {
+        await controller.initialize();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: HomeScreen(controller: controller)),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const Key('home_setup_readiness_card')),
+          findsNothing,
+        );
+        expect(find.text('Setup checklist'), findsNothing);
+        expect(find.text('Camera access · Required'), findsNothing);
+        expect(find.text('Phone pairing · Optional'), findsNothing);
+        expect(
+          find.byKey(const Key('browser_monitoring_limitations')),
+          findsOneWidget,
+        );
+        expect(find.text('Browser monitoring limits'), findsOneWidget);
+      } finally {
+        controller.dispose();
+        await fakeDetector.dispose();
+        await tester.binding.setSurfaceSize(null);
+      }
+    },
+  );
+
   testWidgets(
     'iPad portrait and landscape use the adaptive navigation rail without layout errors',
     (WidgetTester tester) async {
@@ -180,6 +256,15 @@ void main() {
         await tester.tap(find.text('Settings'));
         await tester.pumpAndSettle();
         expect(find.byKey(const Key('settings_category_list')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+
+        await tester.tap(find.text('Devices'));
+        await tester.pumpAndSettle();
+        final emptyMap = find.byKey(
+          const Key('devices_map_unavailable_placeholder'),
+        );
+        expect(emptyMap, findsOneWidget);
+        expect(tester.getSize(emptyMap).height, lessThanOrEqualTo(270));
         expect(tester.takeException(), isNull);
       } finally {
         await tester.binding.setSurfaceSize(null);

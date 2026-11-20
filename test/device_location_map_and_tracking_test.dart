@@ -675,7 +675,7 @@ void main() {
     });
 
     testWidgets(
-      '4. Responsive Devices map (1280x860 desktop & 390x844 iPhone 13), Location unavailable state, notification tap -> direct incident map routing, and Companion PWA map assets',
+      '4. Responsive Devices map (1280x860 desktop & 390x844 iPhone 13), blocked location permission state, notification tap -> direct incident map routing, and Companion PWA map assets',
       (WidgetTester tester) async {
         final endpoint = 'http://127.0.0.1:$relayPort';
         final now = DateTime.now();
@@ -750,7 +750,7 @@ void main() {
           await detector.dispose();
         });
 
-        // --- A. Desktop (1280x860): Devices screen with denied permission shows "Location unavailable", NEVER (0, 0) ---
+        // --- A. Desktop (1280x860): denied permission is explicit, NEVER show (0, 0) ---
         await tester.binding.setSurfaceSize(const Size(1280, 860));
         await tester.pumpWidget(WatSafeApp(controller: controller));
         await tester.pumpAndSettle();
@@ -758,7 +758,7 @@ void main() {
         await tester.tap(find.text('Devices'));
         await tester.pumpAndSettle();
 
-        expect(find.text('Location unavailable'), findsWidgets);
+        expect(find.text('Location access is blocked'), findsWidgets);
         expect(find.textContaining('0.00000'), findsNothing);
         expect(
           find.byKey(const Key('devices_grant_location_perm_btn')),

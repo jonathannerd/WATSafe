@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/alarm/alarm_controller.dart';
@@ -321,6 +322,27 @@ class _DevicesScreenState extends State<DevicesScreen> {
     );
   }
 
+  Future<void> _enableLocationSharing() async {
+    final controller = widget.controller;
+    if (controller.isCompanionMode) {
+      await controller.updateShareCompanionPhoneLocation(true);
+    } else {
+      if (!controller.settings.shareLocationOnAlarm) {
+        // Enabling sharing already requests permission and starts location
+        // refresh; avoid immediately prompting a second time.
+        await controller.updateShareLocationOnAlarm(true);
+      } else {
+        if (controller.locationPermissionStatus != PermissionStatus.granted) {
+          await controller.requestLocationPermission();
+        }
+        if (controller.locationPermissionStatus == PermissionStatus.granted) {
+          await controller.refreshProtectedDeviceLocation(highAccuracy: true);
+        }
+      }
+    }
+    await _refreshDevices();
+  }
+
   Widget _buildMapArea({
     required AuthorizedDeviceLocationSummary? selected,
     required AuthorizedDeviceLocationSummary? mapFocusDevice,
@@ -331,9 +353,41 @@ class _DevicesScreenState extends State<DevicesScreen> {
   }) {
     final safeHeight = height.clamp(220.0, 620.0);
     if (markers.isEmpty) {
+      final controller = widget.controller;
+      final sharingEnabled = controller.isCompanionMode
+          ? controller.settings.shareCompanionPhoneLocation
+          : controller.settings.shareLocationOnAlarm;
+      final permission = controller.locationPermissionStatus;
+      final permissionBlocked =
+          permission == PermissionStatus.denied ||
+          permission == PermissionStatus.restricted;
+      final title = !sharingEnabled
+          ? 'Location sharing is off'
+          : permissionBlocked
+          ? 'Location access is blocked'
+          : 'Location unavailable';
+      final explanation = !controller.isLocationSupported
+          ? 'This device or browser does not provide location access.'
+          : !sharingEnabled
+          ? 'Location is optional. Enable sharing only when you want WATSafe to attach this device’s position to incident reports.'
+          : permissionBlocked
+          ? (kIsWeb
+                ? 'Allow location access for this site in your browser settings, then return here and refresh.'
+                : 'Allow location access in your device settings, then return here and refresh.')
+          : (selected?.statusExplanation ??
+                'Allow location access so WATSafe can attach this device’s position to an incident report.');
+      final canOfferAction =
+          controller.isLocationSupported &&
+          (!permissionBlocked || !sharingEnabled);
+      final actionLabel = !sharingEnabled
+          ? 'Enable location sharing'
+          : permission == PermissionStatus.granted
+          ? 'Refresh location'
+          : 'Enable location';
+
       return Container(
         key: const Key('devices_map_unavailable_placeholder'),
-        height: safeHeight,
+        height: safeHeight > 270 ? 270 : safeHeight,
         decoration: BoxDecoration(
           color: const Color(0xFFEEF2F6),
           borderRadius: BorderRadius.circular(16),
@@ -341,35 +395,48 @@ class _DevicesScreenState extends State<DevicesScreen> {
             color: const Color(0xFF94A3B8).withValues(alpha: 0.45),
           ),
         ),
-        padding: const EdgeInsets.all(24),
+        padding: const EdgeInsets.all(22),
         alignment: Alignment.center,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            const Icon(
-              Icons.location_off_outlined,
-              size: 34,
-              color: Color(0xFF475569),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'Location unavailable',
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w800,
-                color: const Color(0xFF0F172A),
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              selected?.statusExplanation ?? 'Allow location access on your protected device so its position can appear here.',
-              textAlign: TextAlign.center,
-              style: const TextStyle(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Icon(
+                Icons.location_off_outlined,
+                size: 30,
                 color: Color(0xFF475569),
-                fontSize: 13.5,
-                height: 1.4,
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: const Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                explanation,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Color(0xFF475569),
+                  fontSize: 13,
+                  height: 1.4,
+                ),
+              ),
+              if (canOfferAction) ...<Widget>[
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  key: const Key('devices_enable_location_button'),
+                  onPressed: _isRefreshing ? null : _enableLocationSharing,
+                  icon: const Icon(Icons.my_location_rounded, size: 17),
+                  label: Text(actionLabel),
+                ),
+              ],
+            ],
+          ),
         ),
       );
     }
