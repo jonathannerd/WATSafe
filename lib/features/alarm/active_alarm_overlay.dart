@@ -22,6 +22,7 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
   Timer? _lockoutRefreshTimer;
   String? _feedbackMessage;
   bool _isVerifying = false;
+  bool _wasLockedOut = false;
 
   @override
   void initState() {
@@ -29,7 +30,12 @@ class _ActiveAlarmScreenState extends State<ActiveAlarmScreen> {
     _lockoutRefreshTimer = Timer.periodic(const Duration(milliseconds: 500), (
       _,
     ) {
-      if (mounted && widget.controller.isPinLockedOut) {
+      if (!mounted) {
+        return;
+      }
+      final isLockedOut = widget.controller.isPinLockedOut;
+      if (isLockedOut || _wasLockedOut) {
+        _wasLockedOut = isLockedOut;
         setState(() {});
       }
     });
