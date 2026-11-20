@@ -268,7 +268,7 @@ final class MacOSSecureStorageBridge {
       // Safely migrate an older fallback record back into Keychain when it
       // becomes available. Retain the file if the Keychain write fails.
       if let fallback = fallback,
-        writeToKeychain(account: accountName, payload: fallback)
+        writeToKeychain(account: accountName, payload: fallback).saved
       {
         deleteProtectedFile(fileName: "secure_pin_record.json")
       }
@@ -286,12 +286,13 @@ final class MacOSSecureStorageBridge {
         )
         return
       }
-      if writeToKeychain(account: accountName, payload: payload) {
+      let keychainWrite = writeToKeychain(account: accountName, payload: payload)
+      if keychainWrite.saved {
         // Keychain is the primary store. Do not retain an unnecessary
         // unencrypted second copy once the secure write is confirmed.
         deleteProtectedFile(fileName: "secure_pin_record.json")
         result("macOS Security Keychain (PBKDF2-HMAC-SHA256)")
-      } else if writeToProtectedFile(
+      } else if keychainWrite.fallbackAllowed && writeToProtectedFile(
         fileName: "secure_pin_record.json",
         payload: payload
       ) {
@@ -334,7 +335,7 @@ final class MacOSSecureStorageBridge {
       }
       let fallback = readFromProtectedFile(fileName: fileName)
       if let fallback = fallback,
-        writeToKeychain(account: account, payload: fallback)
+        writeToKeychain(account: account, payload: fallback).saved
       {
         deleteProtectedFile(fileName: fileName)
       }
@@ -355,10 +356,13 @@ final class MacOSSecureStorageBridge {
       }
       let account = "secret_\(key)"
       let fileName = "secure_secret_\(key).json"
-      if writeToKeychain(account: account, payload: payload) {
+      let keychainWrite = writeToKeychain(account: account, payload: payload)
+      if keychainWrite.saved {
         deleteProtectedFile(fileName: fileName)
         result("ok")
-      } else if writeToProtectedFile(fileName: fileName, payload: payload) {
+      } else if keychainWrite.fallbackAllowed &&
+        writeToProtectedFile(fileName: fileName, payload: payload)
+      {
         result("ok")
       } else {
         result(
@@ -405,9 +409,12 @@ final class MacOSSecureStorageBridge {
     return (String(data: data, encoding: .utf8), status)
   }
 
-  private func writeToKeychain(account: String, payload: String) -> Bool {
+  private func writeToKeychain(
+    account: String,
+    payload: String
+  ) -> (saved: Bool, fallbackAllowed: Bool) {
     guard let data = payload.data(using: .utf8) else {
-      return false
+      return (false, false)
     }
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
@@ -421,16 +428,31 @@ final class MacOSSecureStorageBridge {
       updatedAttributes as CFDictionary
     )
     if updateStatus == errSecSuccess {
-      return true
+      return (true, false)
     }
     guard updateStatus == errSecItemNotFound else {
-      // Preserve any existing Keychain record when an update fails.
-      return false
+      // The record may exist but Keychain may be locked or unavailable.
+      // Never create a competing file record in that ambiguous state.
+      return (false, false)
     }
 
     var attributes = query
     attributes[kSecValueData as String] = data
-    return SecItemAdd(attributes as CFDictionary, nil) == errSecSuccess
+    let addStatus = SecItemAdd(attributes as CFDictionary, nil)
+    if addStatus == errSecSuccess {
+      return (true, false)
+    }
+    if addStatus == errSecDuplicateItem {
+      // Another writer may have created the item after the initial update.
+      let retryStatus = SecItemUpdate(
+        query as CFDictionary,
+        updatedAttributes as CFDictionary
+      )
+      return (retryStatus == errSecSuccess, false)
+    }
+    // Keychain confirmed there was no prior item. A protected local fallback
+    // is safe because subsequent reads will also see ItemNotFound.
+    return (false, true)
   }
 
   private func deleteFromKeychain(account: String) {
