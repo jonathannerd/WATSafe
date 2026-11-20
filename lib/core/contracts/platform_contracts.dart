@@ -107,7 +107,7 @@ class StoredPinRecord {
   factory StoredPinRecord.fromJson(Map<String, Object?> json) {
     final rawFailedAttempts = json['failedAttempts'];
     final failedAttempts = rawFailedAttempts is num
-        ? rawFailedAttempts.toInt().clamp(0, 1000000)
+        ? rawFailedAttempts.toInt().clamp(0, 1000000).toInt()
         : 0;
     return StoredPinRecord(
       algorithm: json['algorithm'] as String? ?? 'PBKDF2-HMAC-SHA256',
