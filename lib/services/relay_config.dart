@@ -81,7 +81,18 @@ class RelayConfig {
       _compiledRelayUrl.trim().isNotEmpty ||
       hasExplicitRuntimeEnvVarOverride();
 
-  static String resolveDefaultRelayUrl({Uri? browserOrigin}) {
+  /// Resolves an explicitly configured relay, or the same-origin relay
+  /// when the browser is opened from its companion/pairing route.
+  ///
+  /// Loopback is intentionally opt-in: it is only valid for desktop
+  /// development, where LocalRelaySupervisor can start the embedded service.
+  /// On iOS, Android, and standalone hosted web builds, an empty result means
+  /// the user must configure a reachable HTTPS relay instead of targeting
+  /// 127.0.0.1 on the phone/tablet itself.
+  static String resolveDefaultRelayUrl({
+    Uri? browserOrigin,
+    bool allowLocalDevelopment = false,
+  }) {
     if (_compiledApiUrl.trim().isNotEmpty) {
       return _trimTrailingSlash(_compiledApiUrl);
     }
@@ -99,7 +110,7 @@ class RelayConfig {
             browserOrigin.path.startsWith('/companion'))) {
       return '${browserOrigin.scheme}://${browserOrigin.authority}';
     }
-    return localDevelopmentRelayUrl;
+    return allowLocalDevelopment ? localDevelopmentRelayUrl : '';
   }
 
   static String _trimTrailingSlash(String raw) {
