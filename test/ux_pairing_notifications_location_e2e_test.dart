@@ -843,6 +843,13 @@ void main() {
             '654321',
           );
           await tester.tap(find.byKey(const Key('alarm_disarm_button')));
+          await tester.runAsync(() async {
+            final deadline = DateTime.now().add(const Duration(seconds: 5));
+            while (laptopController.state != ProtectionState.disarmed &&
+                DateTime.now().isBefore(deadline)) {
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+            }
+          });
           await tester.pumpAndSettle();
 
           expect(laptopAudio.isPlaying, isFalse);
