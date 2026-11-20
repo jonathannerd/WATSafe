@@ -105,7 +105,8 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
 
       final hasHardware = response['hasMotionHardware'] as bool? ?? false;
       final deviceName = response['deviceName'] as String?;
-      final permRaw = response['permissionStatus'] as String? ?? 'granted';
+      final permRaw =
+          response['permissionStatus'] as String? ?? 'notDetermined';
       final permissionStatus = _parsePermissionStatus(permRaw);
       final detail = response['detail'] as String?;
 
@@ -120,23 +121,32 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
         );
       }
 
-      if (permissionStatus == PermissionStatus.denied ||
+      // Core Motion live sensor data does not expose a separate
+      // permission state on supported iOS SDKs. Actual sampling is checked
+      // when startMonitoring is called.
+      if (permissionStatus == PermissionStatus.notDetermined ||
+          permissionStatus == PermissionStatus.denied ||
           permissionStatus == PermissionStatus.restricted) {
+        final guidance = permissionStatus == PermissionStatus.notDetermined
+            ? 'Tap Grant Motion Sensor Permission and allow WATSafe to access motion data.'
+            : 'Open iOS Settings and allow WATSafe to access motion data, then tap Refresh Readiness.';
         return DetectorCapability(
           type: DetectorType.iosCoreMotionForeground,
           status: CapabilityStatus.permissionRequired,
           permissionStatus: permissionStatus,
           hardwareDeviceName: deviceName ?? 'Apple Core Motion IMU',
-          summary: 'iOS Motion & Fitness permission is disabled for WATSafe.',
+          summary: permissionStatus == PermissionStatus.notDetermined
+              ? 'iOS motion access has not been decided yet.'
+              : 'iOS motion access is disabled or restricted for WATSafe.',
           statusDetail: detail,
-          guidance: 'Open iOS Settings → Privacy & Security → Motion & Fitness, enable WATSafe, then tap Refresh Readiness.',
+          guidance: guidance,
         );
       }
 
       return DetectorCapability(
         type: DetectorType.iosCoreMotionForeground,
         status: CapabilityStatus.ready,
-        permissionStatus: PermissionStatus.granted,
+        permissionStatus: permissionStatus,
         hardwareDeviceName: deviceName ?? 'Apple Core Motion IMU',
         summary:
             'Ready — ${deviceName ?? "iOS Core Motion"} available (foreground active monitoring).',
@@ -165,19 +175,9 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
 
   @override
   Future<PermissionStatus> requestPermission() async {
-    if (!_isIOS) {
-      return PermissionStatus.notApplicable;
-    }
-    try {
-      final raw = await _methodChannel.invokeMethod<String>(
-        'requestPermission',
-      );
-      return _parsePermissionStatus(raw ?? 'granted');
-    } on MissingPluginException {
-      return PermissionStatus.notApplicable;
-    } on PlatformException {
-      return PermissionStatus.denied;
-    }
+    // Raw Core Motion sampling has no separate permission prompt/status.
+    // Let the native startMonitoring call report whether sampling succeeds.
+    return PermissionStatus.notApplicable;
   }
 
   @override

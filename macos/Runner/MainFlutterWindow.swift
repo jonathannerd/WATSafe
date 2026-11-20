@@ -244,11 +244,35 @@ final class MacOSSecureStorageBridge {
   private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "readPinRecord":
-      if let keychainValue = readFromKeychain(account: accountName) {
+      let keychainRead = readFromKeychain(account: accountName)
+      if let keychainValue = keychainRead.value {
+        // A successful Keychain read proves the primary copy is available.
+        // Remove only the stale fallback after that confirmation.
+        deleteProtectedFile(fileName: "secure_pin_record.json")
         result(keychainValue)
         return
       }
-      result(readFromProtectedFile(fileName: "secure_pin_record.json"))
+      guard keychainRead.status == errSecItemNotFound else {
+        // Never fall back to an older file when Keychain is temporarily
+        // unavailable (for example, because the login keychain is locked).
+        result(
+          FlutterError(
+            code: "KEYCHAIN_READ_FAILED",
+            message: "Could not read the PIN from macOS Keychain (status \(keychainRead.status)).",
+            details: nil
+          )
+        )
+        return
+      }
+      let fallback = readFromProtectedFile(fileName: "secure_pin_record.json")
+      // Safely migrate an older fallback record back into Keychain when it
+      // becomes available. Retain the file if the Keychain write fails.
+      if let fallback = fallback,
+        writeToKeychain(account: accountName, payload: fallback).saved
+      {
+        deleteProtectedFile(fileName: "secure_pin_record.json")
+      }
+      result(fallback)
 
     case "writePinRecord":
       let args = call.arguments as? [String: Any]
@@ -262,12 +286,25 @@ final class MacOSSecureStorageBridge {
         )
         return
       }
-      let keychainOk = writeToKeychain(account: accountName, payload: payload)
-      writeToProtectedFile(fileName: "secure_pin_record.json", payload: payload)
-      if keychainOk {
+      let keychainWrite = writeToKeychain(account: accountName, payload: payload)
+      if keychainWrite.saved {
+        // Keychain is the primary store. Do not retain an unnecessary
+        // unencrypted second copy once the secure write is confirmed.
+        deleteProtectedFile(fileName: "secure_pin_record.json")
         result("macOS Security Keychain (PBKDF2-HMAC-SHA256)")
+      } else if keychainWrite.fallbackAllowed && writeToProtectedFile(
+        fileName: "secure_pin_record.json",
+        payload: payload
+      ) {
+        result("macOS Sandboxed Application Support Fallback (0600 PBKDF2-HMAC-SHA256)")
       } else {
-        result("macOS Sandboxed Application Support (0600 PBKDF2-HMAC-SHA256)")
+        result(
+          FlutterError(
+            code: "SECURE_STORAGE_WRITE_FAILED",
+            message: "Keychain and protected Application Support fallback writes both failed.",
+            details: nil
+          )
+        )
       }
 
     case "deletePinRecord":
@@ -278,11 +315,31 @@ final class MacOSSecureStorageBridge {
     case "readSecureSecret":
       let args = call.arguments as? [String: Any]
       let key = sanitizeKey(args?["key"] as? String ?? "default")
-      if let keychainValue = readFromKeychain(account: "secret_\(key)") {
+      let account = "secret_\(key)"
+      let fileName = "secure_secret_\(key).json"
+      let keychainRead = readFromKeychain(account: account)
+      if let keychainValue = keychainRead.value {
+        deleteProtectedFile(fileName: fileName)
         result(keychainValue)
         return
       }
-      result(readFromProtectedFile(fileName: "secure_secret_\(key).json"))
+      guard keychainRead.status == errSecItemNotFound else {
+        result(
+          FlutterError(
+            code: "KEYCHAIN_READ_FAILED",
+            message: "Could not read the secure value from macOS Keychain (status \(keychainRead.status)).",
+            details: nil
+          )
+        )
+        return
+      }
+      let fallback = readFromProtectedFile(fileName: fileName)
+      if let fallback = fallback,
+        writeToKeychain(account: account, payload: fallback).saved
+      {
+        deleteProtectedFile(fileName: fileName)
+      }
+      result(fallback)
 
     case "writeSecureSecret":
       let args = call.arguments as? [String: Any]
@@ -297,9 +354,25 @@ final class MacOSSecureStorageBridge {
         )
         return
       }
-      _ = writeToKeychain(account: "secret_\(key)", payload: payload)
-      writeToProtectedFile(fileName: "secure_secret_\(key).json", payload: payload)
-      result("ok")
+      let account = "secret_\(key)"
+      let fileName = "secure_secret_\(key).json"
+      let keychainWrite = writeToKeychain(account: account, payload: payload)
+      if keychainWrite.saved {
+        deleteProtectedFile(fileName: fileName)
+        result("ok")
+      } else if keychainWrite.fallbackAllowed &&
+        writeToProtectedFile(fileName: fileName, payload: payload)
+      {
+        result("ok")
+      } else {
+        result(
+          FlutterError(
+            code: "SECURE_STORAGE_WRITE_FAILED",
+            message: "Keychain and protected Application Support fallback writes both failed.",
+            details: nil
+          )
+        )
+      }
 
     case "deleteSecureSecret":
       let args = call.arguments as? [String: Any]
@@ -320,7 +393,7 @@ final class MacOSSecureStorageBridge {
     return out.isEmpty ? "default" : out
   }
 
-  private func readFromKeychain(account: String) -> String? {
+  private func readFromKeychain(account: String) -> (value: String?, status: OSStatus) {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: serviceName,
@@ -331,26 +404,55 @@ final class MacOSSecureStorageBridge {
     var item: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &item)
     guard status == errSecSuccess, let data = item as? Data else {
-      return nil
+      return (nil, status)
     }
-    return String(data: data, encoding: .utf8)
+    return (String(data: data, encoding: .utf8), status)
   }
 
-  private func writeToKeychain(account: String, payload: String) -> Bool {
+  private func writeToKeychain(
+    account: String,
+    payload: String
+  ) -> (saved: Bool, fallbackAllowed: Bool) {
     guard let data = payload.data(using: .utf8) else {
-      return false
+      return (false, false)
     }
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: serviceName,
       kSecAttrAccount as String: account,
     ]
-    SecItemDelete(query as CFDictionary)
+    var updatedAttributes: [String: Any] = [:]
+    updatedAttributes[kSecValueData as String] = data
+    let updateStatus = SecItemUpdate(
+      query as CFDictionary,
+      updatedAttributes as CFDictionary
+    )
+    if updateStatus == errSecSuccess {
+      return (true, false)
+    }
+    guard updateStatus == errSecItemNotFound else {
+      // The record may exist but Keychain may be locked or unavailable.
+      // Never create a competing file record in that ambiguous state.
+      return (false, false)
+    }
 
     var attributes = query
     attributes[kSecValueData as String] = data
-    let status = SecItemAdd(attributes as CFDictionary, nil)
-    return status == errSecSuccess
+    let addStatus = SecItemAdd(attributes as CFDictionary, nil)
+    if addStatus == errSecSuccess {
+      return (true, false)
+    }
+    if addStatus == errSecDuplicateItem {
+      // Another writer may have created the item after the initial update.
+      let retryStatus = SecItemUpdate(
+        query as CFDictionary,
+        updatedAttributes as CFDictionary
+      )
+      return (retryStatus == errSecSuccess, false)
+    }
+    // Keychain confirmed there was no prior item. A protected local fallback
+    // is safe because subsequent reads will also see ItemNotFound.
+    return (false, true)
   }
 
   private func deleteFromKeychain(account: String) {
@@ -372,8 +474,20 @@ final class MacOSSecureStorageBridge {
       return nil
     }
     let dir = base.appendingPathComponent("dev.watsafe.temp.watsafe", isDirectory: true)
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-    return dir.appendingPathComponent(fileName)
+    do {
+      try FileManager.default.createDirectory(
+        at: dir,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+      )
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o700],
+        ofItemAtPath: dir.path
+      )
+      return dir.appendingPathComponent(fileName)
+    } catch {
+      return nil
+    }
   }
 
   private func readFromProtectedFile(fileName: String) -> String? {
@@ -385,15 +499,21 @@ final class MacOSSecureStorageBridge {
     return try? String(contentsOf: url, encoding: .utf8)
   }
 
-  private func writeToProtectedFile(fileName: String, payload: String) {
+  @discardableResult
+  private func writeToProtectedFile(fileName: String, payload: String) -> Bool {
     guard let url = protectedFileURL(fileName: fileName) else {
-      return
+      return false
     }
-    try? payload.write(to: url, atomically: true, encoding: .utf8)
-    try? FileManager.default.setAttributes(
-      [.posixPermissions: 0o600],
-      ofItemAtPath: url.path
-    )
+    do {
+      try payload.write(to: url, atomically: true, encoding: .utf8)
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: url.path
+      )
+      return true
+    } catch {
+      return false
+    }
   }
 
   private func deleteProtectedFile(fileName: String) {

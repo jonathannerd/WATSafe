@@ -195,6 +195,49 @@ void main() {
       await adapter.dispose();
     });
 
+    test(
+      'iOS live Core Motion does not use a separate permission prompt',
+      () async {
+        var requestPermissionCalls = 0;
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(iosMethodChannel, (
+              MethodCall call,
+            ) async {
+              switch (call.method) {
+                case 'checkCapability':
+                  return <String, Object?>{
+                    'hasMotionHardware': true,
+                    'deviceName': 'Apple Core Motion IMU',
+                    'permissionStatus': 'notApplicable',
+                    'detail': 'Live Core Motion sampling has no separate permission status.',
+                  };
+                case 'requestPermission':
+                  requestPermissionCalls++;
+                  return 'granted';
+              }
+              return null;
+            });
+
+        final adapter = IosCoreMotionDetectorAdapter(
+          methodChannel: iosMethodChannel,
+          eventChannel: iosEventChannel,
+          isIOSOverride: true,
+        );
+
+        final capability = await adapter.checkCapability();
+        expect(capability.permissionStatus, PermissionStatus.notApplicable);
+        expect(capability.status, CapabilityStatus.ready);
+        expect(capability.canArm, isTrue);
+        expect(capability.needsPermissionRequest, isFalse);
+        expect(
+          await adapter.requestPermission(),
+          PermissionStatus.notApplicable,
+        );
+        expect(requestPermissionCalls, 0);
+        await adapter.dispose();
+      },
+    );
+
     test('AndroidMotionDetectorAdapter bridges foreground motion sensors from a paired Android companion on non-Android hosts', () async {
       final notificationService = ConfigurableRemoteNotificationService(
         persistToDisk: false,

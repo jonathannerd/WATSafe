@@ -7,7 +7,7 @@ This document distinguishes what is implemented in source, what automated tests 
 | Capability | macOS | Windows | Android | iOS | Web |
 |---|---|---|---|---|---|
 | Shared Flutter UI and alarm state machine | Implemented | Implemented | Implemented | Implemented | Implemented |
-| PIN storage | Keychain + 0600 Application Support copy | Windows DPAPI | Android Keystore AES-256-GCM | iOS Keychain | Browser-restricted local fallback |
+| PIN storage | Keychain; 0700 directory / 0600 file only as fallback | Windows DPAPI | Android Keystore AES-256-GCM | iOS Keychain | Browser-restricted local fallback |
 | Camera scene-motion detection | AVFoundation + shared Dart motion analyzer | Media Foundation native capture and motion pipeline | Not applicable | Not applicable | Browser camera APIs where supported |
 | Motion sensors | No public built-in Mac laptop accelerometer API used | Optional WinRT / Sensor API accelerometer | SensorManager linear-acceleration or accelerometer fallback | Core Motion while foregrounded | Not applicable |
 | Background motion monitoring | Native sleep/lid lifecycle reporting; no capture while asleep | Native sleep/lid/shutdown lifecycle reporting; camera capture pauses during sleep | User-visible special-use foreground service | Foreground only; pauses on background/screen lock | Browser lifecycle and permissions apply |
@@ -42,6 +42,7 @@ The matrix describes code in the repository. It does not mean every optional int
 ### iOS
 
 - Motion detection uses CMMotionManager through the native Core Motion bridge.
+- WATSafe uses live accelerometer/device-motion samples. The Core Motion API used for live sampling does not expose a separate permission prompt/status; WATSafe reports permission as not applicable and validates sensor availability when monitoring starts. Do not confuse this with authorization for stored motion-activity data.
 - Live monitoring is deliberately foreground-only. When iOS backgrounds or suspends the app (including screen lock), the bridge stops motion updates and emits a lifecycle pause; the controller must not continue displaying Protected while monitoring is inactive.
 - Returning to the foreground triggers a capability check and a guarded monitoring restart. iOS does not provide indefinite background accelerometer capture for this app.
 
@@ -56,7 +57,7 @@ The matrix describes code in the repository. It does not mean every optional int
 - New production PIN records target 600,000 PBKDF2-HMAC-SHA256 iterations. Existing weaker records remain readable and are re-derived at the configured target after a successful PIN verification.
 - Failed-attempt count and lockout deadline are optional members of the same secure PIN record, so older records deserialize with zero attempts and no active lockout. Lockout metadata is persisted after failed attempts and restored before PIN checks.
 - Secure-storage write failures are surfaced in the PIN verification result. Failed attempts remain enforced in memory; a correct PIN can still disarm after the lockout expires, but the UI receives a warning when the reset or verifier upgrade could not be saved.
-- The macOS native bridge currently also writes a 0600-protected Application Support copy alongside Keychain. This is separate from the Flutter-level fallback removed by PR #11 and is tracked in [Issue #26](https://github.com/jonathannerd/WATSafe/issues/26).
+- On macOS, Keychain is the primary PIN and secure-secret store. The protected Application Support file is written only when the Keychain write fails; an existing fallback is migrated back to Keychain after a successful Keychain write. The fallback directory is restricted to 0700 and files to 0600.
 - The 600,000-iteration target must be benchmarked on real supported devices before release. See the on-device KDF benchmark in [docs/testing.md](testing.md); a derivation taking more than one second should trigger a work-factor review.
 
 ## 4. Pairing, location, and remote alerts
@@ -74,6 +75,6 @@ Physical-device verification is still required for:
 - macOS Keychain behavior, camera permission prompts, sleep/lid interruption, and local siren routing;
 - Windows webcam/accelerometer availability, camera-in-use errors, lid/sleep reporting, and audio routing;
 - Android sensor availability, foreground-service notification, screen-off monitoring, OEM battery restrictions, and service-stop handling;
-- iPhone/iPad Core Motion permission, screen-lock pause, foreground resume, and real notification delivery.
+- iPhone/iPad Core Motion sensor startup, screen-lock pause, foreground resume, and real notification delivery.
 
 WATSafe cannot prevent a user or operating system from powering off, force-quitting, muting, or physically disconnecting a device. A laptop that is asleep or powered off cannot keep sampling its camera or playing its local siren; the relay watchdog can only act on information already received and while the relay itself is available.

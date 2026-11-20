@@ -93,7 +93,7 @@ stateDiagram-v2
 - Compares candidate hashes in constant time.
 - Applies stepped lockout delays on consecutive failed attempts (`0s` -> `2s` -> `5s` -> `10s` -> `30s`).
 - Requires verifying the current PIN before permitting a PIN change.
-- Persists only the salt, iteration count, and derived hash via `PlatformSecurePinStorage` (`dev.watsafe/secure_storage`), which writes to the macOS Security Keychain (`SecItemAdd`) alongside a `0600` restricted fallback in `~/Library/Application Support/dev.watsafe.temp.watsafe/` so ad-hoc signed local builds work without a paid Apple Developer provisioning profile.
+- Persists only the salt, iteration count, and derived hash via `PlatformSecurePinStorage` (`dev.watsafe/secure_storage`). On macOS the Security Keychain is primary; a `0700` Application Support directory and `0600` file are used only when Keychain confirms that no prior item exists but cannot add a new item. If Keychain is locked or otherwise unavailable, reads and writes fail closed rather than using a potentially stale duplicate. Older fallback records are migrated back into Keychain when it becomes available.
 
 ---
 

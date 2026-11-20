@@ -15,7 +15,7 @@ AppServices createAppServices() {
   final queryRelay = Uri.base.queryParameters['relay']?.trim();
   final defaultRelay = (queryRelay != null && queryRelay.isNotEmpty)
       ? queryRelay
-      : RelayConfig.resolveDefaultRelayUrl();
+      : RelayConfig.resolveDefaultRelayUrl(browserOrigin: Uri.base);
   return (
     detectors: {camera.detectorType: camera},
     defaultDetector: DetectorType.browserCameraSceneMotion,
