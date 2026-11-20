@@ -327,13 +327,16 @@ class _DevicesScreenState extends State<DevicesScreen> {
       await controller.updateShareCompanionPhoneLocation(true);
     } else {
       if (!controller.settings.shareLocationOnAlarm) {
+        // Enabling sharing already requests permission and starts location
+        // refresh; avoid immediately prompting a second time.
         await controller.updateShareLocationOnAlarm(true);
-      }
-      if (controller.locationPermissionStatus != PermissionStatus.granted) {
-        await controller.requestLocationPermission();
-      }
-      if (controller.locationPermissionStatus == PermissionStatus.granted) {
-        await controller.refreshProtectedDeviceLocation(highAccuracy: true);
+      } else {
+        if (controller.locationPermissionStatus != PermissionStatus.granted) {
+          await controller.requestLocationPermission();
+        }
+        if (controller.locationPermissionStatus == PermissionStatus.granted) {
+          await controller.refreshProtectedDeviceLocation(highAccuracy: true);
+        }
       }
     }
     await _refreshDevices();
