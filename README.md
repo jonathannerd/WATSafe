@@ -34,6 +34,24 @@ flowchart LR
     C --> D["Check the device map"]
 ```
 
+## Browser version
+
+A browser build is already included. It uses the webcam, browser audio, and browser-local storage; keep the tab visible and the device awake while protection is armed.
+
+Run locally:
+
+```bash
+flutter run -d chrome
+```
+
+Build for hosting:
+
+```bash
+flutter build web --release
+```
+
+Serve the `build/web` directory from HTTPS (or localhost during development). Configure a reachable HTTPS relay in Settings or pass `--dart-define=WATSAFE_API_URL=https://your-relay.example`; a hosted browser app does not assume that its static host or a phone's loopback address is a relay.
+
 ## Built with
 
 **Flutter** for the desktop app, native **Swift** and **C++** for desktop integrations, and a **Dart** relay with **PostgreSQL** for pairing and alerts. The phone companion uses **Web Push** and displays **OpenStreetMap** tiles.
