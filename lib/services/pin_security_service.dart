@@ -376,9 +376,18 @@ class PinSecurityService {
     final parsed = rawLockedUntil == null
         ? null
         : DateTime.tryParse(rawLockedUntil);
-    _lockedUntil = parsed != null && _clock().isBefore(parsed)
-        ? parsed.toUtc()
-        : null;
+    final nowUtc = _clock().toUtc();
+    if (parsed == null || !nowUtc.isBefore(parsed)) {
+      _lockedUntil = null;
+      return;
+    }
+
+    // A malformed or edited timestamp must not lock the owner out forever.
+    // WATSafe's longest intentional backoff step is 30 seconds.
+    final maximumDeadline = nowUtc.add(const Duration(seconds: 30));
+    _lockedUntil = parsed.toUtc().isAfter(maximumDeadline)
+        ? maximumDeadline
+        : parsed.toUtc();
   }
 
   Duration _delayForFailedAttempt(int attemptCount) {
