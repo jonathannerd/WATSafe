@@ -58,9 +58,10 @@ class PinSecurityService {
     }
   }
 
-  /// Current OWASP recommendation for PBKDF2-HMAC-SHA256.
-  /// Benchmark on each target device before release; target derivation time
-  /// should remain below one second.
+  /// PBKDF2-HMAC-SHA256 work factor listed by OWASP for PBKDF2 use.
+  /// OWASP prefers Argon2id for new general-purpose password storage where
+  /// available. Benchmark this portable PBKDF2 fallback on each target device
+  /// before release; target derivation time should remain below one second.
   static const int productionPbkdf2Iterations = 600000;
   static const int maximumSupportedPbkdf2Iterations = 2000000;
 
@@ -198,11 +199,9 @@ class PinSecurityService {
       );
     }
 
-    if (_lockoutPersistencePending) {
-      if (!await _persistBackoff(record)) {
-        return _persistenceFailureResult();
-      }
-    } else {
+    // Keep the in-memory backoff authoritative after a failed storage write.
+    // Never restore stale on-disk metadata over a more recent in-memory count.
+    if (!_lockoutPersistencePending) {
       _restoreBackoff(record);
     }
 
@@ -330,7 +329,7 @@ class PinSecurityService {
         : '';
     final persistenceWarning = persisted
         ? ''
-        : ' Security lockout could not be saved; verification will remain blocked until secure storage is writable.';
+        : ' Security state could not be saved. This attempt is enforced only for this running session; restore secure storage to preserve it across restart.';
     return PinVerificationResult(
       verified: false,
       failedAttempts: _failedAttempts,
@@ -368,18 +367,6 @@ class PinSecurityService {
       message:
           'Too many incorrect attempts. Try again in $seconds second'
           '${seconds == 1 ? '' : 's'}.',
-    );
-  }
-
-  PinVerificationResult _persistenceFailureResult() {
-    return PinVerificationResult(
-      verified: false,
-      failedAttempts: _failedAttempts,
-      isLockedOut: isLockedOut,
-      remainingLockout: remainingLockout,
-      message:
-          'PIN verification is temporarily blocked because the failed-attempt lockout could not be saved. Restore secure storage and try again.',
-      securityStatePersisted: false,
     );
   }
 
