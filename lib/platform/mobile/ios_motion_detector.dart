@@ -142,7 +142,7 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
       return DetectorCapability(
         type: DetectorType.iosCoreMotionForeground,
         status: CapabilityStatus.ready,
-        permissionStatus: PermissionStatus.granted,
+        permissionStatus: permissionStatus,
         hardwareDeviceName: deviceName ?? 'Apple Core Motion IMU',
         summary:
             'Ready — ${deviceName ?? "iOS Core Motion"} available (foreground active monitoring).',
