@@ -53,10 +53,11 @@ The matrix describes code in the repository. It does not mean every optional int
 ## 3. PIN and storage behavior
 
 - PINs are validated as 6–12 digits and stored as salted PBKDF2-HMAC-SHA256 verifier records, not as plaintext PINs.
-- Native storage adapters exist for macOS, Windows, Android, and iOS. A restricted local fallback is used where the native channel is unavailable.
+- New production PIN records target 600,000 PBKDF2-HMAC-SHA256 iterations. Existing weaker records remain readable and are re-derived at the configured target after a successful PIN verification.
+- Failed-attempt count and lockout deadline are optional members of the same secure PIN record, so older records deserialize with zero attempts and no active lockout. Lockout metadata is persisted after failed attempts and restored before PIN checks.
+- Secure-storage write failures are surfaced in the PIN verification result. Failed attempts remain enforced in memory; a correct PIN can still disarm after the lockout expires, but the UI receives a warning when the reset or verifier upgrade could not be saved.
 - The macOS native bridge currently also writes a 0600-protected Application Support copy alongside Keychain. This is separate from the Flutter-level fallback removed by PR #11 and is tracked in [Issue #26](https://github.com/jonathannerd/WATSafe/issues/26).
-- The current PIN work factor and in-memory failed-attempt backoff are under [Issue #23](https://github.com/jonathannerd/WATSafe/issues/23). A restart currently resets the in-memory lockout counter.
-- Benchmark any higher KDF cost on target hardware before changing production defaults because PIN verification is part of the disarm flow.
+- The 600,000-iteration target must be benchmarked on real supported devices before release. See the on-device KDF benchmark in [docs/testing.md](testing.md); a derivation taking more than one second should trigger a work-factor review.
 
 ## 4. Pairing, location, and remote alerts
 
