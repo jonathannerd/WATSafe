@@ -244,11 +244,24 @@ final class MacOSSecureStorageBridge {
   private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "readPinRecord":
-      if let keychainValue = readFromKeychain(account: accountName) {
+      let keychainRead = readFromKeychain(account: accountName)
+      if let keychainValue = keychainRead.value {
         // A successful Keychain read proves the primary copy is available.
         // Remove only the stale fallback after that confirmation.
         deleteProtectedFile(fileName: "secure_pin_record.json")
         result(keychainValue)
+        return
+      }
+      guard keychainRead.status == errSecItemNotFound else {
+        // Never fall back to an older file when Keychain is temporarily
+        // unavailable (for example, because the login keychain is locked).
+        result(
+          FlutterError(
+            code: "KEYCHAIN_READ_FAILED",
+            message: "Could not read the PIN from macOS Keychain (status \(keychainRead.status)).",
+            details: nil
+          )
+        )
         return
       }
       let fallback = readFromProtectedFile(fileName: "secure_pin_record.json")
@@ -303,9 +316,20 @@ final class MacOSSecureStorageBridge {
       let key = sanitizeKey(args?["key"] as? String ?? "default")
       let account = "secret_\(key)"
       let fileName = "secure_secret_\(key).json"
-      if let keychainValue = readFromKeychain(account: account) {
+      let keychainRead = readFromKeychain(account: account)
+      if let keychainValue = keychainRead.value {
         deleteProtectedFile(fileName: fileName)
         result(keychainValue)
+        return
+      }
+      guard keychainRead.status == errSecItemNotFound else {
+        result(
+          FlutterError(
+            code: "KEYCHAIN_READ_FAILED",
+            message: "Could not read the secure value from macOS Keychain (status \(keychainRead.status)).",
+            details: nil
+          )
+        )
         return
       }
       let fallback = readFromProtectedFile(fileName: fileName)
@@ -365,7 +389,7 @@ final class MacOSSecureStorageBridge {
     return out.isEmpty ? "default" : out
   }
 
-  private func readFromKeychain(account: String) -> String? {
+  private func readFromKeychain(account: String) -> (value: String?, status: OSStatus) {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword,
       kSecAttrService as String: serviceName,
@@ -376,9 +400,9 @@ final class MacOSSecureStorageBridge {
     var item: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &item)
     guard status == errSecSuccess, let data = item as? Data else {
-      return nil
+      return (nil, status)
     }
-    return String(data: data, encoding: .utf8)
+    return (String(data: data, encoding: .utf8), status)
   }
 
   private func writeToKeychain(account: String, payload: String) -> Bool {
