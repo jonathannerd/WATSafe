@@ -327,7 +327,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
       await controller.updateShareCompanionPhoneLocation(true);
     } else {
       if (!controller.settings.shareLocationOnAlarm) {
-        await controller.updateSettings(shareLocationOnAlarm: true);
+        await controller.updateShareLocationOnAlarm(true);
       }
       if (controller.locationPermissionStatus != PermissionStatus.granted) {
         await controller.requestLocationPermission();
