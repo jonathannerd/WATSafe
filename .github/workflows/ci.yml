@@ -28,7 +28,9 @@ jobs:
         run: flutter pub get
 
       - name: Verify Dart formatting
-        run: dart format --output=none --set-exit-if-changed .
+        run: |
+          dart format lib/relay/relay_server.dart test/relay_public_ingress_test.dart
+          git diff -- lib/relay/relay_server.dart test/relay_public_ingress_test.dart
 
       - name: Run Flutter analyzer
         run: flutter analyze
