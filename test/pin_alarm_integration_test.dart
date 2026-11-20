@@ -231,10 +231,13 @@ void main() {
     expect(calls.last, 'stopAlarm');
   });
 
-  test('PlatformSecurePinStorage preserves native secure channel + fallback file behavior across onboarding and alarm disarm', () async {
+  test('PlatformSecurePinStorage uses native storage without a duplicate fallback', () async {
     const secureChannel = MethodChannel('dev.watsafe/test_secure_storage');
     final tempDir = await Directory.systemTemp.createTemp(
       'watsafe_pin_merge_test_',
+    );
+    final fallbackFile = File(
+      '${tempDir.path}${Platform.pathSeparator}watsafe_pin_hash.json',
     );
     String? nativeStoredPayload;
     var simulateNativeChannelUnavailableOnRead = false;
@@ -301,7 +304,7 @@ void main() {
     await controller.initialize();
     expect(controller.hasPinConfigured, isFalse);
 
-    // 1. Onboarding PIN setup writes to native channel AND fallback file
+    // 1. Onboarding PIN setup writes to native secure storage only.
     final setupRes = await controller.setupInitialPin(
       pin: '314159',
       confirmPin: '314159',
@@ -309,6 +312,7 @@ void main() {
     expect(setupRes.isValid, isTrue);
     expect(controller.hasPinConfigured, isTrue);
     expect(nativeStoredPayload, isNotNull);
+    expect(await fallbackFile.exists(), isFalse);
 
     // 2. Arm and trigger alarm, then disarm via native channel read
     await controller.startArming();
@@ -338,9 +342,21 @@ void main() {
     expect(controller.state, ProtectionState.disarmed);
     expect(fakeAudio.stopCount, greaterThanOrEqualTo(1));
 
-    // 3. Simulate ad-hoc build where native channel returns null on read -> fallback file seamlessly verifies disarm
+    // 3. When native reads become unavailable, do not fall back to a duplicate
+    // file that was intentionally not created after native storage succeeded.
     simulateNativeChannelUnavailableOnRead = true;
-    await controller.startArming();
+    expect(await controller.startArming(), isFalse);
+    expect(controller.activeSessionId, isNull);
+    expect(controller.hasPinConfigured, isFalse);
+    expect(
+      controller.warningMessage,
+      contains('Create a 6-digit (or longer) PIN'),
+    );
+    expect(await fallbackFile.exists(), isFalse);
+
+    // Restore native reads and confirm protection can be armed and disarmed.
+    simulateNativeChannelUnavailableOnRead = false;
+    expect(await controller.startArming(), isTrue);
     final sid2 = controller.activeSessionId!;
     while (controller.state == ProtectionState.arming &&
         controller.activeSessionId == sid2) {
