@@ -195,9 +195,7 @@ void main() {
       await adapter.dispose();
     });
 
-    test(
-      'iOS Core Motion does not claim permission before the user has decided',
-      () async {
+    test('iOS Core Motion does not claim permission before the user has decided', () async {
       var permissionStatus = 'notDetermined';
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(iosMethodChannel, (MethodCall call) async {
@@ -234,13 +232,10 @@ void main() {
       expect(denied.permissionStatus, PermissionStatus.denied);
       expect(denied.status, CapabilityStatus.permissionRequired);
       expect(denied.canArm, isFalse);
-        await adapter.dispose();
-      },
-    );
+      await adapter.dispose();
+    });
 
-    test(
-      'iOS versions without a separate live-sensor permission status rely on actual sensor startup',
-      () async {
+    test('iOS versions without a separate live-sensor permission status rely on actual sensor startup', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(iosMethodChannel, (MethodCall call) async {
             switch (call.method) {
@@ -268,9 +263,8 @@ void main() {
       expect(capability.status, CapabilityStatus.ready);
       expect(capability.canArm, isTrue);
       expect(await adapter.requestPermission(), PermissionStatus.notApplicable);
-        await adapter.dispose();
-      },
-    );
+      await adapter.dispose();
+    });
 
     test('AndroidMotionDetectorAdapter bridges foreground motion sensors from a paired Android companion on non-Android hosts', () async {
       final notificationService = ConfigurableRemoteNotificationService(
