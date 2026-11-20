@@ -91,15 +91,15 @@ void main() {
     test('legacy or malformed future lockout dates cannot lock the owner out indefinitely', () async {
       final storage = InMemorySecurePinStorage();
       await storage.writePinRecord(
-        StoredPinRecord(
-          algorithm: 'PBKDF2-HMAC-SHA256',
-          iterations: 1000,
-          saltBase64: 'c2FsdA==',
-          hashBase64: 'aGFzaA==',
-          updatedAtUtcIso: now.toIso8601String(),
-          failedAttempts: 9999999,
-          lockedUntilUtcIso: now.add(const Duration(days: 365)).toIso8601String(),
-        ),
+        StoredPinRecord.fromJson(<String, Object?>{
+          'algorithm': 'PBKDF2-HMAC-SHA256',
+          'iterations': 1000,
+          'saltBase64': 'c2FsdA==',
+          'hashBase64': 'aGFzaA==',
+          'updatedAtUtcIso': now.toIso8601String(),
+          'failedAttempts': 9999999,
+          'lockedUntilUtcIso': now.add(const Duration(days: 365)).toIso8601String(),
+        }),
       );
 
       final service = createService(storage);
