@@ -688,8 +688,11 @@ void main() {
             expect(html, contains('While app is open'));
             expect(html, contains('id="activeAlarmBanner"'));
             expect(html, contains('Camera blocked'));
-            expect(html, contains('window.maplibregl.AttributionControl'));
-            expect(html, contains('compact: true'));
+            expect(
+              html,
+              contains('https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
+            );
+            expect(html, contains('© OpenStreetMap contributors'));
             expect(html, contains('requestRefresh=1'));
 
             final swResp = await _httpJson(
@@ -697,7 +700,7 @@ void main() {
               method: 'GET',
               uri: Uri.parse('$endpoint/sw.js'),
             );
-            expect(swResp.rawBody, contains('watsafe-shell-2026.11.18-v8'));
+            expect(swResp.rawBody, contains('watsafe-shell-2026.11.19-v9'));
             expect(swResp.rawBody, contains('/companion?incident='));
             expect(swResp.rawBody, contains('/ack'));
           } finally {

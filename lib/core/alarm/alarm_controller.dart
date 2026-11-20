@@ -126,6 +126,10 @@ class AlarmController extends ChangeNotifier {
   Timer? _inputGraceTimer;
   bool _isInputInteractionGraceActive = false;
   Future<void>? _inFlightUrgentAlertFuture;
+  String? _notifiedArmedSessionId;
+  bool _activeIncidentNeedsWakeRetry = false;
+  bool _activeIncidentPushFailed = false;
+  Future<void>? _inFlightWakeReconcile;
 
   // Ambiguous camera-only movement confirmation stage ("Movement detected — checking…").
   bool _isConfirmingMovement = false;
@@ -1062,6 +1066,7 @@ class AlarmController extends ChangeNotifier {
     }
     _hostLocationStatus = _determineInitialHostLocationStatus();
     _ensureRegularLocationSchedule(immediateCapture: true);
+    _syncNativeLifecycleContextOnly();
     notifyListeners();
   }
 
@@ -1084,14 +1089,7 @@ class AlarmController extends ChangeNotifier {
     if (!enabled) {
       _clearInputInteractionGrace(notify: false);
     }
-    unawaited(
-      _systemLifecycleAdapter.syncProtectionState(
-        armed:
-            _state == ProtectionState.armed ||
-            _state == ProtectionState.alarming,
-        monitorInputInteraction: _state == ProtectionState.armed && enabled,
-      ),
-    );
+    _syncNativeLifecycleContextOnly();
     notifyListeners();
   }
 
@@ -1313,6 +1311,7 @@ class AlarmController extends ChangeNotifier {
         )) {
       _hostLatestLocation = capture.location;
       _hostLocationStatus = IncidentLocationStatus.attached;
+      _syncNativeLifecycleContextOnly();
     } else if (_hostLatestLocation == null) {
       _hostLocationStatus = capture.status == IncidentLocationStatus.attached
           ? IncidentLocationStatus.unavailable
@@ -2237,6 +2236,9 @@ class AlarmController extends ChangeNotifier {
     }
 
     _state = ProtectionState.armed;
+    _notifiedArmedSessionId = null;
+    _activeIncidentNeedsWakeRetry = false;
+    _activeIncidentPushFailed = false;
     _clearMovementConfirmationStage();
     _clearInputInteractionGrace();
     if (startResult.status == CapabilityStatus.degraded) {
@@ -2467,6 +2469,7 @@ class AlarmController extends ChangeNotifier {
         return;
 
       case AppLifecycleState.resumed:
+        await _reconcileWakeFromSleep();
         final mutableNotifications = _notificationAdapter;
         if (mutableNotifications is MutableRemoteNotificationAdapter) {
           mutableNotifications.setForegroundActive(true);
@@ -2715,6 +2718,9 @@ class AlarmController extends ChangeNotifier {
     }
 
     _state = ProtectionState.armed;
+    _notifiedArmedSessionId = null;
+    _activeIncidentNeedsWakeRetry = false;
+    _activeIncidentPushFailed = false;
     _clearMovementConfirmationStage();
     _clearInputInteractionGrace();
     _warningMessage = null;
@@ -2793,6 +2799,9 @@ class AlarmController extends ChangeNotifier {
     _testAlarmTimer = null;
     _isTestAlarmRunning = false;
     _activeSessionId = null;
+    _notifiedArmedSessionId = null;
+    _activeIncidentNeedsWakeRetry = false;
+    _activeIncidentPushFailed = false;
     _isCalibrating = false;
     _remainingCountdownSeconds = 0;
     _warningMessage = null;
@@ -3833,6 +3842,21 @@ class AlarmController extends ChangeNotifier {
           _findIncidentById(incident.id) == null) {
         return;
       }
+      if (dispatchResult.delivered ||
+          dispatchResult.pushAccepted ||
+          dispatchResult.deduplicatedByWatchdog) {
+        _notifiedArmedSessionId = incident.sessionId;
+        _activeIncidentNeedsWakeRetry = false;
+        _syncNativeLifecycleContextOnly();
+      } else if (dispatchResult.pushFailed) {
+        _activeIncidentPushFailed = true;
+        _activeIncidentNeedsWakeRetry = false;
+        if (alarmGeneration == _alarmGeneration) {
+          warnings.add(dispatchResult.message);
+        }
+      } else if (!dispatchResult.relayRecorded) {
+        _activeIncidentNeedsWakeRetry = true;
+      }
       latestIncident = (_findIncidentById(incident.id) ?? latestIncident)
           .copyWith(
             remoteNotificationAttempted: true,
@@ -3865,6 +3889,7 @@ class AlarmController extends ChangeNotifier {
       if (alarmGeneration == _alarmGeneration) {
         warnings.add('Remote alert dispatch failed.');
       }
+      _activeIncidentNeedsWakeRetry = true;
       latestIncident = (_findIncidentById(incident.id) ?? latestIncident)
           .copyWith(
             remoteNotificationAttempted: true,
@@ -3900,22 +3925,78 @@ class AlarmController extends ChangeNotifier {
     return null;
   }
 
+  void _syncNativeLifecycleContextOnly({bool disarmVerified = false}) {
+    final effectiveArmed =
+        !disarmVerified &&
+        (_state == ProtectionState.armed || _state == ProtectionState.alarming);
+    final mutable = _notificationAdapter;
+    final creds = mutable is MutableRemoteNotificationAdapter
+        ? mutable.emergencyHostCredentials
+        : null;
+    final sessionId = _activeSessionId;
+    final lastKnown =
+        (_settings.shareLocationOnAlarm && _hostLatestLocation != null)
+        ? _hostLatestLocation!.copyWith(isLastKnown: true).toJson()
+        : null;
+    unawaited(
+      _systemLifecycleAdapter.syncProtectionState(
+        armed: effectiveArmed,
+        monitorInputInteraction:
+            !disarmVerified &&
+            _state == ProtectionState.armed &&
+            _settings.alertOnInputInteraction,
+        armedSessionId: sessionId,
+        correlationIncidentId: sessionId != null ? 'lid_$sessionId' : null,
+        alreadyNotifiedSessionId: _notifiedArmedSessionId,
+        relayEndpointUrl: creds?.endpointUrl ?? relayEndpointUrl,
+        hostToken: creds?.hostToken,
+        deviceName: effectiveDeviceName,
+        detectorType: selectedDetectorType.id,
+        shareLocationOnAlarm: _settings.shareLocationOnAlarm,
+        lastKnownLocationJson: lastKnown,
+        alarmVolume: _settings.alarmVolume,
+      ),
+    );
+  }
+
   void _syncArmedLifecycleAndWatchdog({
     required bool armed,
     String? armedSessionId,
     bool disarmVerified = false,
     String? protectionState,
   }) {
+    final mutable = _notificationAdapter;
+    final creds = mutable is MutableRemoteNotificationAdapter
+        ? mutable.emergencyHostCredentials
+        : null;
+    final effectiveSessionId = armedSessionId ?? _activeSessionId;
+    final effectiveArmed =
+        !disarmVerified && (armed || _state == ProtectionState.alarming);
+    final lastKnown =
+        (_settings.shareLocationOnAlarm && _hostLatestLocation != null)
+        ? _hostLatestLocation!.copyWith(isLastKnown: true).toJson()
+        : null;
     unawaited(
       _systemLifecycleAdapter.syncProtectionState(
-        armed: disarmVerified
-            ? false
-            : (armed || _state == ProtectionState.alarming),
+        armed: effectiveArmed,
         monitorInputInteraction:
             !disarmVerified && armed && _settings.alertOnInputInteraction,
+        armedSessionId: effectiveSessionId,
+        correlationIncidentId: effectiveSessionId != null
+            ? 'lid_$effectiveSessionId'
+            : null,
+        alreadyNotifiedSessionId: disarmVerified
+            ? null
+            : _notifiedArmedSessionId,
+        relayEndpointUrl: creds?.endpointUrl ?? relayEndpointUrl,
+        hostToken: creds?.hostToken,
+        deviceName: effectiveDeviceName,
+        detectorType: selectedDetectorType.id,
+        shareLocationOnAlarm: _settings.shareLocationOnAlarm,
+        lastKnownLocationJson: lastKnown,
+        alarmVolume: _settings.alarmVolume,
       ),
     );
-    final mutable = _notificationAdapter;
     if (mutable is MutableRemoteNotificationAdapter) {
       unawaited(
         mutable.syncHostArmedState(
@@ -3954,73 +4035,256 @@ class AlarmController extends ChangeNotifier {
     }
   }
 
+  void _handleLifecycleInterruptionSignal({
+    required SystemLifecycleEvent event,
+    required String fallbackSummary,
+  }) {
+    if (_state == ProtectionState.armed) {
+      final sessionId = event.sessionId ?? _activeSessionId;
+      final deterministicId =
+          (event.incidentId != null && event.incidentId!.trim().isNotEmpty)
+          ? event.incidentId!.trim()
+          : (sessionId != null ? 'lid_$sessionId' : null);
+      unawaited(
+        _triggerImmediateInterruptionAlert(
+          summary: fallbackSummary,
+          flushToken: event.flushToken,
+          explicitIncidentId: deterministicId,
+          triggeredAtOverride: event.timestamp,
+          nativeReport: event.nativeEmergencyReport,
+          stopDetectorsForSleep:
+              event.type == SystemLifecycleEventType.lidClosed ||
+              event.type == SystemLifecycleEventType.systemWillSleep ||
+              event.type == SystemLifecycleEventType.systemWillPowerOff,
+        ),
+      );
+      return;
+    }
+
+    if (_state == ProtectionState.alarming) {
+      final nativeReport = event.nativeEmergencyReport;
+      if (nativeReport != null &&
+          (nativeReport.delivered ||
+              nativeReport.pushAccepted ||
+              nativeReport.deduplicatedByWatchdog) &&
+          _activeIncident != null &&
+          _notifiedArmedSessionId != _activeIncident!.sessionId) {
+        _notifiedArmedSessionId = _activeIncident!.sessionId;
+        _activeIncidentNeedsWakeRetry = false;
+        final statusText = nativeReport.deduplicatedByWatchdog
+            ? 'Server watchdog already alerted paired phone while laptop was unreachable'
+            : 'Urgent pre-sleep alert accepted by push service';
+        final reconciled = _activeIncident!.copyWith(
+          remoteNotificationAttempted: true,
+          remoteNotificationStatus: statusText,
+        );
+        _activeIncident = reconciled;
+        _replaceIncidentInMemory(reconciled);
+        unawaited(_updateIncidentSafely(reconciled));
+        notifyListeners();
+      } else if (_activeIncident != null &&
+          _activeIncidentNeedsWakeRetry &&
+          !_activeIncidentPushFailed &&
+          _inFlightUrgentAlertFuture == null) {
+        // Earlier delivery attempt failed — do NOT suppress this follow-up retry!
+        unawaited(
+          _retryFailedInterruptionAlert(
+            _activeIncident!,
+            flushToken: event.flushToken,
+          ),
+        );
+        return;
+      }
+    }
+
+    _releaseFlushTokenWhenUrgentWorkDone(event.flushToken);
+  }
+
+  Future<void> _retryFailedInterruptionAlert(
+    IncidentRecord incident, {
+    String? flushToken,
+  }) async {
+    final retryCompleter = Completer<void>();
+    _inFlightUrgentAlertFuture = retryCompleter.future;
+    NotificationDispatchResult? dispatchResult;
+    try {
+      final mutable = _notificationAdapter;
+      if (mutable is MutableRemoteNotificationAdapter) {
+        dispatchResult = await mutable.sendUrgentPreSuspensionAlert(incident);
+      } else {
+        dispatchResult = await _notificationAdapter.sendIncidentAlert(incident);
+      }
+    } catch (_) {
+      dispatchResult = null;
+    } finally {
+      if (!retryCompleter.isCompleted) {
+        retryCompleter.complete();
+      }
+      if (identical(_inFlightUrgentAlertFuture, retryCompleter.future)) {
+        _inFlightUrgentAlertFuture = null;
+      }
+      if (flushToken != null && flushToken.isNotEmpty) {
+        unawaited(_systemLifecycleAdapter.completeUrgentFlush(flushToken));
+      }
+    }
+    if (dispatchResult == null || _isDisposed) {
+      return;
+    }
+    if (dispatchResult.delivered ||
+        dispatchResult.pushAccepted ||
+        dispatchResult.deduplicatedByWatchdog) {
+      _notifiedArmedSessionId = incident.sessionId;
+      _activeIncidentNeedsWakeRetry = false;
+      _syncNativeLifecycleContextOnly();
+    } else if (dispatchResult.pushFailed) {
+      _activeIncidentPushFailed = true;
+      _activeIncidentNeedsWakeRetry = false;
+      _warningMessage = dispatchResult.message;
+    } else if (!dispatchResult.relayRecorded) {
+      _activeIncidentNeedsWakeRetry = true;
+    } else {
+      _activeIncidentNeedsWakeRetry = false;
+    }
+    final latest = _findIncidentById(incident.id) ?? incident;
+    final updated = latest.copyWith(
+      remoteNotificationAttempted: true,
+      remoteNotificationStatus: dispatchResult.message,
+    );
+    if (_activeIncident?.id == updated.id) {
+      _activeIncident = updated;
+    }
+    _replaceIncidentInMemory(updated);
+    await _updateIncidentSafely(updated);
+    notifyListeners();
+  }
+
+  /// Reconciles any native pre-sleep emergency report captured while the
+  /// Flutter Dart isolate was frozen during sleep, and flushes any failed
+  /// pre-sleep alert once on wake (deduplicated against the server watchdog)
+  /// without ever triggering a delayed duplicate camera-motion alarm on reopen.
+  Future<void> _reconcileWakeFromSleep() {
+    final existing = _inFlightWakeReconcile;
+    if (existing != null) {
+      return existing;
+    }
+    final future = _executeWakeReconciliation();
+    _inFlightWakeReconcile = future;
+    future.whenComplete(() {
+      if (identical(_inFlightWakeReconcile, future)) {
+        _inFlightWakeReconcile = null;
+      }
+    });
+    return future;
+  }
+
+  Future<void> _executeWakeReconciliation() async {
+    NativeEmergencyReportSummary? pendingNative;
+    try {
+      pendingNative = await _systemLifecycleAdapter
+          .consumePendingEmergencyReport();
+    } catch (_) {
+      pendingNative = null;
+    }
+
+    if (pendingNative != null) {
+      final matchesActiveArmedSession =
+          (_state == ProtectionState.armed ||
+              _state == ProtectionState.paused) &&
+          (_activeSessionId == null ||
+              pendingNative.sessionId.isEmpty ||
+              pendingNative.sessionId == _activeSessionId);
+      if (matchesActiveArmedSession) {
+        final summary = pendingNative.summary.trim().isNotEmpty
+            ? pendingNative.summary.trim()
+            : (pendingNative.eventType == SystemLifecycleEventType.lidClosed
+                  ? 'Protection interrupted — laptop lid closed while armed.'
+                  : 'Protection interrupted — laptop went to sleep while armed.');
+        await _triggerImmediateInterruptionAlert(
+          summary: summary,
+          explicitIncidentId: pendingNative.incidentId.isNotEmpty
+              ? pendingNative.incidentId
+              : (_activeSessionId != null ? 'lid_$_activeSessionId' : null),
+          triggeredAtOverride: pendingNative.triggeredAt,
+          nativeReport: pendingNative,
+          stopDetectorsForSleep: true,
+        );
+        return;
+      }
+
+      if (_state == ProtectionState.alarming && _activeIncident != null) {
+        if ((pendingNative.delivered ||
+                pendingNative.pushAccepted ||
+                pendingNative.deduplicatedByWatchdog) &&
+            _notifiedArmedSessionId != _activeIncident!.sessionId) {
+          _notifiedArmedSessionId = _activeIncident!.sessionId;
+          _activeIncidentNeedsWakeRetry = false;
+          final statusText = pendingNative.deduplicatedByWatchdog
+              ? 'Server watchdog already alerted paired phone while laptop was unreachable'
+              : 'Urgent pre-sleep alert accepted by push service';
+          final updated = _activeIncident!.copyWith(
+            remoteNotificationAttempted: true,
+            remoteNotificationStatus: statusText,
+          );
+          _activeIncident = updated;
+          _replaceIncidentInMemory(updated);
+          await _updateIncidentSafely(updated);
+          notifyListeners();
+        } else if (pendingNative.pushFailed) {
+          _activeIncidentPushFailed = true;
+          _activeIncidentNeedsWakeRetry = false;
+          _warningMessage = 'Push delivery rejected — open WATSafe on your phone to repair notifications.';
+          notifyListeners();
+        }
+      }
+    }
+
+    if (_state == ProtectionState.alarming &&
+        _activeIncident != null &&
+        _activeIncidentNeedsWakeRetry &&
+        !_activeIncidentPushFailed &&
+        _inFlightUrgentAlertFuture == null) {
+      await _retryFailedInterruptionAlert(_activeIncident!);
+    }
+  }
+
   void _handleSystemLifecycleEvent(SystemLifecycleEvent event) {
     switch (event.type) {
       case SystemLifecycleEventType.lidClosed:
-        if (_state == ProtectionState.armed) {
-          unawaited(
-            _triggerImmediateInterruptionAlert(
-              summary:
-                  'Protection interrupted — laptop lid closed while armed.',
-              flushToken: event.flushToken,
-            ),
-          );
-        } else {
-          _releaseFlushTokenWhenUrgentWorkDone(event.flushToken);
-        }
+        _handleLifecycleInterruptionSignal(
+          event: event,
+          fallbackSummary:
+              'Protection interrupted — laptop lid closed while armed.',
+        );
         return;
 
       case SystemLifecycleEventType.systemWillSleep:
-        if (_state == ProtectionState.armed) {
-          unawaited(
-            _triggerImmediateInterruptionAlert(
-              summary: 'Protection interrupted — laptop is going to sleep while armed.',
-              flushToken: event.flushToken,
-            ),
-          );
-        } else {
-          _releaseFlushTokenWhenUrgentWorkDone(event.flushToken);
-        }
+        _handleLifecycleInterruptionSignal(
+          event: event,
+          fallbackSummary:
+              'Protection interrupted — laptop is going to sleep while armed.',
+        );
         return;
 
       case SystemLifecycleEventType.systemWillPowerOff:
-        if (_state == ProtectionState.armed) {
-          unawaited(
-            _triggerImmediateInterruptionAlert(
-              summary: 'Protection interrupted — system shutdown or restart initiated while armed.',
-              flushToken: event.flushToken,
-            ),
-          );
-        } else {
-          _releaseFlushTokenWhenUrgentWorkDone(event.flushToken);
-        }
+        _handleLifecycleInterruptionSignal(
+          event: event,
+          fallbackSummary: 'Protection interrupted — system shutdown or restart initiated while armed.',
+        );
         return;
 
       case SystemLifecycleEventType.sessionResignedActive:
-        if (_state == ProtectionState.armed) {
-          unawaited(
-            _triggerImmediateInterruptionAlert(
-              summary: 'Protection interrupted — user session logged out or switched while armed.',
-              flushToken: event.flushToken,
-            ),
-          );
-        } else {
-          _releaseFlushTokenWhenUrgentWorkDone(event.flushToken);
-        }
+        _handleLifecycleInterruptionSignal(
+          event: event,
+          fallbackSummary: 'Protection interrupted — user session logged out or switched while armed.',
+        );
         return;
 
       case SystemLifecycleEventType.appWillTerminate:
-        if (_state == ProtectionState.armed) {
-          unawaited(
-            _triggerImmediateInterruptionAlert(
-              summary:
-                  'Protection interrupted — WATSafe was closed while armed.',
-              flushToken: event.flushToken,
-            ),
-          );
-        } else {
-          _releaseFlushTokenWhenUrgentWorkDone(event.flushToken);
-        }
+        _handleLifecycleInterruptionSignal(
+          event: event,
+          fallbackSummary:
+              'Protection interrupted — WATSafe was closed while armed.',
+        );
         return;
 
       case SystemLifecycleEventType.userInputDetected:
@@ -4062,14 +4326,20 @@ class AlarmController extends ChangeNotifier {
 
       case SystemLifecycleEventType.systemDidWake:
       case SystemLifecycleEventType.lidOpened:
-        _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
-        _ensureRegularLocationSchedule(
-          immediateCapture: true,
-          minElapsedSinceLastAttempt: const Duration(seconds: 30),
-        );
-        if (_state == ProtectionState.alarming) {
-          unawaited(_ensureActiveAlarmAudioOnResume('System woke from sleep'));
-        }
+        unawaited(() async {
+          await _reconcileWakeFromSleep();
+          if (_isDisposed) {
+            return;
+          }
+          _syncHostPresenceMetadata(immediateHeartbeatIfBackground: true);
+          _ensureRegularLocationSchedule(
+            immediateCapture: true,
+            minElapsedSinceLastAttempt: const Duration(seconds: 30),
+          );
+          if (_state == ProtectionState.alarming) {
+            await _ensureActiveAlarmAudioOnResume('System woke from sleep');
+          }
+        }());
         return;
 
       case SystemLifecycleEventType.screensDidSleep:
@@ -4116,8 +4386,15 @@ class AlarmController extends ChangeNotifier {
   Future<void> _triggerImmediateInterruptionAlert({
     required String summary,
     String? flushToken,
+    String? explicitIncidentId,
+    DateTime? triggeredAtOverride,
+    NativeEmergencyReportSummary? nativeReport,
+    bool stopDetectorsForSleep = false,
   }) async {
-    if (_state != ProtectionState.armed) {
+    final canTriggerFromCurrentState =
+        _state == ProtectionState.armed ||
+        (nativeReport != null && _state == ProtectionState.paused);
+    if (!canTriggerFromCurrentState) {
       _releaseFlushTokenWhenUrgentWorkDone(flushToken);
       return;
     }
@@ -4127,12 +4404,16 @@ class AlarmController extends ChangeNotifier {
     _stopRegularLocationSchedule();
 
     final now = _clock();
+    final triggeredAt = triggeredAtOverride ?? now;
     final sessionId =
         _activeSessionId ?? 'interrupted_${now.millisecondsSinceEpoch}';
     final alarmGeneration = ++_alarmGeneration;
     _alarmAudioRequested = true;
     _alarmInterruptedByLifecycle = false;
     _state = ProtectionState.alarming;
+    if (stopDetectorsForSleep) {
+      unawaited(_stopSessionDetectorsSafely(sessionId));
+    }
 
     final lastKnown =
         (_settings.shareLocationOnAlarm && _hostLatestLocation != null)
@@ -4147,12 +4428,42 @@ class AlarmController extends ChangeNotifier {
         : (lastKnown != null ? 'last_known' : 'idle');
 
     final isCameraBlocked = summary.toLowerCase().startsWith('camera blocked');
+    final resolvedIncidentId =
+        (explicitIncidentId != null && explicitIncidentId.trim().isNotEmpty)
+        ? explicitIncidentId.trim()
+        : 'int_${++_incidentSequence}_${now.millisecondsSinceEpoch}';
+    final nativeAlreadyDelivered =
+        nativeReport != null &&
+        (nativeReport.delivered ||
+            nativeReport.pushAccepted ||
+            nativeReport.deduplicatedByWatchdog);
+    final nativeAlreadyRejectedPush =
+        nativeReport != null &&
+        nativeReport.pushFailed &&
+        !nativeAlreadyDelivered;
+
+    String? initialRemoteStatus;
+    if (nativeAlreadyDelivered) {
+      _notifiedArmedSessionId = sessionId;
+      _activeIncidentNeedsWakeRetry = false;
+      initialRemoteStatus = nativeReport.deduplicatedByWatchdog
+          ? 'Server watchdog already alerted paired phone while laptop was unreachable'
+          : (nativeReport.pushAccepted
+                ? 'Urgent pre-sleep alert accepted by push service'
+                : 'Urgent pre-sleep alert recorded on relay');
+    } else if (nativeAlreadyRejectedPush) {
+      _activeIncidentPushFailed = true;
+      _activeIncidentNeedsWakeRetry = false;
+      initialRemoteStatus = 'Push delivery rejected — recorded on relay only. Open WATSafe on your phone to repair notifications.';
+      _warningMessage = initialRemoteStatus;
+    }
+
     final incident = IncidentRecord(
-      id: 'int_${++_incidentSequence}_${now.millisecondsSinceEpoch}',
+      id: resolvedIncidentId,
       sessionId: sessionId,
       kind: IncidentKind.protectionInterrupted,
       detectorType: selectedDetectorType,
-      triggeredAt: now,
+      triggeredAt: triggeredAt,
       deviceName: effectiveDeviceName,
       triggerSummary: summary,
       resolutionSummary: isCameraBlocked
@@ -4165,60 +4476,101 @@ class AlarmController extends ChangeNotifier {
           : const <DeviceLocationSnapshot>[],
       locationStatus: initialLocStatus,
       locationTrackingState: initialTrackingState,
+      remoteNotificationAttempted:
+          nativeAlreadyDelivered || nativeAlreadyRejectedPush,
+      remoteNotificationStatus: initialRemoteStatus ?? 'Not sent',
     );
     _activeIncident = incident;
-    _incidents = <IncidentRecord>[incident, ..._incidents];
+    _incidents = <IncidentRecord>[
+      incident,
+      ..._incidents.where((item) => item.id != incident.id),
+    ];
     _statusMessage = summary;
     notifyListeners();
 
     final localSaveFuture = _saveIncidentSafely(incident);
 
-    // 1. Fire urgent network alert immediately without waiting on audio, disk, or GPS.
-    final networkHttpCompleter = Completer<void>();
-    _inFlightUrgentAlertFuture = networkHttpCompleter.future;
-    final urgentNetworkFuture = () async {
-      NotificationDispatchResult? dispatchResult;
-      try {
-        final mutable = _notificationAdapter;
-        if (mutable is MutableRemoteNotificationAdapter) {
-          dispatchResult = await mutable.sendUrgentPreSuspensionAlert(incident);
-        } else {
-          dispatchResult = await _notificationAdapter.sendIncidentAlert(
-            incident,
-          );
-        }
-      } catch (_) {
-        dispatchResult = null;
-      } finally {
-        if (!networkHttpCompleter.isCompleted) {
-          networkHttpCompleter.complete();
-        }
-        if (identical(
-          _inFlightUrgentAlertFuture,
-          networkHttpCompleter.future,
-        )) {
-          _inFlightUrgentAlertFuture = null;
-        }
-        if (flushToken != null && flushToken.isNotEmpty) {
-          unawaited(_systemLifecycleAdapter.completeUrgentFlush(flushToken));
-        }
+    // 1. Fire urgent network alert immediately unless the native emergency
+    //    bridge already completed delivery (or push was definitively rejected).
+    final Future<void> urgentNetworkFuture;
+    if (nativeAlreadyDelivered || nativeAlreadyRejectedPush) {
+      if (flushToken != null && flushToken.isNotEmpty) {
+        unawaited(_systemLifecycleAdapter.completeUrgentFlush(flushToken));
       }
+      _syncNativeLifecycleContextOnly();
+      urgentNetworkFuture = localSaveFuture;
+    } else {
+      final networkHttpCompleter = Completer<void>();
+      _inFlightUrgentAlertFuture = networkHttpCompleter.future;
+      urgentNetworkFuture = () async {
+        NotificationDispatchResult? dispatchResult;
+        try {
+          final mutable = _notificationAdapter;
+          if (mutable is MutableRemoteNotificationAdapter) {
+            dispatchResult = await mutable.sendUrgentPreSuspensionAlert(
+              incident,
+            );
+          } else {
+            dispatchResult = await _notificationAdapter.sendIncidentAlert(
+              incident,
+            );
+          }
+        } catch (_) {
+          dispatchResult = null;
+        } finally {
+          if (!networkHttpCompleter.isCompleted) {
+            networkHttpCompleter.complete();
+          }
+          if (identical(
+            _inFlightUrgentAlertFuture,
+            networkHttpCompleter.future,
+          )) {
+            _inFlightUrgentAlertFuture = null;
+          }
+          if (flushToken != null && flushToken.isNotEmpty) {
+            unawaited(_systemLifecycleAdapter.completeUrgentFlush(flushToken));
+          }
+        }
 
-      await localSaveFuture;
-      final latest = _findIncidentById(incident.id) ?? incident;
-      final updated = latest.copyWith(
-        remoteNotificationAttempted: true,
-        remoteNotificationStatus:
-            dispatchResult?.message ??
-            'Pre-sleep alert failed; server watchdog will follow up',
-      );
-      if (_activeIncident?.id == updated.id) {
-        _activeIncident = updated;
-      }
-      _replaceIncidentInMemory(updated);
-      await _updateIncidentSafely(updated);
-      notifyListeners();
-    }();
+        if (dispatchResult != null) {
+          if (dispatchResult.delivered ||
+              dispatchResult.pushAccepted ||
+              dispatchResult.deduplicatedByWatchdog) {
+            _notifiedArmedSessionId = sessionId;
+            _activeIncidentNeedsWakeRetry = false;
+            _syncNativeLifecycleContextOnly();
+          } else if (dispatchResult.pushFailed) {
+            _activeIncidentPushFailed = true;
+            _activeIncidentNeedsWakeRetry = false;
+            if (alarmGeneration == _alarmGeneration &&
+                _state == ProtectionState.alarming) {
+              _warningMessage = dispatchResult.message;
+            }
+          } else if (!dispatchResult.relayRecorded) {
+            _activeIncidentNeedsWakeRetry = true;
+          } else {
+            _activeIncidentNeedsWakeRetry = false;
+          }
+        } else {
+          _activeIncidentNeedsWakeRetry = true;
+        }
+
+        await localSaveFuture;
+        final latest = _findIncidentById(incident.id) ?? incident;
+        final updated = latest.copyWith(
+          remoteNotificationAttempted: true,
+          remoteNotificationStatus:
+              dispatchResult?.message ??
+              'Pre-sleep alert failed; server watchdog will follow up',
+        );
+        if (_activeIncident?.id == updated.id) {
+          _activeIncident = updated;
+        }
+        _replaceIncidentInMemory(updated);
+        await _updateIncidentSafely(updated);
+        notifyListeners();
+      }();
+    }
 
     // 2. Start local siren immediately in parallel (best-effort before sleep).
     final localSirenFuture = () async {

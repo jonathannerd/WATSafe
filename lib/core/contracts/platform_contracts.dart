@@ -888,7 +888,9 @@ class NotificationDispatchResult {
     required this.message,
     this.relayRecorded = false,
     this.pushAccepted = false,
+    this.pushFailed = false,
     this.receiptConfirmed = false,
+    this.deduplicatedByWatchdog = false,
     this.deliveryStage = 'unknown',
   });
 
@@ -897,7 +899,9 @@ class NotificationDispatchResult {
   final String message;
   final bool relayRecorded;
   final bool pushAccepted;
+  final bool pushFailed;
   final bool receiptConfirmed;
+  final bool deduplicatedByWatchdog;
   final String deliveryStage;
 }
 
@@ -1000,6 +1004,12 @@ abstract class MutableRemoteNotificationAdapter
     bool disarmVerified = false,
     String? protectionState,
   });
+
+  /// In-memory host emergency endpoint and bearer credential used solely by
+  /// native desktop pre-sleep/shutdown bridges so urgent lid/sleep reports do
+  /// not depend on the Flutter Dart isolate remaining unsuspended.
+  ({String endpointUrl, String hostToken})? get emergencyHostCredentials =>
+      null;
 
   /// Fast single-shot incident dispatch used right before OS sleep, lid close,
   /// shutdown, or application termination when execution time is bounded.

@@ -52,8 +52,16 @@ class MainFlutterWindow: NSWindow, NSWindowDelegate {
 // MARK: - macOS Native Audio Alarm Bridge
 
 final class MacOSAudioAlarmBridge {
+  static weak var shared: MacOSAudioAlarmBridge?
+
   private let channel: FlutterMethodChannel
+  private let audioQueue = DispatchQueue(
+    label: "dev.watsafe.audio.alarm",
+    qos: .userInitiated
+  )
   private var audioPlayer: AVAudioPlayer?
+  private var cachedWavData: Data?
+  private var cachedVolume: Float = 0.85
   private var testStopWorkItem: DispatchWorkItem?
 
   init(messenger: FlutterBinaryMessenger) {
@@ -61,14 +69,49 @@ final class MacOSAudioAlarmBridge {
       name: "dev.watsafe/audio_alarm",
       binaryMessenger: messenger
     )
+    MacOSAudioAlarmBridge.shared = self
     channel.setMethodCallHandler { [weak self] call, result in
       self?.handle(call: call, result: result)
+    }
+  }
+
+  func triggerEmergencySirenIfPrepared(volume: Float) {
+    audioQueue.async { [weak self] in
+      guard let self = self else { return }
+      if self.audioPlayer?.isPlaying == true {
+        return
+      }
+      self.stopPlaybackOnQueue()
+      let effectiveVol = max(0.10, min(1.0, volume))
+      guard let data = self.cachedWavData, !data.isEmpty else {
+        DispatchQueue.main.async { NSSound.beep() }
+        return
+      }
+      if let player = try? AVAudioPlayer(data: data) {
+        player.numberOfLoops = -1
+        player.volume = effectiveVol
+        player.prepareToPlay()
+        player.play()
+        self.audioPlayer = player
+      }
     }
   }
 
   private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
     let args = call.arguments as? [String: Any]
     switch call.method {
+    case "prepareAlarm":
+      let typedBytes = args?["wavBytes"] as? FlutterStandardTypedData
+      let dataCopy = typedBytes?.data
+      audioQueue.async { [weak self] in
+        if let dataCopy = dataCopy, !dataCopy.isEmpty {
+          self?.cachedWavData = dataCopy
+        }
+        DispatchQueue.main.async {
+          result(nil)
+        }
+      }
+
     case "startLoopingAlarm":
       let volume = (args?["volume"] as? NSNumber)?.floatValue ?? 0.85
       let typedBytes = args?["wavBytes"] as? FlutterStandardTypedData
@@ -91,13 +134,23 @@ final class MacOSAudioAlarmBridge {
       )
 
     case "stopAlarm":
-      stopPlayback()
-      result(nil)
+      audioQueue.async { [weak self] in
+        self?.stopPlaybackOnQueue()
+        DispatchQueue.main.async {
+          result(nil)
+        }
+      }
 
     case "setVolume":
       let volume = (args?["volume"] as? NSNumber)?.floatValue ?? 0.85
-      audioPlayer?.volume = max(0.0, min(1.0, volume))
-      result(nil)
+      audioQueue.async { [weak self] in
+        let clamped = max(0.0, min(1.0, volume))
+        self?.cachedVolume = clamped
+        self?.audioPlayer?.volume = clamped
+        DispatchQueue.main.async {
+          result(nil)
+        }
+      }
 
     default:
       result(FlutterMethodNotImplemented)
@@ -110,45 +163,60 @@ final class MacOSAudioAlarmBridge {
     maxDurationMs: Int?,
     result: @escaping FlutterResult
   ) {
-    stopPlayback()
-    guard let data = wavData, !data.isEmpty else {
-      NSSound.beep()
-      result(nil)
-      return
-    }
-
-    do {
-      let player = try AVAudioPlayer(data: data)
-      player.numberOfLoops = -1
-      player.volume = max(0.0, min(1.0, volume))
-      player.prepareToPlay()
-      player.play()
-      audioPlayer = player
-
-      if let durationMs = maxDurationMs {
-        let workItem = DispatchWorkItem { [weak self] in
-          self?.stopPlayback()
-        }
-        testStopWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-          deadline: .now() + .milliseconds(durationMs),
-          execute: workItem
-        )
+    audioQueue.async { [weak self] in
+      guard let self = self else { return }
+      self.stopPlaybackOnQueue()
+      let clampedVol = max(0.0, min(1.0, volume))
+      self.cachedVolume = clampedVol
+      if let provided = wavData, !provided.isEmpty {
+        self.cachedWavData = provided
       }
-      result(nil)
-    } catch {
-      NSSound.beep()
-      result(
-        FlutterError(
-          code: "AUDIO_INIT_FAILED",
-          message: "AVAudioPlayer failed to start: \(error.localizedDescription)",
-          details: nil
-        )
-      )
+      guard let data = wavData ?? self.cachedWavData, !data.isEmpty else {
+        DispatchQueue.main.async {
+          NSSound.beep()
+          result(nil)
+        }
+        return
+      }
+
+      do {
+        let player = try AVAudioPlayer(data: data)
+        player.numberOfLoops = -1
+        player.volume = clampedVol
+        player.prepareToPlay()
+        player.play()
+        self.audioPlayer = player
+
+        if let durationMs = maxDurationMs {
+          let workItem = DispatchWorkItem { [weak self] in
+            self?.stopPlaybackOnQueue()
+          }
+          self.testStopWorkItem = workItem
+          self.audioQueue.asyncAfter(
+            deadline: .now() + .milliseconds(durationMs),
+            execute: workItem
+          )
+        }
+        DispatchQueue.main.async {
+          result(nil)
+        }
+      } catch {
+        let errText = error.localizedDescription
+        DispatchQueue.main.async {
+          NSSound.beep()
+          result(
+            FlutterError(
+              code: "AUDIO_INIT_FAILED",
+              message: "AVAudioPlayer failed to start: \(errText)",
+              details: nil
+            )
+          )
+        }
+      }
     }
   }
 
-  private func stopPlayback() {
+  private func stopPlaybackOnQueue() {
     testStopWorkItem?.cancel()
     testStopWorkItem = nil
     audioPlayer?.stop()
@@ -740,9 +808,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
           if MacOSSystemLifecycleBridge.readAppleClamshellClosed() == true,
              let lifecycle = MacOSSystemLifecycleBridge.shared,
              lifecycle.isProtectionArmed {
-            DispatchQueue.main.async {
-              lifecycle.pollClamshellStateChange(source: "avcapture_device_disconnect")
-            }
+            lifecycle.pollClamshellStateChange(source: "avcapture_device_disconnect")
             return
           }
           self.emitEvent([
@@ -786,9 +852,7 @@ final class MacOSCameraMotionBridge: NSObject, FlutterStreamHandler,
           if MacOSSystemLifecycleBridge.readAppleClamshellClosed() == true,
              let lifecycle = MacOSSystemLifecycleBridge.shared,
              lifecycle.isProtectionArmed {
-            DispatchQueue.main.async {
-              lifecycle.pollClamshellStateChange(source: "avcapture_clamshell_disconnect")
-            }
+            lifecycle.pollClamshellStateChange(source: "avcapture_clamshell_disconnect")
             return
           }
           self.emitEvent([
@@ -2269,7 +2333,22 @@ final class MacOSLocalNotificationBridge: NSObject, UNUserNotificationCenterDele
 
 private let kWatSafeIOMessageCanSystemSleep: UInt32 = 0xE000_0270
 private let kWatSafeIOMessageSystemWillSleep: UInt32 = 0xE000_0280
+private let kWatSafeIOMessageSystemWillNotSleep: UInt32 = 0xE000_0290
 private let kWatSafeIOMessageSystemHasPoweredOn: UInt32 = 0xE000_0300
+private let kWatSafeIOMessageSystemWillPowerOn: UInt32 = 0xE000_0320
+
+private struct NativeArmedEmergencyContext {
+  var armedSessionId: String
+  var correlationIncidentId: String
+  var alreadyNotifiedSessionId: String?
+  var relayEndpointUrl: String?
+  var hostToken: String?
+  var deviceName: String
+  var detectorType: String
+  var shareLocationOnAlarm: Bool
+  var lastKnownLocation: [String: Any]?
+  var alarmVolume: Float
+}
 
 private func watSafeSystemPowerCallback(
   refCon: UnsafeMutableRawPointer?,
@@ -2298,12 +2377,39 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
 
   private let methodChannel: FlutterMethodChannel
   private let eventChannel: FlutterEventChannel
+  private let powerEmergencyQueue = DispatchQueue(
+    label: "dev.watsafe.power.emergency",
+    qos: .userInteractive
+  )
+  private let stateLock = NSLock()
   private var eventSink: FlutterEventSink?
 
-  private(set) var isProtectionArmed: Bool = false
+  private var _isProtectionArmed: Bool = false
+  var isProtectionArmed: Bool {
+    stateLock.lock()
+    defer { stateLock.unlock() }
+    return _isProtectionArmed
+  }
+
   private var monitorInputInteraction: Bool = false
   private var armedSinceUptime: TimeInterval = 0
   private var lastInputAlertUptime: TimeInterval = 0
+  private var armedActivityToken: NSObjectProtocol?
+
+  private var emergencyContext: NativeArmedEmergencyContext?
+  private var inFlightEmergencySessionId: String?
+  private var deliveredEmergencySessionId: String?
+  private var pushRejectedEmergencySessionId: String?
+  private var pendingEmergencyReportPayload: [String: Any]?
+  private var activeEmergencyFlushTokens: Set<String> = []
+  private lazy var emergencyUrlSession: URLSession = {
+    let cfg = URLSessionConfiguration.ephemeral
+    cfg.timeoutIntervalForRequest = 3.2
+    cfg.timeoutIntervalForResource = 3.5
+    cfg.waitsForConnectivity = false
+    cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+    return URLSession(configuration: cfg)
+  }()
 
   private var rootPowerPort: io_connect_t = 0
   private var powerNotifyPortRef: IONotificationPortRef?
@@ -2315,6 +2421,9 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
   private var lastClamshellClosed: Bool?
 
   private var pendingPowerAssertions: [String: Int] = [:]
+  private var pendingIopmAssertions: [String: IOPMAssertionID] = [:]
+  private var pendingLatencyActivities: [String: NSObjectProtocol] = [:]
+  private var pendingFailsafeTimers: [String: DispatchSourceTimer] = [:]
   private var pendingTerminationTokens: Set<String> = []
   private var workspaceObservers: [NSObjectProtocol] = []
   private var hidPollTimer: Timer?
@@ -2374,6 +2483,31 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
     return (prop as? NSNumber)?.boolValue
   }
 
+  private static func iso8601UtcNow() -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    formatter.timeZone = TimeZone(secondsFromGMT: 0)
+    return formatter.string(from: Date())
+  }
+
+  private func updateArmedFlag(_ armed: Bool) {
+    stateLock.lock()
+    _isProtectionArmed = armed
+    stateLock.unlock()
+
+    if armed {
+      if armedActivityToken == nil {
+        armedActivityToken = ProcessInfo.processInfo.beginActivity(
+          options: [.userInitiatedAllowingIdleSystemSleep],
+          reason: "WATSafe armed tamper monitoring"
+        )
+      }
+    } else if let token = armedActivityToken {
+      ProcessInfo.processInfo.endActivity(token)
+      armedActivityToken = nil
+    }
+  }
+
   private func handleMethodCall(call: FlutterMethodCall, result: @escaping FlutterResult) {
     let args = call.arguments as? [String: Any]
     switch call.method {
@@ -2392,18 +2526,81 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
     case "syncProtectionState":
       let nextArmed = (args?["armed"] as? Bool) ?? false
       let nextMonitorInput = (args?["monitorInputInteraction"] as? Bool) ?? false
-      if nextArmed && !isProtectionArmed {
+      let wasArmed = isProtectionArmed
+      if nextArmed && !wasArmed {
         armedSinceUptime = ProcessInfo.processInfo.systemUptime
-        lastClamshellClosed = Self.readAppleClamshellClosed()
       }
-      isProtectionArmed = nextArmed
+      updateArmedFlag(nextArmed)
       monitorInputInteraction = nextArmed && nextMonitorInput
       configureHidIdleTimer()
+
+      let sessionIdArg = (args?["armedSessionId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let corrIdArg = (args?["correlationIncidentId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let notifiedArg = (args?["alreadyNotifiedSessionId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let relayUrlArg = (args?["relayEndpointUrl"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let hostTokenArg = (args?["hostToken"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let deviceNameArg = (args?["deviceName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let detectorTypeArg = (args?["detectorType"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let shareLocArg = (args?["shareLocationOnAlarm"] as? Bool) ?? false
+      let locMapArg = args?["lastKnownLocation"] as? [String: Any]
+      let volumeArg = (args?["alarmVolume"] as? NSNumber)?.floatValue ?? 0.85
+
+      powerEmergencyQueue.async { [weak self] in
+        guard let self = self else { return }
+        if !nextArmed {
+          self.emergencyContext = nil
+          self.inFlightEmergencySessionId = nil
+          self.deliveredEmergencySessionId = nil
+          self.pushRejectedEmergencySessionId = nil
+          self.pendingEmergencyReportPayload = nil
+          return
+        }
+        if !wasArmed {
+          self.lastClamshellClosed = Self.readAppleClamshellClosed()
+        }
+        let resolvedSession = (sessionIdArg?.isEmpty == false) ? sessionIdArg! : (self.emergencyContext?.armedSessionId ?? "armed_macos")
+        let resolvedCorr = (corrIdArg?.isEmpty == false) ? corrIdArg! : "lid_\(resolvedSession)"
+        if self.emergencyContext?.armedSessionId != resolvedSession {
+          self.inFlightEmergencySessionId = nil
+          self.deliveredEmergencySessionId = nil
+          self.pushRejectedEmergencySessionId = nil
+          self.pendingEmergencyReportPayload = nil
+        }
+        if let notified = notifiedArg, !notified.isEmpty {
+          self.deliveredEmergencySessionId = notified
+        }
+        self.emergencyContext = NativeArmedEmergencyContext(
+          armedSessionId: resolvedSession,
+          correlationIncidentId: resolvedCorr,
+          alreadyNotifiedSessionId: notifiedArg,
+          relayEndpointUrl: relayUrlArg,
+          hostToken: hostTokenArg,
+          deviceName: (deviceNameArg?.isEmpty == false) ? deviceNameArg! : "My MacBook",
+          detectorType: (detectorTypeArg?.isEmpty == false) ? detectorTypeArg! : "macos_camera_scene_motion",
+          shareLocationOnAlarm: shareLocArg,
+          lastKnownLocation: shareLocArg ? locMapArg : nil,
+          alarmVolume: max(0.10, min(1.0, volumeArg))
+        )
+      }
       result(nil)
 
+    case "consumePendingEmergencyReport":
+      powerEmergencyQueue.async { [weak self] in
+        let report = self?.pendingEmergencyReportPayload
+        self?.pendingEmergencyReportPayload = nil
+        DispatchQueue.main.async {
+          result(report)
+        }
+      }
+
     case "completeUrgentFlush":
-      if let token = args?["flushToken"] as? String {
-        resolveUrgentFlush(token: token)
+      if let token = args?["flushToken"] as? String, !token.isEmpty {
+        powerEmergencyQueue.async { [weak self] in
+          guard let self = self else { return }
+          if !self.activeEmergencyFlushTokens.contains(token) {
+            self.resolveUrgentFlushOnQueue(token: token)
+          }
+        }
       }
       result(nil)
 
@@ -2415,8 +2612,9 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
   private func registerIOKitPowerAndClamshellNotifications() {
     let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
-    // 1. Register for system sleep/wake notifications so WATSafe gets a bounded
-    //    pre-sleep window before IOAllowPowerChange to dispatch an urgent alert.
+    // 1. Register IOKit system sleep/wake on the dedicated off-main `.userInteractive`
+    //    queue so `DispatchQueue.main` / Flutter window occlusion can NEVER block
+    //    or delay `IOAllowPowerChange`.
     rootPowerPort = IORegisterForSystemPower(
       selfPtr,
       &powerNotifyPortRef,
@@ -2424,16 +2622,17 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
       &powerNotifierObject
     )
     if rootPowerPort != 0, let notifyPort = powerNotifyPortRef {
-      IONotificationPortSetDispatchQueue(notifyPort, DispatchQueue.main)
+      IONotificationPortSetDispatchQueue(notifyPort, powerEmergencyQueue)
     }
 
-    // 2. Observe IOPMrootDomain general interest notifications to catch physical
-    //    MacBook clamshell lid closure immediately (even with external displays).
+    // 2. Observe IOPMrootDomain general interest notifications on the same
+    //    `.userInteractive` queue to catch physical MacBook clamshell lid closure
+    //    immediately (even on AC power / external display or ahead of willSleep).
     rootDomainService = IOServiceGetMatchingService(0, IOServiceMatching("IOPMrootDomain"))
     if rootDomainService != 0 {
       clamshellNotifyPortRef = IONotificationPortCreate(0)
       if let clamshellPort = clamshellNotifyPortRef {
-        IONotificationPortSetDispatchQueue(clamshellPort, DispatchQueue.main)
+        IONotificationPortSetDispatchQueue(clamshellPort, powerEmergencyQueue)
         IOServiceAddInterestNotification(
           clamshellPort,
           rootDomainService,
@@ -2453,17 +2652,23 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
       center.addObserver(
         forName: NSWorkspace.screensDidSleepNotification,
         object: nil,
-        queue: .main
+        queue: nil
       ) { [weak self] _ in
         guard let self = self else { return }
         self.pollClamshellStateChange(source: "screens_did_sleep")
-        if self.isProtectionArmed && (self.lastClamshellClosed != true) {
-          self.emitLifecycleEvent(
-            type: "screensDidSleep",
-            summary: "Display turned off while protection remains armed.",
-            clamshellClosed: self.lastClamshellClosed,
-            flushToken: nil
-          )
+        self.powerEmergencyQueue.async { [weak self] in
+          guard let self = self else { return }
+          if self.isProtectionArmed && (self.lastClamshellClosed != true) {
+            self.emitLifecycleEvent(
+              type: "screensDidSleep",
+              summary: "Display turned off while protection remains armed.",
+              clamshellClosed: self.lastClamshellClosed,
+              flushToken: nil,
+              incidentId: nil,
+              sessionId: self.emergencyContext?.armedSessionId,
+              nativeReport: nil
+            )
+          }
         }
       }
     )
@@ -2472,26 +2677,29 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
       center.addObserver(
         forName: NSWorkspace.willSleepNotification,
         object: nil,
-        queue: .main
+        queue: nil
       ) { [weak self] _ in
         guard let self = self, self.isProtectionArmed else { return }
-        let nowUptime = ProcessInfo.processInfo.systemUptime
-        if nowUptime - self.lastSleepEmissionUptime < 2.0 {
-          return
+        self.powerEmergencyQueue.async { [weak self] in
+          guard let self = self, self.isProtectionArmed else { return }
+          let clamshell = Self.readAppleClamshellClosed()
+          self.lastClamshellClosed = clamshell
+          let eventType = (clamshell == true) ? "lidClosed" : "systemWillSleep"
+          let summary = (clamshell == true)
+            ? "Protection interrupted — MacBook lid closed while armed."
+            : "Protection interrupted — Mac is entering sleep while armed."
+          let holdToken = self.acquireShortSleepHoldOnQueue(
+            prefix: "wssleep",
+            ioNotificationId: nil,
+            maxHoldMs: 3800
+          )
+          self.handleArmedInterruptionOnQueue(
+            eventType: eventType,
+            summary: summary,
+            clamshellClosed: clamshell,
+            flushToken: holdToken
+          )
         }
-        self.lastSleepEmissionUptime = nowUptime
-        let clamshell = Self.readAppleClamshellClosed()
-        self.lastClamshellClosed = clamshell
-        let eventType = (clamshell == true) ? "lidClosed" : "systemWillSleep"
-        let summary = (clamshell == true)
-          ? "Protection interrupted — MacBook lid closed while armed."
-          : "Protection interrupted — Mac is entering sleep while armed."
-        self.emitLifecycleEvent(
-          type: eventType,
-          summary: summary,
-          clamshellClosed: clamshell,
-          flushToken: nil
-        )
       }
     )
 
@@ -2499,17 +2707,23 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
       center.addObserver(
         forName: NSWorkspace.didWakeNotification,
         object: nil,
-        queue: .main
+        queue: nil
       ) { [weak self] _ in
         guard let self = self else { return }
-        let clamshell = Self.readAppleClamshellClosed()
-        self.lastClamshellClosed = clamshell
-        self.emitLifecycleEvent(
-          type: "systemDidWake",
-          summary: "Mac woke from sleep.",
-          clamshellClosed: clamshell,
-          flushToken: nil
-        )
+        self.powerEmergencyQueue.async { [weak self] in
+          guard let self = self else { return }
+          let clamshell = Self.readAppleClamshellClosed()
+          self.lastClamshellClosed = clamshell
+          self.emitLifecycleEvent(
+            type: "systemDidWake",
+            summary: "Mac woke from sleep.",
+            clamshellClosed: clamshell,
+            flushToken: nil,
+            incidentId: nil,
+            sessionId: self.emergencyContext?.armedSessionId,
+            nativeReport: nil
+          )
+        }
       }
     )
 
@@ -2517,15 +2731,24 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
       center.addObserver(
         forName: NSWorkspace.willPowerOffNotification,
         object: nil,
-        queue: .main
+        queue: nil
       ) { [weak self] _ in
         guard let self = self, self.isProtectionArmed else { return }
-        self.emitLifecycleEvent(
-          type: "systemWillPowerOff",
-          summary: "Protection interrupted — Mac shutdown or restart initiated while armed.",
-          clamshellClosed: Self.readAppleClamshellClosed(),
-          flushToken: nil
-        )
+        self.powerEmergencyQueue.async { [weak self] in
+          guard let self = self, self.isProtectionArmed else { return }
+          let clamshell = Self.readAppleClamshellClosed()
+          let holdToken = self.acquireShortSleepHoldOnQueue(
+            prefix: "poweroff",
+            ioNotificationId: nil,
+            maxHoldMs: 3200
+          )
+          self.handleArmedInterruptionOnQueue(
+            eventType: "systemWillPowerOff",
+            summary: "Protection interrupted — Mac shutdown or restart initiated while armed.",
+            clamshellClosed: clamshell,
+            flushToken: holdToken
+          )
+        }
       }
     )
 
@@ -2533,42 +2756,71 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
       center.addObserver(
         forName: NSWorkspace.sessionDidResignActiveNotification,
         object: nil,
-        queue: .main
+        queue: nil
       ) { [weak self] _ in
         guard let self = self, self.isProtectionArmed else { return }
-        self.emitLifecycleEvent(
-          type: "sessionResignedActive",
-          summary: "Protection interrupted — macOS user session logged out or switched while armed.",
-          clamshellClosed: Self.readAppleClamshellClosed(),
-          flushToken: nil
-        )
+        self.powerEmergencyQueue.async { [weak self] in
+          guard let self = self, self.isProtectionArmed else { return }
+          let clamshell = Self.readAppleClamshellClosed()
+          let holdToken = self.acquireShortSleepHoldOnQueue(
+            prefix: "sessionresign",
+            ioNotificationId: nil,
+            maxHoldMs: 3200
+          )
+          self.handleArmedInterruptionOnQueue(
+            eventType: "sessionResignedActive",
+            summary: "Protection interrupted — macOS user session logged out or switched while armed.",
+            clamshellClosed: clamshell,
+            flushToken: holdToken
+          )
+        }
       }
     )
   }
 
-  fileprivate func pollClamshellStateChange(source: String) {
-    guard let closed = Self.readAppleClamshellClosed() else { return }
-    let previous = lastClamshellClosed
-    lastClamshellClosed = closed
-    guard previous != closed else { return }
+  func pollClamshellStateChange(source: String) {
+    powerEmergencyQueue.async { [weak self] in
+      guard let self = self else { return }
+      guard let closed = Self.readAppleClamshellClosed() else { return }
+      let previous = self.lastClamshellClosed
+      self.lastClamshellClosed = closed
+      guard previous != closed else { return }
 
-    if closed {
-      if isProtectionArmed {
-        lastSleepEmissionUptime = ProcessInfo.processInfo.systemUptime
+      if closed {
+        if self.isProtectionArmed {
+          let holdToken = self.acquireShortSleepHoldOnQueue(
+            prefix: "lid",
+            ioNotificationId: nil,
+            maxHoldMs: 3800
+          )
+          self.handleArmedInterruptionOnQueue(
+            eventType: "lidClosed",
+            summary: "Protection interrupted — MacBook lid closed while armed.",
+            clamshellClosed: true,
+            flushToken: holdToken
+          )
+        } else {
+          self.emitLifecycleEvent(
+            type: "lidClosed",
+            summary: "MacBook lid closed.",
+            clamshellClosed: true,
+            flushToken: nil,
+            incidentId: nil,
+            sessionId: nil,
+            nativeReport: nil
+          )
+        }
+      } else {
+        self.emitLifecycleEvent(
+          type: "lidOpened",
+          summary: "MacBook lid opened.",
+          clamshellClosed: false,
+          flushToken: nil,
+          incidentId: nil,
+          sessionId: self.emergencyContext?.armedSessionId,
+          nativeReport: nil
+        )
       }
-      emitLifecycleEvent(
-        type: "lidClosed",
-        summary: "Protection interrupted — MacBook lid closed while armed.",
-        clamshellClosed: true,
-        flushToken: nil
-      )
-    } else {
-      emitLifecycleEvent(
-        type: "lidOpened",
-        summary: "MacBook lid opened.",
-        clamshellClosed: false,
-        flushToken: nil
-      )
     }
   }
 
@@ -2593,26 +2845,21 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
         return
       }
 
-      let token = "sleep_\(UUID().uuidString)"
-      pendingPowerAssertions[token] = notificationId
-      lastSleepEmissionUptime = ProcessInfo.processInfo.systemUptime
-
       let eventType = (clamshell == true) ? "lidClosed" : "systemWillSleep"
       let summary = (clamshell == true)
         ? "Protection interrupted — MacBook lid closed while armed."
         : "Protection interrupted — Mac is going to sleep while armed."
-      emitLifecycleEvent(
-        type: eventType,
+      let holdToken = acquireShortSleepHoldOnQueue(
+        prefix: "iosleep",
+        ioNotificationId: notificationId,
+        maxHoldMs: 3800
+      )
+      handleArmedInterruptionOnQueue(
+        eventType: eventType,
         summary: summary,
         clamshellClosed: clamshell,
-        flushToken: token
+        flushToken: holdToken
       )
-
-      // Bounded 4.2s failsafe (well within macOS's 30s IOKit sleep window;
-      // resolves immediately once the urgent HTTPS push finishes).
-      DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(4200)) { [weak self] in
-        self?.resolveUrgentFlush(token: token)
-      }
 
     case kWatSafeIOMessageSystemHasPoweredOn:
       let clamshell = Self.readAppleClamshellClosed()
@@ -2621,8 +2868,14 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
         type: "systemDidWake",
         summary: "Mac powered on from sleep.",
         clamshellClosed: clamshell,
-        flushToken: nil
+        flushToken: nil,
+        incidentId: nil,
+        sessionId: emergencyContext?.armedSessionId,
+        nativeReport: nil
       )
+
+    case kWatSafeIOMessageSystemWillNotSleep, kWatSafeIOMessageSystemWillPowerOn:
+      break
 
     default:
       break
@@ -2634,27 +2887,332 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
       return .terminateNow
     }
     let token = "term_\(UUID().uuidString)"
-    pendingTerminationTokens.insert(token)
-    emitLifecycleEvent(
-      type: "appWillTerminate",
-      summary: "Protection interrupted — WATSafe quit requested while armed.",
-      clamshellClosed: Self.readAppleClamshellClosed(),
-      flushToken: token
-    )
-    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(3200)) { [weak self] in
-      self?.resolveUrgentFlush(token: token)
+    powerEmergencyQueue.async { [weak self] in
+      guard let self = self else { return }
+      self.pendingTerminationTokens.insert(token)
+      self.scheduleStrictFailsafeTimerOnQueue(token: token, maxHoldMs: 3000)
+      self.handleArmedInterruptionOnQueue(
+        eventType: "appWillTerminate",
+        summary: "Protection interrupted — WATSafe quit requested while armed.",
+        clamshellClosed: Self.readAppleClamshellClosed(),
+        flushToken: token
+      )
     }
     return .terminateLater
   }
 
-  private func resolveUrgentFlush(token: String) {
+  private func acquireShortSleepHoldOnQueue(
+    prefix: String,
+    ioNotificationId: Int?,
+    maxHoldMs: Int
+  ) -> String {
+    let token = "\(prefix)_\(UUID().uuidString)"
+    if let ioNotificationId = ioNotificationId {
+      pendingPowerAssertions[token] = ioNotificationId
+    }
+    var assertionId: IOPMAssertionID = 0
+    let kr = IOPMAssertionCreateWithName(
+      "PreventUserIdleSystemSleep" as CFString,
+      IOPMAssertionLevel(kIOPMAssertionLevelOn),
+      "WATSafe urgent tamper alert" as CFString,
+      &assertionId
+    )
+    if kr == kIOReturnSuccess && assertionId != 0 {
+      pendingIopmAssertions[token] = assertionId
+    }
+    let activity = ProcessInfo.processInfo.beginActivity(
+      options: [.userInitiated, .latencyCritical],
+      reason: "WATSafe urgent pre-sleep incident dispatch"
+    )
+    pendingLatencyActivities[token] = activity
+    scheduleStrictFailsafeTimerOnQueue(token: token, maxHoldMs: maxHoldMs)
+    return token
+  }
+
+  private func scheduleStrictFailsafeTimerOnQueue(token: String, maxHoldMs: Int) {
+    let timer = DispatchSource.makeTimerSource(flags: .strict, queue: powerEmergencyQueue)
+    timer.schedule(deadline: .now() + .milliseconds(maxHoldMs), leeway: .milliseconds(0))
+    timer.setEventHandler { [weak self] in
+      self?.resolveUrgentFlushOnQueue(token: token)
+    }
+    pendingFailsafeTimers[token] = timer
+    timer.resume()
+  }
+
+  private func handleArmedInterruptionOnQueue(
+    eventType: String,
+    summary: String,
+    clamshellClosed: Bool?,
+    flushToken: String?
+  ) {
+    let signalAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+    let signalIso = Self.iso8601UtcNow()
+
+    guard let ctx = emergencyContext else {
+      emitLifecycleEvent(
+        type: eventType,
+        summary: summary,
+        clamshellClosed: clamshellClosed,
+        flushToken: flushToken,
+        incidentId: nil,
+        sessionId: nil,
+        nativeReport: nil
+      )
+      return
+    }
+
+    // Attempt local siren playback immediately on the off-main audio queue.
+    MacOSAudioAlarmBridge.shared?.triggerEmergencySirenIfPrepared(volume: ctx.alarmVolume)
+
+    let sessionId = ctx.armedSessionId
+    let incidentId = ctx.correlationIncidentId
+
+    // If an alert was already delivered (or definitively rejected by push) for this
+    // armed session, release the power hold right away and do not duplicate.
+    if deliveredEmergencySessionId == sessionId ||
+       ctx.alreadyNotifiedSessionId == sessionId ||
+       pushRejectedEmergencySessionId == sessionId {
+      if let flushToken = flushToken {
+        resolveUrgentFlushOnQueue(token: flushToken)
+      }
+      if let existingReport = pendingEmergencyReportPayload {
+        emitLifecycleEvent(
+          type: eventType,
+          summary: summary,
+          clamshellClosed: clamshellClosed,
+          flushToken: nil,
+          incidentId: incidentId,
+          sessionId: sessionId,
+          nativeReport: existingReport
+        )
+      }
+      return
+    }
+
+    // If a native emergency HTTP POST is already in flight for this session (e.g.
+    // `pollClamshellStateChange` fired 40ms ahead of `kIOMessageSystemWillSleep`),
+    // attach this flushToken so `IOAllowPowerChange` waits for the in-flight POST!
+    if inFlightEmergencySessionId == sessionId {
+      if let flushToken = flushToken {
+        activeEmergencyFlushTokens.insert(flushToken)
+      }
+      return
+    }
+
+    guard let rawUrl = ctx.relayEndpointUrl, !rawUrl.isEmpty,
+          let hostToken = ctx.hostToken, !hostToken.isEmpty,
+          let endpointUrl = URL(string: "\(rawUrl)/v1/incidents:report") else {
+      emitLifecycleEvent(
+        type: eventType,
+        summary: summary,
+        clamshellClosed: clamshellClosed,
+        flushToken: flushToken,
+        incidentId: incidentId,
+        sessionId: sessionId,
+        nativeReport: nil
+      )
+      return
+    }
+
+    inFlightEmergencySessionId = sessionId
+    if let flushToken = flushToken {
+      activeEmergencyFlushTokens.insert(flushToken)
+    }
+
+    var body: [String: Any] = [
+      "incidentId": incidentId,
+      "sessionId": sessionId,
+      "kind": "protectionInterrupted",
+      "detectorType": ctx.detectorType,
+      "triggeredAtUtc": signalIso,
+      "triggerSummary": summary,
+      "deviceName": ctx.deviceName,
+      "isTest": false,
+      "locationStatus": (ctx.shareLocationOnAlarm && ctx.lastKnownLocation != nil)
+        ? "attached"
+        : (ctx.shareLocationOnAlarm ? "pending" : "notRequested"),
+    ]
+    if ctx.shareLocationOnAlarm, var loc = ctx.lastKnownLocation {
+      loc["isLastKnown"] = true
+      body["location"] = loc
+    }
+
+    guard let jsonData = try? JSONSerialization.data(withJSONObject: body, options: []) else {
+      inFlightEmergencySessionId = nil
+      releaseAllActiveEmergencyFlushTokensOnQueue()
+      emitLifecycleEvent(
+        type: eventType,
+        summary: summary,
+        clamshellClosed: clamshellClosed,
+        flushToken: nil,
+        incidentId: incidentId,
+        sessionId: sessionId,
+        nativeReport: nil
+      )
+      return
+    }
+
+    NSLog(
+      "[WATSafe Lifecycle] stage=native_presleep_start event=%@ sessionId=%@ correlationId=%@",
+      eventType,
+      sessionId,
+      incidentId
+    )
+
+    sendEmergencyHttpPostOnQueue(
+      url: endpointUrl,
+      hostToken: hostToken,
+      jsonData: jsonData,
+      attempt: 1,
+      startedAtMs: signalAtMs
+    ) { [weak self] httpStatus, parsedJson in
+      guard let self = self else { return }
+      let completedIso = Self.iso8601UtcNow()
+      let completedMs = Int64(Date().timeIntervalSince1970 * 1000)
+      let elapsedMs = max(0, completedMs - signalAtMs)
+
+      let isHttpOk = (httpStatus >= 200 && httpStatus < 300)
+      let relayRecorded = isHttpOk && ((parsedJson?["alertRecorded"] as? Bool) ?? true)
+      let pushAcceptedCount = (parsedJson?["pushAcceptedCount"] as? NSNumber)?.intValue
+        ?? (parsedJson?["pushDispatchedCount"] as? NSNumber)?.intValue
+        ?? 0
+      let pushFailedCount = (parsedJson?["pushFailedCount"] as? NSNumber)?.intValue ?? 0
+      let webMissingCount = (parsedJson?["webBondsMissingPushCount"] as? NSNumber)?.intValue ?? 0
+      let dedupWatchdog = (parsedJson?["deduplicatedByWatchdog"] as? Bool) ?? false
+      let pushAccepted = (pushAcceptedCount > 0) || ((parsedJson?["pushAccepted"] as? Bool) ?? false)
+      let pushRejected = (pushFailedCount > 0 && !pushAccepted)
+      let serverDeliveredFlag = (parsedJson?["delivered"] as? Bool) ?? false
+      let delivered = isHttpOk && !pushRejected && webMissingCount == 0 && (pushAccepted || dedupWatchdog || serverDeliveredFlag)
+      let deliveryStage = (parsedJson?["deliveryStage"] as? String)
+        ?? (isHttpOk ? (pushRejected ? "push_failed" : "companion_poll_queued") : "network_error")
+
+      NSLog(
+        "[WATSafe Lifecycle] stage=native_presleep_done sessionId=%@ correlationId=%@ http=%d delivered=%d pushAccepted=%d pushFailed=%d elapsedMs=%lld",
+        sessionId,
+        incidentId,
+        httpStatus,
+        delivered ? 1 : 0,
+        pushAccepted ? 1 : 0,
+        pushRejected ? 1 : 0,
+        elapsedMs
+      )
+
+      self.inFlightEmergencySessionId = nil
+      if delivered || pushAccepted || dedupWatchdog {
+        self.deliveredEmergencySessionId = sessionId
+      } else if pushRejected {
+        self.pushRejectedEmergencySessionId = sessionId
+      }
+
+      var reportPayload: [String: Any] = [
+        "incidentId": incidentId,
+        "sessionId": sessionId,
+        "eventType": eventType,
+        "summary": summary,
+        "triggeredAtMs": signalAtMs,
+        "attempted": true,
+        "relayRecorded": relayRecorded,
+        "pushAccepted": pushAccepted,
+        "pushFailed": pushRejected,
+        "delivered": delivered,
+        "deduplicatedByWatchdog": dedupWatchdog,
+        "httpStatusCode": httpStatus,
+        "deliveryStage": deliveryStage,
+        "nativeSignalAtUtcIso": signalIso,
+        "nativeHttpCompletedAtUtcIso": completedIso,
+      ]
+      if let clamshellClosed = clamshellClosed {
+        reportPayload["clamshellClosed"] = clamshellClosed
+      }
+      self.pendingEmergencyReportPayload = reportPayload
+
+      // Release OS sleep / termination assertions immediately now that the native
+      // HTTP request has finished, then notify Flutter if its isolate is awake.
+      self.releaseAllActiveEmergencyFlushTokensOnQueue()
+      self.emitLifecycleEvent(
+        type: eventType,
+        summary: summary,
+        clamshellClosed: clamshellClosed,
+        flushToken: nil,
+        incidentId: incidentId,
+        sessionId: sessionId,
+        nativeReport: reportPayload
+      )
+    }
+  }
+
+  private func sendEmergencyHttpPostOnQueue(
+    url: URL,
+    hostToken: String,
+    jsonData: Data,
+    attempt: Int,
+    startedAtMs: Int64,
+    completion: @escaping (Int, [String: Any]?) -> Void
+  ) {
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    req.setValue("Bearer \(hostToken)", forHTTPHeaderField: "Authorization")
+    req.httpBody = jsonData
+
+    let task = emergencyUrlSession.dataTask(with: req) { [weak self] data, response, _ in
+      guard let self = self else { return }
+      self.powerEmergencyQueue.async { [weak self] in
+        guard let self = self else { return }
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        var parsed: [String: Any]?
+        if let data = data, !data.isEmpty {
+          parsed = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any]
+        }
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let elapsedMs = nowMs - startedAtMs
+        if (statusCode == 0 || statusCode >= 500) && attempt < 2 && elapsedMs < 2100 {
+          self.powerEmergencyQueue.asyncAfter(deadline: .now() + .milliseconds(200)) { [weak self] in
+            self?.sendEmergencyHttpPostOnQueue(
+              url: url,
+              hostToken: hostToken,
+              jsonData: jsonData,
+              attempt: attempt + 1,
+              startedAtMs: startedAtMs,
+              completion: completion
+            )
+          }
+          return
+        }
+        completion(statusCode, parsed)
+      }
+    }
+    task.resume()
+  }
+
+  private func releaseAllActiveEmergencyFlushTokensOnQueue() {
+    let tokens = Array(activeEmergencyFlushTokens)
+    activeEmergencyFlushTokens.removeAll()
+    for token in tokens {
+      resolveUrgentFlushOnQueue(token: token)
+    }
+  }
+
+  private func resolveUrgentFlushOnQueue(token: String) {
+    activeEmergencyFlushTokens.remove(token)
+    if let timer = pendingFailsafeTimers.removeValue(forKey: token) {
+      timer.cancel()
+    }
+    if let assertionId = pendingIopmAssertions.removeValue(forKey: token), assertionId != 0 {
+      IOPMAssertionRelease(assertionId)
+    }
+    if let activity = pendingLatencyActivities.removeValue(forKey: token) {
+      ProcessInfo.processInfo.endActivity(activity)
+    }
     if let notificationId = pendingPowerAssertions.removeValue(forKey: token) {
       if rootPowerPort != 0 {
         IOAllowPowerChange(rootPowerPort, notificationId)
       }
     }
     if pendingTerminationTokens.remove(token) != nil {
-      NSApp.reply(toApplicationShouldTerminate: true)
+      DispatchQueue.main.async {
+        NSApp.reply(toApplicationShouldTerminate: true)
+      }
     }
   }
 
@@ -2696,7 +3254,10 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
           type: "userInputDetected",
           summary: "Keyboard or trackpad interaction detected while armed.",
           clamshellClosed: self.lastClamshellClosed,
-          flushToken: nil
+          flushToken: nil,
+          incidentId: nil,
+          sessionId: nil,
+          nativeReport: nil
         )
       }
     }
@@ -2706,7 +3267,10 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
     type: String,
     summary: String,
     clamshellClosed: Bool?,
-    flushToken: String?
+    flushToken: String?,
+    incidentId: String?,
+    sessionId: String?,
+    nativeReport: [String: Any]?
   ) {
     var payload: [String: Any] = [
       "type": type,
@@ -2719,47 +3283,62 @@ final class MacOSSystemLifecycleBridge: NSObject, FlutterStreamHandler {
     if let token = flushToken {
       payload["flushToken"] = token
     }
-    if Thread.isMainThread {
-      eventSink?(payload)
-    } else {
-      DispatchQueue.main.async { [weak self] in
-        self?.eventSink?(payload)
-      }
+    if let incidentId = incidentId {
+      payload["incidentId"] = incidentId
+    }
+    if let sessionId = sessionId {
+      payload["sessionId"] = sessionId
+    }
+    if let nativeReport = nativeReport {
+      payload["nativeEmergencyReport"] = nativeReport
+    }
+    DispatchQueue.main.async { [weak self] in
+      self?.eventSink?(payload)
     }
   }
 
   private func teardownNotifications() {
     hidPollTimer?.invalidate()
     hidPollTimer = nil
+    updateArmedFlag(false)
     let center = NSWorkspace.shared.notificationCenter
     for obs in workspaceObservers {
       center.removeObserver(obs)
     }
     workspaceObservers.removeAll()
 
-    if clamshellInterestObject != 0 {
-      IOObjectRelease(clamshellInterestObject)
-      clamshellInterestObject = 0
-    }
-    if let clamshellPort = clamshellNotifyPortRef {
-      IONotificationPortDestroy(clamshellPort)
-      clamshellNotifyPortRef = nil
-    }
-    if rootDomainService != 0 {
-      IOObjectRelease(rootDomainService)
-      rootDomainService = 0
-    }
-    if powerNotifierObject != 0 {
-      IODeregisterForSystemPower(&powerNotifierObject)
-      powerNotifierObject = 0
-    }
-    if let powerPort = powerNotifyPortRef {
-      IONotificationPortDestroy(powerPort)
-      powerNotifyPortRef = nil
-    }
-    if rootPowerPort != 0 {
-      IOServiceClose(rootPowerPort)
-      rootPowerPort = 0
+    powerEmergencyQueue.sync {
+      let remainingTokens = Set(pendingFailsafeTimers.keys)
+        .union(pendingPowerAssertions.keys)
+        .union(pendingIopmAssertions.keys)
+        .union(pendingLatencyActivities.keys)
+      for token in remainingTokens {
+        resolveUrgentFlushOnQueue(token: token)
+      }
+      if clamshellInterestObject != 0 {
+        IOObjectRelease(clamshellInterestObject)
+        clamshellInterestObject = 0
+      }
+      if let clamshellPort = clamshellNotifyPortRef {
+        IONotificationPortDestroy(clamshellPort)
+        clamshellNotifyPortRef = nil
+      }
+      if rootDomainService != 0 {
+        IOObjectRelease(rootDomainService)
+        rootDomainService = 0
+      }
+      if powerNotifierObject != 0 {
+        IODeregisterForSystemPower(&powerNotifierObject)
+        powerNotifierObject = 0
+      }
+      if let powerPort = powerNotifyPortRef {
+        IONotificationPortDestroy(powerPort)
+        powerNotifyPortRef = nil
+      }
+      if rootPowerPort != 0 {
+        IOServiceClose(rootPowerPort)
+        rootPowerPort = 0
+      }
     }
   }
 }

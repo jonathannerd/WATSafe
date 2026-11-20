@@ -76,7 +76,7 @@ class ConfigurableRemoteNotificationService
     this.persistToDisk = true,
     this.enableBackgroundPolling = false,
     this.pollInterval = const Duration(seconds: 2),
-    this.armedHeartbeatInterval = const Duration(seconds: 15),
+    this.armedHeartbeatInterval = const Duration(seconds: 8),
     String? initialRelayEndpointUrl,
     List<PairedDeviceSummary>? initialDevices,
     this._httpTimeout = const Duration(seconds: 3),
@@ -127,6 +127,7 @@ class ConfigurableRemoteNotificationService
   PairingCodeInvitation? _activePairingInvitation;
   Timer? _hostSyncTimer;
   Timer? _armedHeartbeatTimer;
+  Timer? _armedInitialRetryTimer;
   Future<List<PairedDeviceSummary>>? _inFlightHostSync;
   int _deviceMutationEpoch = 0;
   int _consecutiveHostSyncFailures = 0;
@@ -269,6 +270,16 @@ class ConfigurableRemoteNotificationService
 
   @override
   String? get relayEndpointUrl => _relayEndpointUrl;
+
+  @override
+  ({String endpointUrl, String hostToken})? get emergencyHostCredentials {
+    final url = _relayEndpointUrl?.trim();
+    final token = _hostToken?.trim();
+    if (url == null || url.isEmpty || token == null || token.isEmpty) {
+      return null;
+    }
+    return (endpointUrl: url, hostToken: token);
+  }
 
   @override
   PairingCodeInvitation? get activePairingInvitation =>
@@ -693,7 +704,10 @@ class ConfigurableRemoteNotificationService
     bool disarmVerified = false,
     String? protectionState,
   }) async {
-    await _ensureLoaded();
+    _armedInitialRetryTimer?.cancel();
+    _armedInitialRetryTimer = null;
+    // Update armed flags synchronously BEFORE any await so concurrent host
+    // sync polls never observe stale pre-arm state.
     _hostArmed = armed;
     _hostArmedSessionId = armed ? armedSessionId : null;
     if (armed) {
@@ -706,6 +720,7 @@ class ConfigurableRemoteNotificationService
     } else {
       _hostProtectionState = armed ? 'armed' : 'off';
     }
+    await _ensureLoaded();
     _reconfigureArmedHeartbeatTimer();
 
     final url = _relayEndpointUrl;
@@ -735,12 +750,35 @@ class ConfigurableRemoteNotificationService
     );
     if (res.isSuccess && !_hostArmed && _pendingVerifiedDisarmSync) {
       _pendingVerifiedDisarmSync = false;
+    } else if (!res.isSuccess &&
+        _hostArmed &&
+        enableBackgroundPolling &&
+        !_disposed) {
+      final expectedSessionId = _hostArmedSessionId;
+      _armedInitialRetryTimer?.cancel();
+      _armedInitialRetryTimer = Timer(const Duration(seconds: 2), () {
+        _armedInitialRetryTimer = null;
+        if (_disposed ||
+            !_hostArmed ||
+            _hostArmedSessionId != expectedSessionId) {
+          return;
+        }
+        unawaited(
+          syncHostArmedState(
+            armed: true,
+            armedSessionId: expectedSessionId,
+            protectionState: _hostProtectionState,
+          ),
+        );
+      });
     }
   }
 
   void _reconfigureArmedHeartbeatTimer() {
     _armedHeartbeatTimer?.cancel();
     _armedHeartbeatTimer = null;
+    _armedInitialRetryTimer?.cancel();
+    _armedInitialRetryTimer = null;
     if (_disposed || !enableBackgroundPolling || !_hostArmed) {
       return;
     }
@@ -1984,6 +2022,8 @@ class ConfigurableRemoteNotificationService
     _hostSyncTimer = null;
     _armedHeartbeatTimer?.cancel();
     _armedHeartbeatTimer = null;
+    _armedInitialRetryTimer?.cancel();
+    _armedInitialRetryTimer = null;
     _hostArmed = false;
     _hostArmedSessionId = null;
     _companionPollTimer?.cancel();
@@ -2089,13 +2129,24 @@ class ConfigurableRemoteNotificationService
     };
 
     if (hasUrl && _hostToken != null && _hostToken!.isNotEmpty) {
-      final postResult = await sendRelayJsonRequest(
+      var postResult = await sendRelayJsonRequest(
         method: 'POST',
         url: '$_relayEndpointUrl/v1/incidents:report',
         headers: _bearerHeaders(_hostToken!),
         body: payload,
-        timeout: const Duration(milliseconds: 3800),
+        timeout: const Duration(milliseconds: 2800),
       );
+      if (!postResult.isSuccess &&
+          (postResult.statusCode == 0 || postResult.statusCode >= 500)) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+        postResult = await sendRelayJsonRequest(
+          method: 'POST',
+          url: '$_relayEndpointUrl/v1/incidents:report',
+          headers: _bearerHeaders(_hostToken!),
+          body: payload,
+          timeout: const Duration(milliseconds: 2000),
+        );
+      }
       Map<String, Object?>? responseJson;
       if (postResult.isSuccess && postResult.body.isNotEmpty) {
         try {
@@ -2105,8 +2156,6 @@ class ConfigurableRemoteNotificationService
           }
         } catch (_) {}
       }
-      final serverDelivered =
-          postResult.isSuccess && (responseJson?['delivered'] as bool? ?? true);
       final relayRecorded =
           postResult.isSuccess &&
           (responseJson?['alertRecorded'] as bool? ?? true);
@@ -2114,27 +2163,63 @@ class ConfigurableRemoteNotificationService
           (responseJson?['pushAcceptedCount'] as num?)?.toInt() ??
           (responseJson?['pushDispatchedCount'] as num?)?.toInt() ??
           0;
+      final pushFailedCount =
+          (responseJson?['pushFailedCount'] as num?)?.toInt() ?? 0;
+      final webMissingPushCount =
+          (responseJson?['webBondsMissingPushCount'] as num?)?.toInt() ?? 0;
+      final deduplicatedByWatchdog =
+          responseJson?['deduplicatedByWatchdog'] as bool? ?? false;
       final receiptConfirmed =
           responseJson?['receiptConfirmed'] as bool? ?? false;
+      final rawReasons = responseJson?['pushFailureReasons'];
+      final failureReasons = rawReasons is List
+          ? rawReasons.map((e) => '$e').where((s) => s.isNotEmpty).toList()
+          : const <String>[];
+      final pushRejected = pushFailedCount > 0 && pushAcceptedCount == 0;
+      final serverDelivered =
+          postResult.isSuccess &&
+          !pushRejected &&
+          webMissingPushCount == 0 &&
+          (responseJson?['delivered'] as bool? ?? true);
       final deliveryStage =
           responseJson?['deliveryStage'] as String? ??
-          (postResult.isSuccess ? 'companion_poll_queued' : 'network_error');
+          (postResult.isSuccess
+              ? (pushRejected ? 'push_failed' : 'companion_poll_queued')
+              : 'network_error');
       if (postResult.isSuccess) {
         unawaited(_appendAlertToLocalOutbox(payload));
       }
+      String message;
+      if (!postResult.isSuccess) {
+        message = 'Pre-sleep alert could not reach relay before suspension; server watchdog will follow up';
+      } else if (deduplicatedByWatchdog) {
+        message = 'Server watchdog already alerted paired phone while laptop was unreachable';
+      } else if (receiptConfirmed) {
+        message = 'Phone receipt confirmed';
+      } else if (pushAcceptedCount > 0) {
+        message = 'Urgent pre-sleep alert accepted by push service';
+      } else if (pushRejected) {
+        final suffix = failureReasons.isNotEmpty
+            ? ' (${failureReasons.join(", ")})'
+            : '';
+        message =
+            'Push delivery rejected$suffix — recorded on relay only. Open WATSafe on your phone to repair notifications.';
+      } else if (webMissingPushCount > 0 || !serverDelivered) {
+        message = 'Recorded on relay only — finish enabling notifications on your phone for lock-screen alerts.';
+      } else {
+        message = 'Urgent pre-sleep alert recorded on relay';
+      }
       return NotificationDispatchResult(
         delivered: serverDelivered,
-        capabilityStatus: postResult.isSuccess
+        capabilityStatus: serverDelivered
             ? CapabilityStatus.ready
             : CapabilityStatus.degraded,
-        message: postResult.isSuccess
-            ? (pushAcceptedCount > 0
-                  ? 'Urgent pre-sleep alert accepted by push service'
-                  : 'Urgent pre-sleep alert recorded on relay')
-            : 'Pre-sleep alert could not reach relay before suspension; server watchdog will follow up',
+        message: message,
         relayRecorded: relayRecorded,
         pushAccepted: pushAcceptedCount > 0,
+        pushFailed: pushRejected,
         receiptConfirmed: receiptConfirmed,
+        deduplicatedByWatchdog: deduplicatedByWatchdog,
         deliveryStage: deliveryStage,
       );
     }
@@ -2450,6 +2535,8 @@ class ConfigurableRemoteNotificationService
     _hostSyncTimer = null;
     _armedHeartbeatTimer?.cancel();
     _armedHeartbeatTimer = null;
+    _armedInitialRetryTimer?.cancel();
+    _armedInitialRetryTimer = null;
     _companionPollTimer?.cancel();
     _companionPollTimer = null;
     if (!_incomingAlertsController.isClosed) {

@@ -360,7 +360,7 @@ void main() {
       },
     );
 
-    test('4. Phone web companion embeds exact shared 6-theme catalog, applies theme synchronously in <head>, decouples appearance storage from pairing state, and serves swVersion 2026.11.18-v8', () async {
+    test('4. Phone web companion embeds exact shared 6-theme catalog, applies theme synchronously in <head>, decouples appearance storage from pairing state, and serves swVersion 2026.11.19-v9', () async {
       final server = WatSafeRelayServer(store: InMemoryRelayStore());
       await server.start(port: 0);
       addTearDown(() async => server.stop());
@@ -379,10 +379,10 @@ void main() {
       final healthRaw = await fetchText('/v1/health');
       final health = jsonDecode(healthRaw) as Map<String, dynamic>;
       expect(health['swVersion'], CompanionPwaAssets.serviceWorkerVersion);
-      expect(health['swVersion'], '2026.11.18-v8');
+      expect(health['swVersion'], '2026.11.19-v9');
 
       final swJs = await fetchText('/sw.js');
-      expect(swJs, contains("SHELL_CACHE = 'watsafe-shell-2026.11.18-v8'"));
+      expect(swJs, contains("SHELL_CACHE = 'watsafe-shell-2026.11.19-v9'"));
 
       final html = await fetchText('/companion');
       expect(
