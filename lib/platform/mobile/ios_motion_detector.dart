@@ -121,6 +121,9 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
         );
       }
 
+      // Core Motion live sensor data does not expose a separate
+      // permission state on supported iOS SDKs. Actual sampling is checked
+      // when startMonitoring is called.
       if (permissionStatus == PermissionStatus.notDetermined ||
           permissionStatus == PermissionStatus.denied ||
           permissionStatus == PermissionStatus.restricted) {
@@ -172,19 +175,9 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
 
   @override
   Future<PermissionStatus> requestPermission() async {
-    if (!_isIOS) {
-      return PermissionStatus.notApplicable;
-    }
-    try {
-      final raw = await _methodChannel.invokeMethod<String>(
-        'requestPermission',
-      );
-      return _parsePermissionStatus(raw ?? 'notDetermined');
-    } on MissingPluginException {
-      return PermissionStatus.notApplicable;
-    } on PlatformException {
-      return PermissionStatus.denied;
-    }
+    // Raw Core Motion sampling has no separate permission prompt/status.
+    // Let the native startMonitoring call report whether sampling succeeds.
+    return PermissionStatus.notApplicable;
   }
 
   @override
