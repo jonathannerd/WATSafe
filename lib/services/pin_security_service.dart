@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
@@ -74,6 +75,7 @@ class PinSecurityService {
   int _failedAttempts = 0;
   DateTime? _lockedUntil;
   bool _lockoutPersistencePending = false;
+  Future<void> _verificationTail = Future<void>.value();
 
   int get failedAttempts => _failedAttempts;
 
@@ -160,8 +162,32 @@ class PinSecurityService {
     return const PinValidationResult(isValid: true);
   }
 
+  /// Serializes verification so simultaneous submissions cannot overwrite
+  /// each other's persisted attempt counters or race a successful reset.
+  Future<PinVerificationResult> verifyPin(String candidatePin) {
+    final completer = Completer<PinVerificationResult>();
+    final previous = _verificationTail;
+    final gate = Completer<void>();
+    _verificationTail = gate.future;
+
+    () async {
+      try {
+        await previous;
+        completer.complete(await _verifyPinInternal(candidatePin));
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      } finally {
+        gate.complete();
+      }
+    }();
+
+    return completer.future;
+  }
+
   /// Restores and enforces persisted lockout metadata before doing KDF work.
-  Future<PinVerificationResult> verifyPin(String candidatePin) async {
+  Future<PinVerificationResult> _verifyPinInternal(
+    String candidatePin,
+  ) async {
     final record = await _storage.readPinRecord();
     if (record == null) {
       _resetBackoff();
