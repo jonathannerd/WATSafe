@@ -113,62 +113,62 @@ void main() {
       await fakeDetector.dispose();
     },
   );
-  testWidgets('iPad portrait and landscape use the adaptive navigation rail without layout errors', (WidgetTester tester) async {
-    final fakeDetector = FakeMotionDetector();
-    final pinStorage = InMemorySecurePinStorage();
-    final pinService = PinSecurityService(
-      storage: pinStorage,
-      pbkdf2Iterations: 500,
-    );
-    await pinService.setupInitialPin(pin: '135790', confirmPin: '135790');
-    final controller = AlarmController(
-      detectors: <DetectorType, MotionDetectorAdapter>{
-        DetectorType.macosCameraSceneMotion: fakeDetector,
-      },
-      audioAdapter: FakeAudioAlarmAdapter(),
-      pinService: pinService,
-      incidentStorage: InMemoryIncidentStorage(),
-      settingsStorage: InMemorySettingsStorage(
-        const ProtectionSettings(
-          selectedDetector: DetectorType.macosCameraSceneMotion,
-          onboardingCompleted: true,
+  testWidgets(
+    'iPad portrait and landscape use the adaptive navigation rail without layout errors',
+    (WidgetTester tester) async {
+      final fakeDetector = FakeMotionDetector();
+      final pinStorage = InMemorySecurePinStorage();
+      final pinService = PinSecurityService(
+        storage: pinStorage,
+        pbkdf2Iterations: 500,
+      );
+      await pinService.setupInitialPin(pin: '135790', confirmPin: '135790');
+      final controller = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.macosCameraSceneMotion: fakeDetector,
+        },
+        audioAdapter: FakeAudioAlarmAdapter(),
+        pinService: pinService,
+        incidentStorage: InMemoryIncidentStorage(),
+        settingsStorage: InMemorySettingsStorage(
+          const ProtectionSettings(
+            selectedDetector: DetectorType.macosCameraSceneMotion,
+            onboardingCompleted: true,
+          ),
         ),
-      ),
-      notificationAdapter: const UnconfiguredRemoteNotificationService(),
-    );
-
-    try {
-      await tester.binding.setSurfaceSize(const Size(1024, 768));
-      await controller.initialize();
-      await tester.pumpWidget(WatSafeApp(controller: controller));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('desktop_navigation_rail')),
-        findsOneWidget,
+        notificationAdapter: const UnconfiguredRemoteNotificationService(),
       );
-      expect(
-        find.byKey(const Key('compact_navigation_bar')),
-        findsNothing,
-      );
-      expect(tester.takeException(), isNull);
 
-      // A 768pt-wide portrait iPad still uses the rail at the current breakpoint.
-      await tester.binding.setSurfaceSize(const Size(768, 1024));
-      await tester.pumpAndSettle();
-      expect(find.byKey(const Key('desktop_navigation_rail')), findsOneWidget);
-      expect(tester.takeException(), isNull);
+      try {
+        await tester.binding.setSurfaceSize(const Size(1024, 768));
+        await controller.initialize();
+        await tester.pumpWidget(WatSafeApp(controller: controller));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('desktop_navigation_rail')),
+          findsOneWidget,
+        );
+        expect(find.byKey(const Key('compact_navigation_bar')), findsNothing);
+        expect(tester.takeException(), isNull);
 
-      await tester.tap(find.text('Settings'));
-      await tester.pumpAndSettle();
-      expect(
-        find.byKey(const Key('settings_category_list')),
-        findsOneWidget,
-      );
-      expect(tester.takeException(), isNull);
-    } finally {
-      await tester.binding.setSurfaceSize(null);
-      controller.dispose();
-      await fakeDetector.dispose();
-    }
-  });
+        // A 768pt-wide portrait iPad still uses the rail at the current breakpoint.
+        await tester.binding.setSurfaceSize(const Size(768, 1024));
+        await tester.pumpAndSettle();
+        expect(
+          find.byKey(const Key('desktop_navigation_rail')),
+          findsOneWidget,
+        );
+        expect(tester.takeException(), isNull);
+
+        await tester.tap(find.text('Settings'));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('settings_category_list')), findsOneWidget);
+        expect(tester.takeException(), isNull);
+      } finally {
+        await tester.binding.setSurfaceSize(null);
+        controller.dispose();
+        await fakeDetector.dispose();
+      }
+    },
+  );
 }
