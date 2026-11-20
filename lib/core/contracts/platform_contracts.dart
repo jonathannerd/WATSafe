@@ -89,6 +89,9 @@ abstract class AudioAlarmAdapter {
 }
 
 /// Salted PBKDF2 hash record stored via [SecurePinStorageAdapter].
+///
+/// Lockout fields were added as optional JSON members so records created by
+/// earlier WATSafe versions remain readable without requiring a PIN reset.
 @immutable
 class StoredPinRecord {
   const StoredPinRecord({
@@ -97,6 +100,8 @@ class StoredPinRecord {
     required this.saltBase64,
     required this.hashBase64,
     required this.updatedAtUtcIso,
+    this.failedAttempts = 0,
+    this.lockedUntilUtcIso,
   });
 
   final String algorithm;
@@ -104,6 +109,24 @@ class StoredPinRecord {
   final String saltBase64;
   final String hashBase64;
   final String updatedAtUtcIso;
+  final int failedAttempts;
+  final String? lockedUntilUtcIso;
+
+  StoredPinRecord withSecurityState({
+    required int failedAttempts,
+    required DateTime? lockedUntil,
+    required String updatedAtUtcIso,
+  }) {
+    return StoredPinRecord(
+      algorithm: algorithm,
+      iterations: iterations,
+      saltBase64: saltBase64,
+      hashBase64: hashBase64,
+      updatedAtUtcIso: updatedAtUtcIso,
+      failedAttempts: failedAttempts,
+      lockedUntilUtcIso: lockedUntil?.toUtc().toIso8601String(),
+    );
+  }
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
@@ -112,16 +135,24 @@ class StoredPinRecord {
       'saltBase64': saltBase64,
       'hashBase64': hashBase64,
       'updatedAtUtcIso': updatedAtUtcIso,
+      'failedAttempts': failedAttempts,
+      'lockedUntilUtcIso': lockedUntilUtcIso,
     };
   }
 
   factory StoredPinRecord.fromJson(Map<String, Object?> json) {
+    final rawFailedAttempts = json['failedAttempts'];
+    final failedAttempts = rawFailedAttempts is num
+        ? rawFailedAttempts.toInt().clamp(0, 1000000).toInt()
+        : 0;
     return StoredPinRecord(
       algorithm: json['algorithm'] as String? ?? 'PBKDF2-HMAC-SHA256',
       iterations: (json['iterations'] as num?)?.toInt() ?? 20000,
       saltBase64: json['saltBase64'] as String? ?? '',
       hashBase64: json['hashBase64'] as String? ?? '',
       updatedAtUtcIso: json['updatedAtUtcIso'] as String? ?? '',
+      failedAttempts: failedAttempts,
+      lockedUntilUtcIso: json['lockedUntilUtcIso'] as String?,
     );
   }
 }

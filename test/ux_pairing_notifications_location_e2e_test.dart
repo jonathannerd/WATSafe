@@ -837,12 +837,33 @@ void main() {
           expect(laptopController.state, ProtectionState.alarming);
           expect(laptopAudio.isPlaying, isTrue);
 
+          // Wait for the asynchronous wrong-PIN verification to finish and
+          // the UI guard to re-enable the disarm button before the next tap.
+          await tester.runAsync(() async {
+            final deadline = DateTime.now().add(const Duration(seconds: 5));
+            while (laptopController.warningMessage == null &&
+                DateTime.now().isBefore(deadline)) {
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+            }
+          });
+          await tester.pumpAndSettle();
+          final disarmButtonAfterWrongPin = tester.widget<FilledButton>(
+            find.byKey(const Key('alarm_disarm_button')),
+          );
+          expect(disarmButtonAfterWrongPin.onPressed, isNotNull);
+
           // Correct PIN stops siren IMMEDIATELY and returns to Off
           await tester.enterText(
             find.byKey(const Key('alarm_pin_input')),
             '654321',
           );
           await tester.tap(find.byKey(const Key('alarm_disarm_button')));
+          await tester.runAsync(() async {
+            final deadline = DateTime.now().add(const Duration(seconds: 5));
+            while (laptopAudio.isPlaying && DateTime.now().isBefore(deadline)) {
+              await Future<void>.delayed(const Duration(milliseconds: 10));
+            }
+          });
           await tester.pumpAndSettle();
 
           expect(laptopAudio.isPlaying, isFalse);

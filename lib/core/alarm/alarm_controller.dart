@@ -2770,6 +2770,10 @@ class AlarmController extends ChangeNotifier {
       return result;
     }
 
+    final pinPersistenceWarning = result.securityStatePersisted
+        ? null
+        : (result.message ??
+              'PIN verified, but secure PIN state could not be saved.');
     final hadActiveProtection =
         _state == ProtectionState.arming ||
         _state == ProtectionState.armed ||
@@ -2804,7 +2808,7 @@ class AlarmController extends ChangeNotifier {
     _activeIncidentPushFailed = false;
     _isCalibrating = false;
     _remainingCountdownSeconds = 0;
-    _warningMessage = null;
+    _warningMessage = pinPersistenceWarning;
     _syncArmedLifecycleAndWatchdog(
       armed: false,
       disarmVerified: true,
@@ -2861,8 +2865,11 @@ class AlarmController extends ChangeNotifier {
       try {
         await _updateIncidentSafely(resolved, rethrowOnError: true);
       } catch (_) {
-        _warningMessage =
+        const historyWarning =
             'Disarmed, though local activity history could not be saved.';
+        _warningMessage = _warningMessage == null
+            ? historyWarning
+            : '$_warningMessage $historyWarning';
       }
       final adapter = _notificationAdapter;
       if (adapter is MutableRemoteNotificationAdapter) {
