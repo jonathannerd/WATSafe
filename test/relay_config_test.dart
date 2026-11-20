@@ -19,15 +19,12 @@ void main() {
       );
     });
 
-    test(
-      'standalone hosted web apps do not guess that their static host is a relay',
-      () {
+    test('standalone hosted web apps do not guess that their static host is a relay', () {
       final origin = Uri.parse('https://static.example.org/app/');
         expect(
           RelayConfig.resolveDefaultRelayUrl(browserOrigin: origin),
           isEmpty,
         );
-      },
-    );
+    });
   });
 }
