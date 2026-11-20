@@ -576,13 +576,32 @@ final class IOSSecureStorageBridge: NSObject {
       ]
       var item: CFTypeRef?
       let status = SecItemCopyMatching(query as CFDictionary, &item)
-      if status == errSecSuccess,
-        let data = item as? Data,
-        let str = String(data: data, encoding: .utf8)
-      {
+      if status == errSecSuccess {
+        guard let data = item as? Data,
+          let str = String(data: data, encoding: .utf8)
+        else {
+          result(
+            FlutterError(
+              code: "KEYCHAIN_READ_FAILED",
+              message: "Keychain returned an unreadable PIN record.",
+              details: nil
+            )
+          )
+          return
+        }
         result(str)
-      } else {
+      } else if status == errSecItemNotFound {
+        // Only a confirmed missing item permits the Flutter layer to check
+        // and migrate an older restricted fallback file.
         result(nil)
+      } else {
+        result(
+          FlutterError(
+            code: "KEYCHAIN_READ_FAILED",
+            message: "SecItemCopyMatching failed with status \(status)",
+            details: nil
+          )
+        )
       }
 
     case "writePinRecord":
@@ -599,28 +618,63 @@ final class IOSSecureStorageBridge: NSObject {
         )
         return
       }
-      let deleteQuery: [String: Any] = [
-        kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: serviceName,
-        kSecAttrAccount as String: accountName,
-      ]
-      SecItemDelete(deleteQuery as CFDictionary)
 
-      let addQuery: [String: Any] = [
+      let query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: serviceName,
         kSecAttrAccount as String: accountName,
-        kSecValueData as String: data,
-        kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
       ]
-      let status = SecItemAdd(addQuery as CFDictionary, nil)
-      if status == errSecSuccess {
+      let updateAttributes: [String: Any] = [
+        kSecValueData as String: data,
+      ]
+      let updateStatus = SecItemUpdate(
+        query as CFDictionary,
+        updateAttributes as CFDictionary
+      )
+      if updateStatus == errSecSuccess {
         result("iOS Keychain Services (kSecAttrAccessibleWhenUnlockedThisDeviceOnly)")
+        return
+      }
+      guard updateStatus == errSecItemNotFound else {
+        result(
+          FlutterError(
+            code: "SECURE_STORAGE_WRITE_FAILED",
+            message: "Keychain update failed with status \(updateStatus)",
+            details: nil
+          )
+        )
+        return
+      }
+
+      var addQuery = query
+      addQuery[kSecValueData as String] = data
+      addQuery[kSecAttrAccessible as String] =
+        kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+      let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+      if addStatus == errSecSuccess {
+        result("iOS Keychain Services (kSecAttrAccessibleWhenUnlockedThisDeviceOnly)")
+      } else if addStatus == errSecDuplicateItem {
+        // Another writer may have created the item after the initial update.
+        let retryStatus = SecItemUpdate(
+          query as CFDictionary,
+          updateAttributes as CFDictionary
+        )
+        if retryStatus == errSecSuccess {
+          result("iOS Keychain Services (kSecAttrAccessibleWhenUnlockedThisDeviceOnly)")
+        } else {
+          result(
+            FlutterError(
+              code: "SECURE_STORAGE_WRITE_FAILED",
+              message: "Keychain retry update failed with status \(retryStatus)",
+              details: nil
+            )
+          )
+        }
       } else {
         result(
           FlutterError(
-            code: "KEYCHAIN_WRITE_FAILED",
-            message: "SecItemAdd failed with status \(status)",
+            code: "SECURE_STORAGE_WRITE_FAILED",
+            message: "Keychain item creation failed with status \(addStatus)",
             details: nil
           )
         )
