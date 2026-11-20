@@ -1,0 +1,27 @@
+name: Temporary Format Diagnostics
+
+on:
+  push:
+    branches: [fix/pin-storage-ios-relay-ipad]
+
+permissions:
+  contents: read
+
+jobs:
+  format-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - name: Install dependencies
+        run: flutter pub get
+      - name: Format tests and print exact diff
+        run: |
+          dart format test/platform_and_pairing_test.dart test/relay_config_test.dart test/widget_test.dart
+          git diff -- test/platform_and_pairing_test.dart test/relay_config_test.dart test/widget_test.dart
