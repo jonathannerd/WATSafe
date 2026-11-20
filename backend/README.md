@@ -10,21 +10,21 @@ The standalone WATSafe Relay Server (`backend/server.dart`, backed by `lib/relay
 - **Authenticated Location Access Only:** Protected device coordinates attached via `POST /v1/incidents/location` are stored strictly on the session's authenticated event record (`GET /v1/companion/alerts` and `GET /v1/companion/events/<incidentId>`). Lock-screen Web Push / APNs / FCM notification payloads contain **only** the protected device name, plain alarm message, and `incidentId` — never coordinates.
 - **Zero Credentials in URLs:** Neither `companionToken` nor `hostToken` is ever placed in query strings. Moving from Mobile Safari into an isolated iOS Home Screen web app uses a short-lived, single-use 6-character setup code (`POST /v1/companion/handoff-code` -> `POST /v1/companion/claim-handoff`) that rotates the companion token on consumption.
 - **Built-In RFC 8291 + RFC 8292 Web Push & Durable VAPID Keys:** Encrypts push payloads with `aes128gcm` (NIST P-256 ECDH + HKDF-SHA-256), signs VAPID `ES256` JWT headers directly in pure Dart, persists generated VAPID keys in `watsafe_server_secrets` (`PostgresRelayStore`) or local `vapid_keys.json` (`FileRelayStore`), and auto-revokes expired (`404` / `410`) push subscriptions.
-- **Honest Storage Durability Telemetry:** `GET /v1/health` exposes `storageBackend`, `storageDurable`, and `storageDurabilityWarning` (`storageDurable: false` when running inside a cloud container such as Render without `DATABASE_URL` or `AIVEN_DATABASE_URL`) so an ephemeral container filesystem is never mistaken for permanent storage.
+- **Honest Storage Durability Telemetry:** `GET /v1/health` exposes `storageBackend`, `storageDurable`, and `storageDurabilityWarning` (`storageDurable: false` when running inside a cloud container such as Render without `AIVEN_DATABASE_URL`) so an ephemeral container filesystem is never mistaken for permanent storage.
 
 ---
 
-## 2. Cloud HTTPS Deployment with Durable PostgreSQL (`render.yaml` + `Dockerfile`)
+## 2. Cloud HTTPS Deployment with Existing Aiven PostgreSQL (`render.yaml` + `Dockerfile`)
 
 Deployment files at the repository root (`Dockerfile` pinned to `dart:3.13.7-sdk` and `render.yaml`) prepare the HTTPS `watsafe-relay` service:
 
 1. **Important storage behavior:**
    - `render.yaml` deploys the `watsafe-relay` Docker web service (providing a stable `https://<your-render-service>.onrender.com` certificate via `RENDER_EXTERNAL_URL`) and **prompts (`sync: false`) for environment secrets**. It **does not** provision PostgreSQL automatically.
    - **Do not** use Render’s expiring 30-day free PostgreSQL database or Render’s ephemeral container filesystem for permanent pairing.
-   - The team deployment uses **Neon PostgreSQL** via `DATABASE_URL`. For your own deployment, supply a durable PostgreSQL connection URI in Render environment secrets (never in Git); Aiven is also supported.
+   - Supply our existing **Aiven PostgreSQL** connection URI via `AIVEN_DATABASE_URL` in Render environment secrets (never in Git).
 2. **Deploy & set secrets in Render:**
    - In the Render Dashboard, choose **New -> Blueprint** and select `jonathannerd/WATSafe`.
-   - Set `DATABASE_URL` to your PostgreSQL connection URI (for example, Neon). If using Aiven, you may set `AIVEN_DATABASE_URL` instead. The blueprint does not create the database.
+   - Set `AIVEN_DATABASE_URL` (`postgres://avnadmin:<password>@<project>.aivencloud.com:<port>/defaultdb?sslmode=require`).
    - Optionally set `AIVEN_CA_CERT` (PEM certificate string) if your URI uses `?sslmode=verify-full` or `?sslmode=verify-ca`.
 3. **Verify the live HTTPS endpoint and database persistence across a restart/redeploy:**
    ```bash
@@ -56,11 +56,11 @@ From the repository root:
 | :--- | :--- |
 | `PORT` / `WATSAFE_BIND_HOST` | Listen port (default `8787`) and bind address (default `0.0.0.0`) |
 | `WATSAFE_PUBLIC_URL` | Permanent public HTTPS base URL encoded into QR pairing links (auto-detected on Render via `RENDER_EXTERNAL_URL`) |
-| `AIVEN_DATABASE_URL` / `DATABASE_URL` | PostgreSQL connection URI (Neon or another supported provider) (`postgres://...`, environment secret only—never committed to Git). Required in cloud containers for durable storage. The legacy adapter label `storageBackend: aiven_postgres` can also represent Neon; check `storageDurable: true`. |
+| `AIVEN_DATABASE_URL` / `DATABASE_URL` | Aiven / PostgreSQL connection URI (`postgres://...`, environment secret only—never committed to Git). Required in cloud containers for durable storage (`storageBackend: aiven_postgres`, `storageDurable: true`). |
 | `AIVEN_CA_CERT` / `AIVEN_CA_CERT_PATH` / `PGSSLROOTCERT` | Optional Aiven CA certificate (inline PEM string or file path) for `SslMode.verifyFull` |
 | `WATSAFE_DATA_DIR` | Directory for local host `FileRelayStore` when running on a personal Mac/PC (`~/.watsafe/relay` by default; ephemeral inside cloud containers unless `WATSAFE_PERSISTENT_VOLUME=true`) |
 | `VAPID_PUBLIC_KEY` + `VAPID_PRIVATE_KEY` | Optional explicit NIST P-256 VAPID keypair (base64url); when omitted, WATSafe generates once and persists durably in `watsafe_server_secrets` (PostgreSQL) or local `vapid_keys.json` |
-| `VAPID_SUBJECT` | Contact URI for VAPID JWT `sub` claim (use a valid public contact URI or the public HTTPS relay origin; do not use a `.local` subject) |
+| `VAPID_SUBJECT` | Contact URI for VAPID JWT `sub` claim (default `mailto:alerts@watsafe.app`) |
 | `FCM_PROJECT_ID` + `FCM_BEARER_TOKEN` / `FCM_SERVER_KEY` | Optional Firebase Cloud Messaging credentials for native Android/iOS push tokens |
 | `APNS_BUNDLE_ID` + `APNS_AUTH_TOKEN` | Optional Apple Push Notification service HTTP/2 credentials for native iOS builds |
 | `WATSAFE_PUSH_WEBHOOK_URL` | Optional external push gateway URL (verified on startup) |
