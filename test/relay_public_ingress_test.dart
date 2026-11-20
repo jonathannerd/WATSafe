@@ -42,54 +42,65 @@ void main() {
       );
     }
 
-    test('obsolete public registration and watchdog routes are no longer exposed', () async {
-      final register = await postJson(
-        '/v1/devices/register',
-        <String, Object?>{'displayName': 'Untrusted client'},
-      );
-      expect(register.$1, HttpStatus.notFound);
+    test(
+      'obsolete public registration and watchdog routes are no longer exposed',
+      () async {
+        final register = await postJson(
+          '/v1/devices/register',
+          <String, Object?>{'displayName': 'Untrusted client'},
+        );
+        expect(register.$1, HttpStatus.notFound);
 
-      final request = await client.getUrl(baseUrl.resolve('/v1/watchdog/sweep'));
-      final response = await request.close();
-      expect(response.statusCode, HttpStatus.notFound);
-      await response.drain<void>();
-    });
+        final request = await client.getUrl(
+          baseUrl.resolve('/v1/watchdog/sweep'),
+        );
+        final response = await request.close();
+        expect(response.statusCode, HttpStatus.notFound);
+        await response.drain<void>();
+      },
+    );
 
-    test('unknown and already-used handoff codes count toward the rate limit', () async {
-      for (var attempt = 0; attempt < 5; attempt++) {
-        final result = await postJson(
+    test(
+      'unknown and already-used handoff codes count toward the rate limit',
+      () async {
+        for (var attempt = 0; attempt < 5; attempt++) {
+          final result = await postJson(
+            '/v1/companion/claim-handoff',
+            <String, Object?>{'handoffCode': 'AAAAAA'},
+          );
+          expect(result.$1, HttpStatus.notFound);
+          expect(result.$2['error'], 'HANDOFF_CODE_NOT_FOUND');
+        }
+
+        final limited = await postJson(
           '/v1/companion/claim-handoff',
           <String, Object?>{'handoffCode': 'AAAAAA'},
         );
-        expect(result.$1, HttpStatus.notFound);
-        expect(result.$2['error'], 'HANDOFF_CODE_NOT_FOUND');
-      }
+        expect(limited.$1, HttpStatus.tooManyRequests);
+        expect(limited.$2['error'], 'TOO_MANY_ATTEMPTS');
+      },
+    );
 
-      final limited = await postJson(
-        '/v1/companion/claim-handoff',
-        <String, Object?>{'handoffCode': 'AAAAAA'},
-      );
-      expect(limited.$1, HttpStatus.tooManyRequests);
-      expect(limited.$2['error'], 'TOO_MANY_ATTEMPTS');
-    });
+    test(
+      'JSON request bodies larger than 2 MiB are rejected with 413',
+      () async {
+        final payload = jsonEncode(<String, Object?>{
+          'hostDisplayName': ''.padRight(2 * 1024 * 1024, 'x'),
+        });
+        final bytes = utf8.encode(payload);
+        final request = await client.postUrl(
+          baseUrl.resolve('/v1/pairing/initiate'),
+        );
+        request.headers.contentType = ContentType.json;
+        request.contentLength = bytes.length;
+        request.add(bytes);
 
-    test('JSON request bodies larger than 2 MiB are rejected with 413', () async {
-      final payload = jsonEncode(<String, Object?>{
-        'hostDisplayName': ''.padRight(2 * 1024 * 1024, 'x'),
-      });
-      final bytes = utf8.encode(payload);
-      final request = await client.postUrl(
-        baseUrl.resolve('/v1/pairing/initiate'),
-      );
-      request.headers.contentType = ContentType.json;
-      request.contentLength = bytes.length;
-      request.add(bytes);
-
-      final response = await request.close();
-      final raw = await utf8.decoder.bind(response).join();
-      expect(response.statusCode, HttpStatus.requestEntityTooLarge);
-      final body = jsonDecode(raw) as Map<String, dynamic>;
-      expect(body['error'], 'REQUEST_BODY_TOO_LARGE');
-    });
+        final response = await request.close();
+        final raw = await utf8.decoder.bind(response).join();
+        expect(response.statusCode, HttpStatus.requestEntityTooLarge);
+        final body = jsonDecode(raw) as Map<String, dynamic>;
+        expect(body['error'], 'REQUEST_BODY_TOO_LARGE');
+      },
+    );
   });
 }

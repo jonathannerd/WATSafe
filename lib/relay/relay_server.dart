@@ -8094,10 +8094,14 @@ class WatSafeRelayServer {
         'path': path,
       });
     } on _RequestBodyTooLargeException {
-      _writeJson(request.response, HttpStatus.requestEntityTooLarge, <String, Object?>{
-        'error': 'REQUEST_BODY_TOO_LARGE',
-        'message': 'JSON request bodies must be 2 MiB or smaller.',
-      });
+      _writeJson(
+        request.response,
+        HttpStatus.requestEntityTooLarge,
+        <String, Object?>{
+          'error': 'REQUEST_BODY_TOO_LARGE',
+          'message': 'JSON request bodies must be 2 MiB or smaller.',
+        },
+      );
     } catch (error) {
       _writeJson(
         request.response,
