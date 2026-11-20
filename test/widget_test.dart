@@ -74,6 +74,9 @@ void main() {
       expect(find.text('Off'), findsOneWidget);
       expect(find.text('Arm protection'), findsOneWidget);
       expect(find.text('Pair your phone'), findsOneWidget);
+      expect(find.byKey(const Key('home_detector_readiness_strip')), findsOneWidget);
+      expect(find.text('Camera ready'), findsOneWidget);
+      expect(find.text('Setup checklist'), findsNothing);
       expect(controller.state, ProtectionState.disarmed);
 
       // Verify 3-task navigation: Home, Activity, Settings
@@ -108,6 +111,78 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Test alert'), findsOneWidget);
       expect(find.textContaining('Jonathan’s MacBook'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('activity_filter_alarms')));
+      await tester.pumpAndSettle();
+      expect(find.text('No matching activity'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('activity_filter_testAlerts')));
+      await tester.pumpAndSettle();
+      expect(find.text('Test alert'), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const Key('activity_search_field')),
+        'Jonathan',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Test alert'), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const Key('activity_search_field')),
+        'no matching device',
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('No matching activity'), findsOneWidget);
+
+      await tester.enterText(
+        find.byKey(const Key('activity_search_field')),
+        '',
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const Key('activity_export_report_button')),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Incident report copied as CSV.'),
+        findsOneWidget,
+      );
+
+      // The Home screen remains focused: no setup checklist is shown.
+      await tester.tap(find.text('Home'));
+      await tester.pumpAndSettle();
+      expect(find.text('Setup checklist'), findsNothing);
+      expect(
+        find.byKey(const Key('home_setup_readiness_card')),
+        findsNothing,
+      );
+
+      // Privacy Center exposes local-only Safe Zones and privacy explanations.
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      // Settings may retain its previously opened category in the tab stack.
+      final settingsBackButton = find.byKey(
+        const Key('settings_category_back_button'),
+      );
+      if (settingsBackButton.evaluate().isNotEmpty) {
+        await tester.tap(settingsBackButton);
+        await tester.pumpAndSettle();
+      }
+      await tester.tap(find.byKey(const Key('settings_category_location')));
+      await tester.pumpAndSettle();
+      expect(find.text('Privacy Center'), findsOneWidget);
+      expect(find.byKey(const Key('safe_zones_card')), findsOneWidget);
+      expect(find.text('Privacy at a glance'), findsOneWidget);
+
+      // Charger-disconnect alerts are configurable under Protection.
+      await tester.tap(find.byKey(const Key('settings_category_back_button')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('settings_category_protection')));
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const Key('alert_on_ac_power_disconnect_switch')),
+        findsOneWidget,
+      );
 
       controller.dispose();
       await fakeDetector.dispose();

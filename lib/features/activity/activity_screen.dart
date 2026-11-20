@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/alarm/alarm_controller.dart';
 import '../../core/contracts/platform_contracts.dart';
@@ -10,10 +11,25 @@ import '../theme/watsafe_theme.dart';
 /// both this device and any paired laptop, with an interactive incident map,
 /// alarm-time vs latest location comparison, filtered movement trail, and
 /// **Center on device**.
-class ActivityScreen extends StatelessWidget {
+enum _ActivityKindFilter { all, alarms, testAlerts, interruptions }
+
+enum _ActivityTimeFilter { all, day, week, month }
+
+class ActivityScreen extends StatefulWidget {
   const ActivityScreen({super.key, required this.controller});
 
   final AlarmController controller;
+
+  @override
+  State<ActivityScreen> createState() => _ActivityScreenState();
+}
+
+class _ActivityScreenState extends State<ActivityScreen> {
+  AlarmController get controller => widget.controller;
+
+  _ActivityKindFilter _kindFilter = _ActivityKindFilter.all;
+  _ActivityTimeFilter _timeFilter = _ActivityTimeFilter.all;
+  String _query = '';
 
   List<_ActivityEntry> _buildMergedEntries() {
     final byId = <String, _ActivityEntry>{};
@@ -59,9 +75,61 @@ class ActivityScreen extends StatelessWidget {
     return list;
   }
 
+  List<_ActivityEntry> _applyFilters(List<_ActivityEntry> source) {
+    final query = _query.trim().toLowerCase();
+    final now = DateTime.now();
+    return source.where((entry) {
+      final kindMatches = switch (_kindFilter) {
+        _ActivityKindFilter.all => true,
+        _ActivityKindFilter.alarms => !entry.isTest && !entry.isFailure,
+        _ActivityKindFilter.testAlerts => entry.isTest,
+        _ActivityKindFilter.interruptions => entry.isFailure,
+      };
+      final age = now.difference(entry.triggeredAt);
+      final timeMatches = switch (_timeFilter) {
+        _ActivityTimeFilter.all => true,
+        _ActivityTimeFilter.day => age >= Duration.zero && age <= const Duration(days: 1),
+        _ActivityTimeFilter.week => age >= Duration.zero && age <= const Duration(days: 7),
+        _ActivityTimeFilter.month => age >= Duration.zero && age <= const Duration(days: 30),
+      };
+      final searchMatches = query.isEmpty ||
+          entry.deviceName.toLowerCase().contains(query) ||
+          entry.title.toLowerCase().contains(query) ||
+          entry.summary.toLowerCase().contains(query) ||
+          (entry.resolutionSummary ?? '').toLowerCase().contains(query);
+      return kindMatches && timeMatches && searchMatches;
+    }).toList(growable: false);
+  }
+
+  String _csvCell(String value) => '"${value.replaceAll('"', '""')}"';
+
+  Future<void> _copyIncidentReport(List<_ActivityEntry> entries) async {
+    final rows = <String>[
+      'incident_id,occurred_at,device,type,summary,location_status,latitude,longitude,resolution',
+      for (final entry in entries)
+        <String>[
+          entry.id,
+          entry.triggeredAt.toUtc().toIso8601String(),
+          entry.deviceName,
+          entry.title,
+          entry.summary,
+          entry.locationStatus.name,
+          entry.location?.latitude.toStringAsFixed(6) ?? '',
+          entry.location?.longitude.toStringAsFixed(6) ?? '',
+          entry.resolutionSummary ?? '',
+        ].map(_csvCell).join(','),
+    ];
+    await Clipboard.setData(ClipboardData(text: rows.join('\n')));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Incident report copied as CSV.')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final entries = _buildMergedEntries();
+    final allEntries = _buildMergedEntries();
+    final entries = _applyFilters(allEntries);
     final palette = WatSafeTheme.of(context);
     final selectedId = controller.selectedActivityIncidentId;
     final selectedEntry = selectedId == null
@@ -86,6 +154,70 @@ class ActivityScreen extends StatelessWidget {
                 'Recent alarms and test alerts from your protected devices.',
                 style: TextStyle(color: palette.textMuted),
               ),
+              const SizedBox(height: 14),
+              TextField(
+                key: const Key('activity_search_field'),
+                onChanged: (value) => setState(() => _query = value),
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search_rounded),
+                  hintText: 'Search device or event',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: <Widget>[
+                  for (final filter in _ActivityKindFilter.values)
+                    ChoiceChip(
+                      key: Key('activity_filter_${filter.name}'),
+                      label: Text(switch (filter) {
+                        _ActivityKindFilter.all => 'All',
+                        _ActivityKindFilter.alarms => 'Alarms',
+                        _ActivityKindFilter.testAlerts => 'Test alerts',
+                        _ActivityKindFilter.interruptions => 'Interruptions',
+                      }),
+                      selected: _kindFilter == filter,
+                      onSelected: (_) => setState(() => _kindFilter = filter),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: DropdownButtonFormField<_ActivityTimeFilter>(
+                      key: const Key('activity_time_filter'),
+                      initialValue: _timeFilter,
+                      decoration: const InputDecoration(
+                        labelText: 'Time range',
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                      items: const <DropdownMenuItem<_ActivityTimeFilter>>[
+                        DropdownMenuItem(value: _ActivityTimeFilter.all, child: Text('Any time')),
+                        DropdownMenuItem(value: _ActivityTimeFilter.day, child: Text('Last 24 hours')),
+                        DropdownMenuItem(value: _ActivityTimeFilter.week, child: Text('Last 7 days')),
+                        DropdownMenuItem(value: _ActivityTimeFilter.month, child: Text('Last 30 days')),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) setState(() => _timeFilter = value);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton.icon(
+                    key: const Key('activity_export_report_button'),
+                    onPressed: entries.isEmpty
+                        ? null
+                        : () => _copyIncidentReport(entries),
+                    icon: const Icon(Icons.file_download_outlined, size: 18),
+                    label: const Text('Copy report'),
+                  ),
+                ],
+              ),
               const SizedBox(height: 20),
               if (selectedEntry != null) ...<Widget>[
                 _SelectedEventDetailCard(
@@ -94,8 +226,10 @@ class ActivityScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 20),
               ],
-              if (entries.isEmpty)
+              if (allEntries.isEmpty)
                 const _EmptyActivityCard()
+              else if (entries.isEmpty)
+                const _FilteredActivityEmptyCard()
               else
                 ...entries.map(
                   (entry) => Padding(
@@ -728,6 +862,33 @@ class _UnavailableLocationNotice extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _FilteredActivityEmptyCard extends StatelessWidget {
+  const _FilteredActivityEmptyCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: <Widget>[
+            Icon(Icons.filter_alt_off_rounded, size: 34, color: palette.textMuted),
+            const SizedBox(height: 10),
+            const Text('No matching activity'),
+            const SizedBox(height: 4),
+            Text(
+              'Try changing your search, event type, or time range.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: palette.textMuted),
+            ),
+          ],
+        ),
       ),
     );
   }

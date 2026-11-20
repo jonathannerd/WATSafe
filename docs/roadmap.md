@@ -14,8 +14,15 @@ The repository now contains the following implementation areas:
 - iOS Core Motion foreground detection with explicit pause on background/screen lock and guarded resume on foreground.
 - Relay pairing, authenticated companion requests, location-sharing controls, Web Push and provider adapters, local file persistence, and PostgreSQL-backed relay persistence.
 - Relay request hardening: bounded JSON bodies, failed handoff-code rate limiting, and removal of obsolete unauthenticated registration/watchdog routes (PR #22).
+- Activity now supports local search, event-type and time-range filters, and copying an incident-history CSV report.
+- The Privacy Center documents location and camera-data handling; Safe Zone definitions are stored locally and use foreground location checks while WATSafe is running. Separate user-enabled laptop location sharing can still report current locations.
+- Companion Devices includes an explicit, rate-limited request for a fresh protected-device location. It can only succeed when the protected device is online, sharing location, and able to respond.
+- Desktop camera telemetry can surface a local charger-disconnect alert when the native platform supplies the AC-unplugged signal. Battery-percentage monitoring is not implemented.
+
 
 These are code-level implementation statements, not a claim that every path has been tested on every physical device.
+
+Safe Zones are local-only and foreground-dependent; they are not OS geofencing or a guarantee of alerts while the app is suspended, closed, or the device is asleep. The lost-device refresh action is a request, not confirmation that a newer location was obtained.
 
 ## 2. Highest-priority remaining work
 

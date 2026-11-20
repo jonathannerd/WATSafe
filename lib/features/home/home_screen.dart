@@ -64,6 +64,11 @@ class HomeScreen extends StatelessWidget {
                 capability: capability,
                 onPromptDisarmPin: () => _showDisarmPinDialog(context),
               ),
+              if (state == ProtectionState.disarmed ||
+                  state == ProtectionState.unavailable) ...<Widget>[
+                const SizedBox(height: 8),
+                _DetectorReadinessStrip(controller: controller),
+              ],
               const SizedBox(height: 12),
               _PhoneConnectionRow(controller: controller),
               if (!controller.isCompanionMode) ...<Widget>[
@@ -94,6 +99,73 @@ class HomeScreen extends StatelessWidget {
           child: _DisarmPinSheet(controller: controller),
         );
       },
+    );
+  }
+}
+
+class _DetectorReadinessStrip extends StatelessWidget {
+  const _DetectorReadinessStrip({required this.controller});
+
+  final AlarmController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = WatSafeTheme.of(context);
+    final capability = controller.selectedCapability;
+    final method = controller.selectedDetectorType;
+    final bool isReady = capability?.canArm ?? false;
+    final bool permissionNeeded =
+        capability?.status == CapabilityStatus.permissionRequired;
+    final Color tone = isReady
+        ? palette.readyColor
+        : palette.warningColor;
+    final String status = capability == null
+        ? 'Checking readiness'
+        : isReady
+        ? (method.usesCamera ? 'Camera ready' : 'Motion sensor ready')
+        : permissionNeeded
+        ? (method.usesCamera ? 'Camera access needed' : 'Motion access needed')
+        : 'Detector unavailable';
+
+    return Container(
+      key: const Key('home_detector_readiness_strip'),
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
+      decoration: BoxDecoration(
+        color: palette.surfaceElevated,
+        borderRadius: BorderRadius.circular(11),
+        border: Border.all(color: palette.borderColor),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(
+            method.usesCamera
+                ? Icons.videocam_outlined
+                : Icons.sensors_rounded,
+            size: 17,
+            color: tone,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              method.userFacingMethodName,
+              style: TextStyle(
+                color: palette.textMuted,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Text(
+            status,
+            key: const Key('home_detector_readiness_status'),
+            style: TextStyle(
+              color: tone,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

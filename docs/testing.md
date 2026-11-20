@@ -36,7 +36,23 @@ The test prints a line beginning with `WATSAFE_PIN_KDF_BENCHMARK`, including eac
 
 OWASP's Password Storage Cheat Sheet advises tuning password-hash work factors to the deployment's performance and gives less than one second as a general target for a hash calculation. Review the production setting if a supported device exceeds that target; do not lower it silently without recording the security/performance trade-off.
 
-## 3. macOS physical-device checklist
+## 3. New local-feature checks
+
+Run these focused regression tests from the repository root:
+
+    flutter test test/safe_zone_settings_test.dart
+    flutter test test/safe_zone_monitoring_test.dart
+    flutter test test/widget_test.dart
+
+Verify on a real supported desktop:
+- Add a Safe Zone only after explicitly granting location permission; confirm its coordinates remain in local settings and are not uploaded when laptop location sharing is off.
+- Walk or move the protected device across the radius and confirm one local enter/leave notification. Check that boundary jitter does not cause repeated alerts.
+- Confirm Safe Zone checks stop when the app is closed, suspended, or the computer sleeps; do not treat this as background geofencing.
+- Disconnect AC power while armed on a desktop that supplies the native telemetry signal. Confirm one local warning per armed session. Battery percentage alerts are not implemented.
+- From the companion Devices page, request a location refresh while the laptop is online and sharing location. Confirm that a newer position appears only after the laptop responds; offline / sharing-disabled cases must retain the last known location.
+- Search and filter Activity, then copy the CSV report and verify its headings and incident metadata.
+
+## 4. macOS physical-device checklist
 
 - [ ] Run flutter run -d macos or open a debug build on a Mac.
 - [ ] Complete first-run onboarding and create a 6–12 digit PIN.
@@ -47,7 +63,7 @@ OWASP's Password Storage Cheat Sheet advises tuning password-hash work factors t
 - [ ] Restart the app and confirm the PIN remains available through Keychain.
 - [ ] Verify sleep/lid interruption and the wake/reconciliation behavior.
 
-## 4. Windows physical-device checklist
+## 5. Windows physical-device checklist
 
 - [ ] Build and launch the Windows target on a Windows 10/11 machine.
 - [ ] Check camera discovery, privacy permission, camera-in-use handling, and first-frame startup.
@@ -56,7 +72,7 @@ OWASP's Password Storage Cheat Sheet advises tuning password-hash work factors t
 - [ ] Verify the persistent system lifecycle / sleep / lid / shutdown warning behavior that applies to the device.
 - [ ] Verify PIN storage through DPAPI and confirm alarm audio routing.
 
-## 5. Android physical-device checklist
+## 6. Android physical-device checklist
 
 - [ ] Install a debug build on a physical Android device and grant requested permissions.
 - [ ] Verify linear-acceleration sensor or accelerometer fallback detection.
@@ -66,7 +82,7 @@ OWASP's Password Storage Cheat Sheet advises tuning password-hash work factors t
 - [ ] Verify successful PIN disarm stops the sensor service.
 - [ ] Repeat on a device with aggressive OEM battery management.
 
-## 6. iOS physical-device checklist
+## 7. iOS physical-device checklist
 
 - [ ] Build and install on a physical iPhone/iPad; simulator-only success is insufficient for Core Motion validation.
 - [ ] Grant Motion & Fitness permission where prompted.
@@ -76,7 +92,7 @@ OWASP's Password Storage Cheat Sheet advises tuning password-hash work factors t
 - [ ] Verify paired-laptop push notifications on a locked iPhone when relay/APNs/Web Push credentials are configured.
 - [ ] Confirm the UI communicates the iOS foreground-only limitation clearly.
 
-## 7. Relay / companion physical checklist
+## 8. Relay / companion physical checklist
 
 - [ ] Configure a permanent HTTPS relay endpoint.
 - [ ] Use PostgreSQL or another durable store for cloud deployments; do not rely on ephemeral container storage for pairing data.
@@ -85,7 +101,7 @@ OWASP's Password Storage Cheat Sheet advises tuning password-hash work factors t
 - [ ] Verify push arrival on a locked phone and tap-through to the correct incident.
 - [ ] Check location sharing is opt-in and that no PINs or camera frames appear in relay payloads.
 
-## 8. Known verification gaps
+## 9. Known verification gaps
 
 - Platform test suites include mocked native channels; they do not replace the physical-device checklist above.
 - Automated restart, expiry, concurrent-attempt, storage-failure, and legacy-record migration coverage is in `test/pin_security_persistence_test.dart`. The physical KDF benchmark remains a release check tracked by [Issue #23](https://github.com/jonathannerd/WATSafe/issues/23).

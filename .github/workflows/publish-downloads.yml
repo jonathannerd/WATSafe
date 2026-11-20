@@ -1,0 +1,154 @@
+name: Publish WATSafe downloads
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: Build macOS packages
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            architecture: arm64
+          - runner: macos-26-intel
+            architecture: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.9"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build macOS release
+        run: flutter build macos --release
+
+      - name: Package app bundle
+        shell: bash
+        run: |
+          APP_PATH="$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)"
+          if [[ -z "$APP_PATH" ]]; then
+            echo "macOS app bundle not found."
+            exit 1
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "WATSafe-macOS-${{ matrix.architecture }}.zip"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: watsafe-macos-${{ matrix.architecture }}
+          path: WATSafe-macOS-${{ matrix.architecture }}.zip
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows package
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.9"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Package app folder
+        shell: pwsh
+        run: |
+          $source = "build/windows/x64/runner/Release"
+          if (!(Test-Path "$source/WATSafe.exe") -and !(Test-Path "$source/watsafe.exe")) {
+            Write-Error "Windows executable was not found in $source"
+          }
+          Compress-Archive -Path "$source/*" -DestinationPath "WATSafe-Windows-x64.zip" -Force
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: watsafe-windows-x64
+          path: WATSafe-Windows-x64.zip
+          if-no-files-found: error
+
+  android-preview:
+    name: Build Android preview APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.9"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Android preview APK
+        run: flutter build apk --debug
+
+      - name: Name preview package
+        shell: bash
+        run: cp build/app/outputs/flutter-apk/app-debug.apk WATSafe-Android-preview.apk
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: watsafe-android-preview
+          path: WATSafe-Android-preview.apk
+          if-no-files-found: error
+
+  publish:
+    name: Create GitHub Release
+    needs: [macos, windows, android-preview]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create SHA-256 checksums
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release-assets/WATSafe-macOS-arm64.zip
+            release-assets/WATSafe-macOS-x64.zip
+            release-assets/WATSafe-Windows-x64.zip
+            release-assets/WATSafe-Android-preview.apk
+            release-assets/SHA256SUMS.txt

@@ -24,6 +24,9 @@ WATSafe is built for the moment you step away from your laptop in a library, caf
 - **Phone notifications** open the affected device on the map. Pair once by scanning a QR code with the iPhone or Android web companion.
 - **Device map** shows reported laptop and phone locations with timestamps and an estimate of accuracy.
 - **PIN and themes** let you disarm protection with your PIN and choose from six themes on desktop and phone.
+- **Activity search and reports** help filter incidents and copy a CSV event history.
+- **Local Safe Zones** can notify the protected device when it enters or leaves a saved area while WATSafe is running.
+- **Lost-device refresh** lets a paired phone request an updated position from an online protected laptop when location sharing is enabled.
 
 ## How it works
 
@@ -33,6 +36,20 @@ flowchart LR
     B --> C["Get a phone alert"]
     C --> D["Check the device map"]
 ```
+
+## Download WATSafe
+
+The responsive download website lives in [`download-site/`](download-site/). It reads published release assets from GitHub and only shows download buttons for files that actually exist.
+
+Preview the website locally:
+
+    python3 -m http.server 8090 --directory download-site
+
+Open http://localhost:8090.
+
+After enabling GitHub Pages with **Settings → Pages → Source: GitHub Actions**, the `Deploy WATSafe download site` workflow publishes the site and the Flutter web phone companion. The expected project Pages address is `https://jonathannerd.github.io/WATSafe/` unless a custom domain is configured.
+
+To create downloadable packages after local testing, push a version tag such as `v0.1.0`. The `Publish WATSafe downloads` workflow attaches separate Apple Silicon and Intel macOS ZIPs, a Windows x64 ZIP, an Android preview APK, and SHA-256 checksums to the GitHub Release. See [download-site/README.md](download-site/README.md) for platform signing and distribution limitations.
 
 ## Built with
 

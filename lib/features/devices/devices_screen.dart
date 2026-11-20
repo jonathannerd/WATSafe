@@ -508,6 +508,36 @@ class _SelectedDeviceDetailCard extends StatefulWidget {
 
 class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
   bool _showCoordinates = false;
+  bool _isRequestingRecoveryLocation = false;
+  String? _recoveryLocationNote;
+
+  Future<void> _requestRecoveryLocation() async {
+    if (_isRequestingRecoveryLocation) return;
+    setState(() {
+      _isRequestingRecoveryLocation = true;
+      _recoveryLocationNote = null;
+    });
+    try {
+      await widget.controller.refreshAuthorizedDeviceLocations(
+        requestHostRefresh: true,
+      );
+      if (!mounted) return;
+      setState(() {
+        _recoveryLocationNote =
+            'Refresh check completed. A newer position will appear only if the computer is online, location sharing is enabled, and WATSafe responds.';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _recoveryLocationNote =
+            'Could not request a refresh. Showing the most recent location available.';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isRequestingRecoveryLocation = false);
+      }
+    }
+  }
 
   Color _protectionBadgeColor(AuthorizedDeviceLocationSummary device) {
     if (device.isAlarming) {
@@ -549,6 +579,78 @@ class _SelectedDeviceDetailCardState extends State<_SelectedDeviceDetailCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
+            if (device.isProtectedDevice && controller.isCompanionMode) ...<Widget>[
+              Container(
+                key: const Key('lost_device_recovery_card'),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: palette.surfaceElevated,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: palette.borderColor),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        Icon(Icons.search_rounded, color: palette.accentPrimary),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Lost Device Recovery',
+                            style: TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      device.online && device.locationSharingEnabled
+                          ? 'Request a fresh location from the protected computer. The request is rate-limited and depends on the computer responding.'
+                          : 'A fresh location cannot currently be requested because the computer is offline or location sharing is disabled. The last known position remains available below.',
+                      style: TextStyle(
+                        color: palette.textMuted,
+                        fontSize: 12.5,
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 9),
+                    OutlinedButton.icon(
+                      key: const Key('request_recovery_location_button'),
+                      onPressed: device.online &&
+                              device.locationSharingEnabled &&
+                              !_isRequestingRecoveryLocation
+                          ? _requestRecoveryLocation
+                          : null,
+                      icon: _isRequestingRecoveryLocation
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.my_location_rounded, size: 17),
+                      label: Text(
+                        _isRequestingRecoveryLocation
+                            ? 'Requesting…'
+                            : 'Request latest location',
+                      ),
+                    ),
+                    if (_recoveryLocationNote != null) ...<Widget>[
+                      const SizedBox(height: 4),
+                      Text(
+                        _recoveryLocationNote!,
+                        key: const Key('recovery_location_note'),
+                        style: TextStyle(
+                          color: palette.textMuted,
+                          fontSize: 11.5,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[

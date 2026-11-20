@@ -1,5 +1,5 @@
 {
-  "id": "/companion",
+  "id": "./",
   "name": "WATSafe",
   "short_name": "WATSafe",
   "description": "Device protection alerts and location companion for macOS, Windows, iOS, and Android.",

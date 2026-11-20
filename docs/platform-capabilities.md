@@ -66,7 +66,16 @@ The matrix describes code in the repository. It does not mean every optional int
 - The relay supports local file storage and PostgreSQL-backed persistence. Cloud deployments should use a durable database and keep database / push credentials in environment secrets.
 - Phone location sharing is opt-in. Camera frames and PIN material are not part of relay payloads.
 
-## 5. Verification status and known limits
+## 5. Local Safe Zones, device recovery, and power alerts
+
+- Safe Zone definitions and radii are stored in the protected device's local settings and are not sent to the relay. Adding a zone explicitly requests location access and uses the current fix as its centre. If the separate laptop-location-sharing setting is enabled, current device locations can still be reported independently.
+- Safe Zone transitions are checked by the controller's regular location refresh while WATSafe is running and location permission is granted. This is foreground app logic, not an OS geofencing API; do not rely on it after force-quit, app suspension, browser-tab suspension, or device sleep.
+- A small boundary buffer is used to reduce repeated notifications from GPS jitter near the edge. Location quality and refresh cadence still affect when a transition is observed.
+- The companion's Lost Device Recovery action calls the existing authorized-device refresh request. The relay can queue a refresh only when the host is online and within its server-side cooldown. A fresh fix still depends on the host being awake, responding, and having location sharing enabled.
+- Charger-disconnect alerts use the existing native `acPowerUnplugged` telemetry signal (desktop camera integrations where supplied). This does not measure battery percentage or predict shutdown; battery-level monitoring is not implemented.
+- Activity's incident report action copies CSV text for the currently filtered events to the clipboard. It is not currently a downloadable PDF.
+
+## 6. Verification status and known limits
 
 Automated tests cover controller transitions, mocked native channels, camera-frame sampling / synthetic motion scenarios, relay request behavior, pairing, and notification flows. CI runs formatting, static analysis, and automated tests.
 

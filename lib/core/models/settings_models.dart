@@ -205,6 +205,71 @@ enum MotionSensitivityPreset {
 
 /// User-configurable protection settings persisted locally.
 @immutable
+/// A user-defined geofence stored only in this installation's settings.
+/// Coordinates are never included in relay payloads by this model.
+@immutable
+class SafeZone {
+  const SafeZone({
+    required this.id,
+    required this.name,
+    required this.latitude,
+    required this.longitude,
+    this.radiusMeters = 500,
+    this.enabled = true,
+  });
+
+  final String id;
+  final String name;
+  final double latitude;
+  final double longitude;
+  final double radiusMeters;
+  final bool enabled;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'id': id,
+    'name': name,
+    'latitude': latitude,
+    'longitude': longitude,
+    'radiusMeters': radiusMeters,
+    'enabled': enabled,
+  };
+
+  factory SafeZone.fromJson(Map<String, Object?> json) {
+    final latitude = (json['latitude'] as num?)?.toDouble() ?? double.nan;
+    final longitude = (json['longitude'] as num?)?.toDouble() ?? double.nan;
+    final radius = (json['radiusMeters'] as num?)?.toDouble() ?? 500.0;
+    if (!latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180) {
+      throw const FormatException('Invalid safe-zone coordinates.');
+    }
+    return SafeZone(
+      id: (json['id'] as String?) ?? 'safe_zone',
+      name: (json['name'] as String?) ?? 'Safe zone',
+      latitude: latitude,
+      longitude: longitude,
+      radiusMeters: radius.clamp(100.0, 5000.0).toDouble(),
+      enabled: json['enabled'] as bool? ?? true,
+    );
+  }
+
+  SafeZone copyWith({String? name, double? radiusMeters, bool? enabled}) {
+    return SafeZone(
+      id: id,
+      name: name ?? this.name,
+      latitude: latitude,
+      longitude: longitude,
+      radiusMeters: (radiusMeters ?? this.radiusMeters)
+          .clamp(100.0, 5000.0)
+          .toDouble(),
+      enabled: enabled ?? this.enabled,
+    );
+  }
+}
+
 class ProtectionSettings {
   const ProtectionSettings({
     this.selectedDetector = DetectorType.macosCameraSceneMotion,
@@ -217,6 +282,8 @@ class ProtectionSettings {
     this.shareCompanionPhoneLocation = false,
     this.alertOnCameraObstruction = true,
     this.alertOnInputInteraction = false,
+    this.alertOnAcPowerDisconnect = true,
+    this.safeZones = const <SafeZone>[],
     this.permanentRelayEndpointUrl = '',
     this.colorTheme = WatSafeColorTheme.obsidianAmber,
     this.selectedAlarmSoundId = 'builtin_classic_siren',
@@ -258,6 +325,13 @@ class ProtectionSettings {
   /// Optional desktop tamper check: alert when keyboard, trackpad, or mouse
   /// activity is detected while armed (with a brief PIN-entry grace window).
   final bool alertOnInputInteraction;
+
+  /// Whether to show a local alert when the native detector reports AC power
+  /// disconnect while protection is armed. This is not a battery-percentage monitor.
+  final bool alertOnAcPowerDisconnect;
+
+  /// Local-only geofences. Their coordinates are never sent to the relay.
+  final List<SafeZone> safeZones;
 
   /// User-configured permanent HTTPS relay/companion origin persisted across
   /// normal desktop launches.
@@ -321,6 +395,8 @@ class ProtectionSettings {
     bool? shareCompanionPhoneLocation,
     bool? alertOnCameraObstruction,
     bool? alertOnInputInteraction,
+    bool? alertOnAcPowerDisconnect,
+    List<SafeZone>? safeZones,
     String? permanentRelayEndpointUrl,
     WatSafeColorTheme? colorTheme,
     String? selectedAlarmSoundId,
@@ -344,6 +420,9 @@ class ProtectionSettings {
           alertOnCameraObstruction ?? this.alertOnCameraObstruction,
       alertOnInputInteraction:
           alertOnInputInteraction ?? this.alertOnInputInteraction,
+      alertOnAcPowerDisconnect:
+          alertOnAcPowerDisconnect ?? this.alertOnAcPowerDisconnect,
+      safeZones: safeZones ?? this.safeZones,
       permanentRelayEndpointUrl:
           permanentRelayEndpointUrl ?? this.permanentRelayEndpointUrl,
       colorTheme: colorTheme ?? this.colorTheme,
@@ -364,6 +443,8 @@ class ProtectionSettings {
       'shareCompanionPhoneLocation': shareCompanionPhoneLocation,
       'alertOnCameraObstruction': alertOnCameraObstruction,
       'alertOnInputInteraction': alertOnInputInteraction,
+      'alertOnAcPowerDisconnect': alertOnAcPowerDisconnect,
+      'safeZones': safeZones.map((zone) => zone.toJson()).toList(growable: false),
       if (permanentRelayEndpointUrl.trim().isNotEmpty)
         'permanentRelayEndpointUrl': permanentRelayEndpointUrl.trim(),
       'colorTheme': colorTheme.id,
@@ -377,6 +458,23 @@ class ProtectionSettings {
   factory ProtectionSettings.fromJson(Map<String, Object?> json) {
     final detectorId = json['selectedDetector'] as String?;
     final rawCustomList = json['customAlarmSounds'];
+    final parsedSafeZones = <SafeZone>[];
+    final rawSafeZones = json['safeZones'];
+    if (rawSafeZones is List) {
+      for (final item in rawSafeZones) {
+        if (item is Map) {
+          try {
+            parsedSafeZones.add(
+              SafeZone.fromJson(
+                item.map((key, value) => MapEntry(key.toString(), value)),
+              ),
+            );
+          } on FormatException {
+            // Ignore an invalid local zone rather than breaking all settings.
+          }
+        }
+      }
+    }
     final parsedCustomSounds = <CustomAlarmSound>[];
     if (rawCustomList is List) {
       for (final item in rawCustomList) {
@@ -416,6 +514,9 @@ class ProtectionSettings {
           json['alertOnCameraObstruction'] as bool? ?? true,
       alertOnInputInteraction:
           json['alertOnInputInteraction'] as bool? ?? false,
+      alertOnAcPowerDisconnect:
+          json['alertOnAcPowerDisconnect'] as bool? ?? true,
+      safeZones: List<SafeZone>.unmodifiable(parsedSafeZones),
       permanentRelayEndpointUrl:
           (json['permanentRelayEndpointUrl'] as String? ?? '').trim(),
       colorTheme: WatSafeColorTheme.fromId(json['colorTheme']?.toString()),

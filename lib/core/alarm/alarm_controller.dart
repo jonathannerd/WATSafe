@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
@@ -74,6 +75,8 @@ class AlarmController extends ChangeNotifier {
   final Map<DetectorType, DetectorCapability> _capabilities =
       <DetectorType, DetectorCapability>{};
   final Set<DetectorType> _activeAuxiliaryDetectors = <DetectorType>{};
+  final Map<String, bool> _safeZoneInside = <String, bool>{};
+  final Set<String> _powerDisconnectAlertsSent = <String>{};
 
   ProtectionState _state = ProtectionState.disarmed;
   ProtectionSettings _settings = const ProtectionSettings();
@@ -1035,6 +1038,200 @@ class AlarmController extends ChangeNotifier {
   ///
   /// Requests OS location permission at the point of need when enabled, and
   /// immediately halts any active location reporting when turned off.
+  /// Creates a local-only safe zone centered on the current device location.
+  /// Location permission is requested only after the user selects this action.
+  Future<bool> addSafeZoneFromCurrentLocation({
+    required String name,
+    double radiusMeters = 500,
+  }) async {
+    final trimmedName = name.trim();
+    if (trimmedName.isEmpty ||
+        !_locationAdapter.isSupported ||
+        isCompanionMode) {
+      return false;
+    }
+    if (_state == ProtectionState.armed ||
+        _state == ProtectionState.arming ||
+        _state == ProtectionState.alarming ||
+        _state == ProtectionState.paused) {
+      _warningMessage = 'Turn protection off before changing safe zones.';
+      notifyListeners();
+      return false;
+    }
+
+    await refreshPermissionStatuses(notify: false);
+    if (_locationPermissionStatus != PermissionStatus.granted) {
+      final status = await requestLocationPermission();
+      if (status != PermissionStatus.granted) {
+        return false;
+      }
+    }
+
+    ({DeviceLocationSnapshot? location, IncidentLocationStatus status}) capture;
+    try {
+      capture = await _locationAdapter.captureCurrentLocation(
+        highAccuracy: true,
+      );
+    } catch (_) {
+      return false;
+    }
+    final location = capture.location;
+    if (location == null || !location.isValid) {
+      return false;
+    }
+
+    final zone = SafeZone(
+      id: 'safe_zone_${_clock().millisecondsSinceEpoch}_${_settings.safeZones.length + 1}',
+      name: trimmedName,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      radiusMeters: radiusMeters.clamp(100.0, 5000.0).toDouble(),
+    );
+    _settings = _settings.copyWith(safeZones: <SafeZone>[
+      ..._settings.safeZones,
+      zone,
+    ]);
+    _safeZoneInside[zone.id] = true;
+    await _persistSettingsSafely();
+    _ensureRegularLocationSchedule(immediateCapture: false);
+    notifyListeners();
+    return true;
+  }
+
+  Future<void> setSafeZoneEnabled(String zoneId, bool enabled) async {
+    if (isCompanionMode ||
+        _state == ProtectionState.arming ||
+        _state == ProtectionState.armed ||
+        _state == ProtectionState.alarming ||
+        _state == ProtectionState.paused) {
+      return;
+    }
+    if (enabled) {
+      await refreshPermissionStatuses(notify: false);
+      if (_locationPermissionStatus != PermissionStatus.granted) {
+        final permission = await requestLocationPermission();
+        if (permission != PermissionStatus.granted) {
+          return;
+        }
+      }
+    }
+    _settings = _settings.copyWith(
+      safeZones: _settings.safeZones
+          .map((zone) => zone.id == zoneId
+              ? zone.copyWith(enabled: enabled)
+              : zone)
+          .toList(growable: false),
+    );
+    if (!enabled) {
+      _safeZoneInside.remove(zoneId);
+    } else {
+      _safeZoneInside.remove(zoneId);
+    }
+    await _persistSettingsSafely();
+    _ensureRegularLocationSchedule(immediateCapture: enabled);
+    notifyListeners();
+  }
+
+  Future<void> removeSafeZone(String zoneId) async {
+    if (isCompanionMode ||
+        _state == ProtectionState.arming ||
+        _state == ProtectionState.armed ||
+        _state == ProtectionState.alarming ||
+        _state == ProtectionState.paused) {
+      return;
+    }
+    _settings = _settings.copyWith(
+      safeZones: _settings.safeZones
+          .where((zone) => zone.id != zoneId)
+          .toList(growable: false),
+    );
+    _safeZoneInside.remove(zoneId);
+    await _persistSettingsSafely();
+    _ensureRegularLocationSchedule(immediateCapture: false);
+    notifyListeners();
+  }
+
+  Future<void> updateAlertOnAcPowerDisconnect(bool enabled) async {
+    _settings = _settings.copyWith(alertOnAcPowerDisconnect: enabled);
+    await _persistSettingsSafely();
+    notifyListeners();
+  }
+
+  double _distanceBetweenMeters(
+    double latitudeA,
+    double longitudeA,
+    double latitudeB,
+    double longitudeB,
+  ) {
+    const earthRadiusMeters = 6371000.0;
+    final latA = latitudeA * math.pi / 180.0;
+    final latB = latitudeB * math.pi / 180.0;
+    final deltaLat = (latitudeB - latitudeA) * math.pi / 180.0;
+    final deltaLon = (longitudeB - longitudeA) * math.pi / 180.0;
+    final sinLat = math.sin(deltaLat / 2);
+    final sinLon = math.sin(deltaLon / 2);
+    final a = sinLat * sinLat +
+        math.cos(latA) * math.cos(latB) * sinLon * sinLon;
+    final boundedA = a.clamp(0.0, 1.0);
+    return earthRadiusMeters *
+        2 *
+        math.atan2(math.sqrt(boundedA), math.sqrt(1.0 - boundedA));
+  }
+
+  void _evaluateSafeZones(DeviceLocationSnapshot location) {
+    if (!location.isValid || isCompanionMode) {
+      return;
+    }
+    for (final zone in _settings.safeZones.where((item) => item.enabled)) {
+      final distance = _distanceBetweenMeters(
+        location.latitude,
+        location.longitude,
+        zone.latitude,
+        zone.longitude,
+      );
+      final previous = _safeZoneInside[zone.id];
+      // Add a 50 m boundary buffer to prevent GPS jitter from firing repeated
+      // enter/leave notifications when a device is near the zone edge.
+      final isInside = previous == null
+          ? distance <= zone.radiusMeters
+          : previous
+          ? distance <= zone.radiusMeters + 50
+          : distance < zone.radiusMeters - 50;
+      _safeZoneInside[zone.id] = isInside;
+      // Establish a baseline without notifying immediately on app launch.
+      if (previous == null || previous == isInside) {
+        continue;
+      }
+      final transition = isInside ? 'entered' : 'left';
+      unawaited(
+        _localNotificationAdapter.showAlertNotification(
+          incidentId: 'safe_zone_${zone.id}_${transition}_${location.capturedAt.millisecondsSinceEpoch}',
+          deviceName: effectiveDeviceName,
+          message: isInside
+              ? '${zone.name}: device entered the safe zone.'
+              : '${zone.name}: device left the safe zone.',
+        ),
+      );
+    }
+  }
+
+  void _maybeNotifyAcPowerDisconnect(DetectorEvent event) {
+    if (!_settings.alertOnAcPowerDisconnect ||
+        event.acPowerUnplugged != true ||
+        _state != ProtectionState.armed ||
+        !_powerDisconnectAlertsSent.add(event.sessionId)) {
+      return;
+    }
+    _warningMessage = 'AC power disconnected while protection is armed.';
+    unawaited(
+      _localNotificationAdapter.showAlertNotification(
+        incidentId: 'power_disconnect_${event.sessionId}',
+        deviceName: effectiveDeviceName,
+        message: 'Charger disconnected while protection is armed.',
+      ),
+    );
+  }
+
   Future<void> updateShareLocationOnAlarm(bool enabled) async {
     _settings = _settings.copyWith(shareLocationOnAlarm: enabled);
     await _persistSettingsSafely();
@@ -1054,6 +1251,7 @@ class AlarmController extends ChangeNotifier {
           ),
         );
       }
+      _ensureRegularLocationSchedule(immediateCapture: false);
       notifyListeners();
       return;
     }
@@ -1247,7 +1445,8 @@ class AlarmController extends ChangeNotifier {
     required bool reportToRelay,
     required bool forceReport,
   }) async {
-    if (!_settings.shareLocationOnAlarm) {
+    final hasLocalSafeZones = _settings.safeZones.any((zone) => zone.enabled);
+    if (!_settings.shareLocationOnAlarm && !hasLocalSafeZones) {
       _hostLocationStatus = IncidentLocationStatus.notRequested;
       notifyListeners();
       return null;
@@ -1265,6 +1464,7 @@ class AlarmController extends ChangeNotifier {
       final adapter = _notificationAdapter;
       final sig = 'denied|${_state.badgeLabel}';
       if (reportToRelay &&
+          _settings.shareLocationOnAlarm &&
           adapter is MutableRemoteNotificationAdapter &&
           (forceReport || _lastReportedHostLocationSignature != sig)) {
         unawaited(
@@ -1312,6 +1512,7 @@ class AlarmController extends ChangeNotifier {
       _hostLatestLocation = capture.location;
       _hostLocationStatus = IncidentLocationStatus.attached;
       _syncNativeLifecycleContextOnly();
+      _evaluateSafeZones(capture.location!);
     } else if (_hostLatestLocation == null) {
       _hostLocationStatus = capture.status == IncidentLocationStatus.attached
           ? IncidentLocationStatus.unavailable
@@ -1454,9 +1655,10 @@ class AlarmController extends ChangeNotifier {
   }
 
   void _handleRemoteHostLocationRefreshRequest() {
+    final hasLocalSafeZones = _settings.safeZones.any((zone) => zone.enabled);
     if (_isDisposed ||
         isCompanionMode ||
-        !_settings.shareLocationOnAlarm ||
+        (!_settings.shareLocationOnAlarm && !hasLocalSafeZones) ||
         !_locationAdapter.isSupported ||
         _isPostAlarmTrackingActive) {
       return;
@@ -1480,9 +1682,10 @@ class AlarmController extends ChangeNotifier {
     bool immediateCapture = true,
     Duration? minElapsedSinceLastAttempt,
   }) {
+    final hasLocalSafeZones = _settings.safeZones.any((zone) => zone.enabled);
     if (_isDisposed ||
         isCompanionMode ||
-        !_settings.shareLocationOnAlarm ||
+        (!_settings.shareLocationOnAlarm && !hasLocalSafeZones) ||
         !_locationAdapter.isSupported ||
         _isPostAlarmTrackingActive) {
       _stopRegularLocationSchedule();
@@ -1501,16 +1704,22 @@ class AlarmController extends ChangeNotifier {
           lastAttempt == null ||
           _clock().difference(lastAttempt) >= minElapsedSinceLastAttempt;
       if (allowed) {
-        unawaited(refreshProtectedDeviceLocation(highAccuracy: false));
+        unawaited(
+          refreshProtectedDeviceLocation(
+            highAccuracy: false,
+            reportToRelay: _settings.shareLocationOnAlarm,
+          ),
+        );
       }
     }
 
     _regularLocationTimer ??= Timer.periodic(_regularLocationRefreshInterval, (
       _,
     ) {
+      final hasLocalSafeZones = _settings.safeZones.any((zone) => zone.enabled);
       if (_isDisposed ||
           isCompanionMode ||
-          !_settings.shareLocationOnAlarm ||
+          (!_settings.shareLocationOnAlarm && !hasLocalSafeZones) ||
           !_locationAdapter.isSupported) {
         _stopRegularLocationSchedule();
         return;
@@ -1518,7 +1727,10 @@ class AlarmController extends ChangeNotifier {
       if (_isPostAlarmTrackingActive) {
         return;
       }
-      unawaited(refreshProtectedDeviceLocation(highAccuracy: false));
+      unawaited(refreshProtectedDeviceLocation(
+        highAccuracy: false,
+        reportToRelay: _settings.shareLocationOnAlarm,
+      ));
     });
   }
 
@@ -3399,6 +3611,7 @@ class AlarmController extends ChangeNotifier {
       case DetectorEventType.calibrationCompleted:
       case DetectorEventType.telemetryFrame:
         _lastTelemetryEvent = event;
+        _maybeNotifyAcPowerDisconnect(event);
         notifyListeners();
         return;
       case DetectorEventType.poorInputWarning:

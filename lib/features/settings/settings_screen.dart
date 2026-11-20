@@ -279,10 +279,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     ProtectionSettings settings,
   ) {
     final methodLabel = controller.selectedDetectorType.userFacingMethodName;
-    final pairedPhone = controller.pairedDevices.firstOrNull;
-    final devicesSubtitle = pairedPhone != null
-        ? '${controller.effectiveDeviceName} · ${pairedPhone.displayName}'
-        : '${controller.effectiveDeviceName} · No phone paired';
+    final pairedPhoneCount = controller.pairedDevices.length;
+    final devicesSubtitle = controller.isCompanionMode
+        ? 'Connected to ${controller.companionSession.hostDisplayName ?? 'protected computer'}'
+        : pairedPhoneCount == 0
+        ? '${controller.effectiveDeviceName} · No trusted phones'
+        : '${controller.effectiveDeviceName} · $pairedPhoneCount trusted phone${pairedPhoneCount == 1 ? '' : 's'}';
     final locPerm = controller.locationPermissionStatus;
     final shareLocation = settings.shareLocationOnAlarm;
     final locationSubtitle = !shareLocation
@@ -334,7 +336,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _SettingsCategoryRow(
                 tileKey: const Key('settings_category_location'),
                 icon: Icons.location_on_outlined,
-                title: 'Location & privacy',
+                title: 'Privacy Center',
                 subtitle: locationSubtitle,
                 onTap: () => _openCategory(SettingsCategory.location),
               ),
@@ -380,7 +382,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       SettingsCategory.protection => 'Protection',
       SettingsCategory.alarm => 'Alarm',
       SettingsCategory.devices => 'Devices & notifications',
-      SettingsCategory.location => 'Location & privacy',
+      SettingsCategory.location => 'Privacy Center',
       SettingsCategory.pin => 'PIN & security',
       SettingsCategory.appearance => 'Appearance',
       SettingsCategory.advanced => 'Advanced & help',
@@ -441,6 +443,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ],
           SettingsCategory.location => <Widget>[
             _buildLocationAndPrivacyCard(context, controller),
+            const SizedBox(height: 16),
+            _buildSafeZonesCard(context, controller),
           ],
           SettingsCategory.pin => <Widget>[_buildChangePinCard(context)],
           SettingsCategory.appearance => <Widget>[
@@ -468,6 +472,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final hostOptions = controller.availableHostDetectors;
     final showMethodPicker = hostOptions.length > 1;
     final usesCamera = controller.selectedDetectorType.usesCamera;
+    final supportsAcPowerDisconnect =
+        controller.selectedDetectorType == DetectorType.macosCameraSceneMotion ||
+        controller.selectedDetectorType == DetectorType.windowsCameraSceneMotion;
 
     return Card(
       child: Padding(
@@ -713,6 +720,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onChanged: isLockedByProtection
                     ? null
                     : controller.updateAlertOnInputInteraction,
+              ),
+            ],
+            if (!controller.isCompanionMode && supportsAcPowerDisconnect) ...<Widget>[
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Divider(height: 1),
+              ),
+              SwitchListTile(
+                key: const Key('alert_on_ac_power_disconnect_switch'),
+                contentPadding: EdgeInsets.zero,
+                activeThumbColor: WatSafeTheme.amberAccent,
+                title: const Text(
+                  'Charger disconnect alert',
+                  style: TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: Text(
+                  'Show a local alert if the native detector reports AC power disconnected while protected. Battery percentage monitoring is not available yet.',
+                  style: TextStyle(
+                    color: WatSafeTheme.warmMuted,
+                    fontSize: 12.5,
+                    height: 1.35,
+                  ),
+                ),
+                value: controller.settings.alertOnAcPowerDisconnect,
+                onChanged: isLockedByProtection
+                    ? null
+                    : controller.updateAlertOnAcPowerDisconnect,
               ),
             ],
             const SizedBox(height: 12),
@@ -1032,6 +1066,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Divider(height: 1),
             ),
             const Text(
+              'Privacy at a glance',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Camera frames are processed on the protected device and are not uploaded. Location sharing is controlled separately above. Safe Zone definitions and radii stay in this installation and are never sent as zones. When laptop location sharing is enabled, current location may still be shared separately. Lock-screen alerts do not include coordinates.',
+              style: TextStyle(
+                color: WatSafeTheme.warmMuted,
+                fontSize: 12.5,
+                height: 1.4,
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Divider(height: 1),
+            ),
+            const Text(
               'Stored history',
               style: TextStyle(fontWeight: FontWeight.w700),
             ),
@@ -1076,6 +1127,325 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addSafeZoneFromCurrentLocation(
+    BuildContext context,
+    AlarmController controller,
+  ) async {
+    final nameController = TextEditingController();
+    var radiusMeters = 500.0;
+    try {
+      final result = await showDialog<({String name, double radius})>(
+        context: context,
+        builder: (dialogContext) {
+          return StatefulBuilder(
+            builder: (dialogContext, setDialogState) {
+              final palette = WatSafeTheme.of(dialogContext);
+              return AlertDialog(
+                title: const Text('Add Safe Zone'),
+                content: SizedBox(
+                  width: 420,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      const Text(
+                        'Use this device’s current location as the centre. WATSafe will request location access only after you save.',
+                      ),
+                      const SizedBox(height: 14),
+                      TextField(
+                        key: const Key('safe_zone_name_input'),
+                        controller: nameController,
+                        autofocus: true,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(
+                          labelText: 'Place name',
+                          hintText: 'e.g. Home or Campus',
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        'Radius · ${radiusMeters.round()} m',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      Slider(
+                        key: const Key('safe_zone_radius_slider'),
+                        min: 100,
+                        max: 2000,
+                        divisions: 19,
+                        value: radiusMeters,
+                        activeColor: palette.accentPrimary,
+                        onChanged: (value) {
+                          setDialogState(() => radiusMeters = value);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+                actions: <Widget>[
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton(
+                    key: const Key('safe_zone_save_button'),
+                    onPressed: () {
+                      final name = nameController.text.trim();
+                      if (name.isNotEmpty) {
+                        Navigator.of(dialogContext).pop((
+                          name: name,
+                          radius: radiusMeters,
+                        ));
+                      }
+                    },
+                    child: const Text('Save Safe Zone'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+      if (result == null || !mounted) return;
+      if (controller.localNotificationPermissionStatus !=
+          PermissionStatus.granted) {
+        final notificationPermission =
+            await controller.requestLocalNotificationPermission();
+        if (!mounted) return;
+        if (notificationPermission != PermissionStatus.granted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Allow local notifications before creating a Safe Zone.',
+              ),
+            ),
+          );
+          return;
+        }
+      }
+      final created = await controller.addSafeZoneFromCurrentLocation(
+        name: result.name,
+        radiusMeters: result.radius,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            created
+                ? 'Safe Zone added on this device.'
+                : (controller.warningMessage ??
+                    'Could not add a Safe Zone. Check location permission and try again.'),
+          ),
+        ),
+      );
+    } finally {
+      nameController.dispose();
+    }
+  }
+
+  Future<void> _restoreSafeZoneMonitoring(
+    BuildContext context,
+    AlarmController controller,
+    String zoneId,
+  ) async {
+    if (controller.localNotificationPermissionStatus !=
+        PermissionStatus.granted) {
+      final notificationPermission =
+          await controller.requestLocalNotificationPermission();
+      if (notificationPermission != PermissionStatus.granted) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Local notification permission is still required.'),
+          ),
+        );
+        return;
+      }
+    }
+    await controller.setSafeZoneEnabled(zoneId, true);
+    if (!context.mounted) return;
+    if (controller.locationPermissionStatus != PermissionStatus.granted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Allow location access to resume Safe Zone checks.'),
+        ),
+      );
+    }
+  }
+
+  Widget _buildSafeZonesCard(
+    BuildContext context,
+    AlarmController controller,
+  ) {
+    final palette = WatSafeTheme.of(context);
+    final zones = controller.settings.safeZones;
+    final firstEnabledZone = zones.where((zone) => zone.enabled).firstOrNull;
+    final safeZonePermissionsMissing = firstEnabledZone != null &&
+        (controller.locationPermissionStatus != PermissionStatus.granted ||
+            controller.localNotificationPermissionStatus !=
+                PermissionStatus.granted);
+    final protectionLocked =
+        controller.state == ProtectionState.arming ||
+        controller.state == ProtectionState.armed ||
+        controller.state == ProtectionState.alarming ||
+        controller.state == ProtectionState.paused;
+    final canAdd = !controller.isCompanionMode &&
+        controller.isLocationSupported &&
+        controller.isLocalNotificationsSupported &&
+        !protectionLocked;
+    return Card(
+      key: const Key('safe_zones_card'),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Text(
+              'Safe Zones',
+              style: Theme.of(context).textTheme.titleMedium
+                  ?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Get a local notification when this protected computer enters or leaves a saved area. Zones are stored on this device only. WATSafe checks while it is running and location access is available; this is not background tracking.',
+              style: TextStyle(
+                color: palette.textMuted,
+                fontSize: 12.5,
+                height: 1.4,
+              ),
+            ),
+            if (safeZonePermissionsMissing) ...<Widget>[
+              const SizedBox(height: 12),
+              Container(
+                key: const Key('safe_zone_permissions_warning'),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: palette.surfaceElevated,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: palette.borderColor),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    const Text(
+                      'Safe Zone checks are paused',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Location and local notification permission are needed to resume enter/leave alerts.',
+                      style: TextStyle(
+                        color: palette.textMuted,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      key: const Key('safe_zone_restore_permissions_button'),
+                      onPressed: controller.isCompanionMode ||
+                              !controller.isLocationSupported ||
+                              !controller.isLocalNotificationsSupported
+                          ? null
+                          : () => _restoreSafeZoneMonitoring(
+                                context,
+                                controller,
+                                firstEnabledZone!.id,
+                              ),
+                      icon: const Icon(Icons.notifications_active_outlined),
+                      label: const Text('Resume Safe Zone checks'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (zones.isEmpty) ...<Widget>[
+              const SizedBox(height: 14),
+              Text(
+                'No Safe Zones yet.',
+                style: TextStyle(color: palette.textMuted),
+              ),
+            ] else ...<Widget>[
+              const SizedBox(height: 10),
+              for (final zone in zones)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    children: <Widget>[
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(
+                              zone.name,
+                              style: const TextStyle(fontWeight: FontWeight.w700),
+                            ),
+                            Text(
+                              'Radius · ${zone.radiusMeters.round()} m',
+                              style: TextStyle(
+                                color: palette.textMuted,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Switch(
+                        key: Key('safe_zone_enabled_${zone.id}'),
+                        value: zone.enabled,
+                        onChanged: controller.isCompanionMode || protectionLocked
+                            ? null
+                            : (enabled) =>
+                                controller.setSafeZoneEnabled(zone.id, enabled),
+                      ),
+                      IconButton(
+                        key: Key('safe_zone_remove_${zone.id}'),
+                        tooltip: 'Remove Safe Zone',
+                        onPressed: controller.isCompanionMode || protectionLocked
+                            ? null
+                            : () => controller.removeSafeZone(zone.id),
+                        icon: const Icon(Icons.delete_outline_rounded),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                key: const Key('safe_zone_add_button'),
+                onPressed: canAdd
+                    ? () => _addSafeZoneFromCurrentLocation(context, controller)
+                    : null,
+                icon: const Icon(Icons.add_location_alt_outlined, size: 18),
+                label: const Text('Add current location'),
+              ),
+            ),
+            if (controller.isCompanionMode)
+              Text(
+                'Safe Zones are configured from the protected computer, not the companion phone.',
+                style: TextStyle(color: palette.textMuted, fontSize: 12),
+              )
+            else if (!controller.isLocationSupported)
+              Text(
+                'Location is not supported on this platform.',
+                style: TextStyle(color: palette.textMuted, fontSize: 12),
+              )
+            else if (!controller.isLocalNotificationsSupported)
+              Text(
+                'Local notifications are not supported on this platform.',
+                style: TextStyle(color: palette.textMuted, fontSize: 12),
+              )
+            else if (protectionLocked)
+              Text(
+                'Turn protection off before editing Safe Zones.',
+                style: TextStyle(color: palette.textMuted, fontSize: 12),
+              ),
           ],
         ),
       ),
