@@ -39,7 +39,10 @@ Future<void> main() async {
   final controller = AlarmController(
     detectors: services.detectors,
     audioAdapter: services.audio,
-    pinService: PinSecurityService(storage: services.pinStorage),
+    pinService: PinSecurityService(
+      storage: services.pinStorage,
+      pbkdf2Iterations: PinSecurityService.productionPbkdf2Iterations,
+    ),
     incidentStorage: services.incidents,
     settingsStorage: settingsStorage,
     notificationAdapter: services.notifications,
