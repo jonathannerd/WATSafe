@@ -88,6 +88,26 @@ void main() {
       expect(stillValid.verified, isTrue);
     });
 
+    test('legacy or malformed future lockout dates cannot lock the owner out indefinitely', () async {
+      final storage = InMemorySecurePinStorage();
+      await storage.writePinRecord(
+        StoredPinRecord(
+          algorithm: 'PBKDF2-HMAC-SHA256',
+          iterations: 1000,
+          saltBase64: 'c2FsdA==',
+          hashBase64: 'aGFzaA==',
+          updatedAtUtcIso: now.toIso8601String(),
+          failedAttempts: 9999999,
+          lockedUntilUtcIso: now.add(const Duration(days: 365)).toIso8601String(),
+        ),
+      );
+
+      final service = createService(storage);
+      expect(await service.hasConfiguredPin(), isTrue);
+      expect(service.failedAttempts, 1000000);
+      expect(service.remainingLockout, const Duration(seconds: 30));
+    });
+
     test('expired lockout keeps the attempt count and applies the next backoff step', () async {
       final storage = InMemorySecurePinStorage();
       final service = createService(storage);
