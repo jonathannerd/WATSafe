@@ -1,89 +1,81 @@
 # Testing Guide & Hardware Verification Checklist
 
-WATSafe combines automated unit/widget tests (which run on every commit and in CI without requiring physical sensors) and a manual hardware verification checklist for physical device adapters.
+WATSafe uses automated unit/widget tests, CI checks, and manual physical-device verification. A mocked platform-channel test proves Dart/native contract handling; it does not prove that the corresponding OS service or hardware behaves correctly on a real device.
 
----
+## 1. Automated checks
 
-## 1. Automated Tests
+Run these commands from the repository root:
 
-Run all automated checks from the repository root:
+    flutter pub get
+    dart format --output=none --set-exit-if-changed .
+    flutter analyze
+    dart analyze tool/ backend/ lib/
+    flutter test
 
-```bash
-# 1. Verify Dart formatting
-dart format --output=none --set-exit-if-changed .
+The main CI workflow runs dependency installation, repository-wide Dart formatting, Flutter analysis, standalone backend/CLI analysis, and the automated test suite. A separate native-platform workflow compiles Web and Android on Linux, macOS and unsigned iOS on macOS, and Windows on Windows. The Android build job pins JDK 17 to match the repository Gradle wrapper.
 
-# 2. Run static analysis
-flutter analyze
+### Automated coverage
 
-# 3. Run unit and widget test suite
-flutter test
-```
+- **Alarm and PIN state:** PIN creation / validation, correct and incorrect PIN handling, lockout backoff, PIN changes, arming, pause/resume, detector failure, duplicate alarms, and disarming during pending audio startup.
+- **Secure storage:** native-channel success, stale fallback cleanup, file fallback on native write failure, and deletion.
+- **Camera processing:** supported pixel formats and row strides, synthetic passersby / lighting / pickup / carry / slow-slide scenarios, and obstruction warnings.
+- **Native adapter contracts:** mocked Windows camera, Android sensor/foreground service, iOS Core Motion lifecycle, audio, and location channels.
+- **Relay and pairing:** authentication/session isolation, pairing handoff codes, rate limits, bounded request bodies, push handling, and storage behavior.
 
-### What the Automated Suite Covers
-- **State Machine & Session Isolation (`test/alarm_controller_test.dart`):**
-  - First-run PIN creation validation (rejects `< 6` digits or mismatched confirmation) and PBKDF2-HMAC-SHA256 verification.
-  - Requiring the current PIN before allowing a PIN change.
-  - Refusing to arm when the selected detector is `unavailable`, `permissionRequired`, or `notImplemented` (enters `AlarmStatus.unavailable` instead of pretending to protect).
-  - Arming countdown transition (`disarmed` -> `arming` -> `armed`) and detector calibration startup.
-  - Single-incident deduplication: multiple rapid detector events during a single armed session create only **one** active incident and start the alarm audio once.
-  - Fault isolation: a failure in remote notification dispatch does not stop the local siren or prevent PIN disarming.
-  - Wrong PIN attempts keep the alarm active and apply stepped lockout backoff after 3 failed attempts; the correct PIN stops the siren and returns to `disarmed`.
-  - Separate 5-second Test Alarm flow creates an incident explicitly marked `isTest: true` and auto-stops after 5 seconds.
-- **UI & Navigation Flows (`test/widget_test.dart`):**
-  - First-run onboarding screen and 6-digit PIN setup.
-  - Protection Dashboard rendering with detector status cards and honest capability badges.
-  - Triggering and stopping the 5-second Test Alarm from the dashboard.
-  - Verifying `[TEST]` badge visibility in Incident History.
-  - Verifying the honest `Not configured` state on the Paired Devices screen.
+The live PostgreSQL integration test is skipped unless AIVEN_DATABASE_URL or DATABASE_URL is configured.
 
----
+## 2. macOS physical-device checklist
 
-## 2. Manual Hardware Verification Checklist (macOS)
+- [ ] Run flutter run -d macos or open a debug build on a Mac.
+- [ ] Complete first-run onboarding and create a 6–12 digit PIN.
+- [ ] Grant camera permission and confirm the detector reports ready only after capture starts.
+- [ ] Arm, allow calibration to finish, then test laptop lift / tilt / carry and a person walking through the background.
+- [ ] Cover the camera and confirm the app reports degraded / obstructed input honestly.
+- [ ] Trigger the siren, enter a wrong PIN, then the correct PIN; confirm wrong PIN leaves the alarm active and correct PIN stops it.
+- [ ] Restart the app and confirm the PIN remains available through Keychain.
+- [ ] Verify sleep/lid interruption and the wake/reconciliation behavior.
 
-Run the macOS desktop application locally:
+## 3. Windows physical-device checklist
 
-```bash
-flutter run -d macos
-```
+- [ ] Build and launch the Windows target on a Windows 10/11 machine.
+- [ ] Check camera discovery, privacy permission, camera-in-use handling, and first-frame startup.
+- [ ] Check whether the device has a usable three-axis accelerometer; unsupported hardware must be reported honestly.
+- [ ] Test lift / tilt / carry, passerby and lighting false-alarm scenarios, and camera obstruction.
+- [ ] Verify the persistent system lifecycle / sleep / lid / shutdown warning behavior that applies to the device.
+- [ ] Verify PIN storage through DPAPI and confirm alarm audio routing.
 
-Or build and launch the debug app bundle directly:
+## 4. Android physical-device checklist
 
-```bash
-flutter build macos --debug
-open build/macos/Build/Products/Debug/WATSafe.app
-```
+- [ ] Install a debug build on a physical Android device and grant requested permissions.
+- [ ] Verify linear-acceleration sensor or accelerometer fallback detection.
+- [ ] Arm and confirm the persistent WATSafe foreground-service notification appears.
+- [ ] Turn the screen off and verify motion monitoring continues while the foreground service remains active.
+- [ ] Stop the service from its notification / system controls and confirm WATSafe exits the armed state.
+- [ ] Verify successful PIN disarm stops the sensor service.
+- [ ] Repeat on a device with aggressive OEM battery management.
 
-### Checklist
+## 5. iOS physical-device checklist
 
-- [ ] **1. First-Run PIN Setup**
-  - Launch the app on a clean profile.
-  - Attempt to enter a 4-digit PIN -> verify validation error requires 6–12 digits.
-  - Enter a 6-digit PIN and confirm -> verify transition to the Protection Dashboard.
-- [ ] **2. Camera Permission Request & Status Reporting**
-  - Click **Grant Camera Permission** (or **Refresh**) on the macOS Webcam Scene-Motion card.
-  - Verify macOS prompts: *"WATSafe uses the built-in camera to detect physical movement or tampering in the camera view while the device alarm is armed. Video frames are analyzed locally in memory and are never saved or uploaded."*
-  - **If Granted:** Verify detector badge changes to **Ready (Calibrated on Arm)**.
-  - **If Denied:** Verify detector badge shows **Permission Required** with guidance to open `System Settings > Privacy & Security > Camera`, and verify clicking **Arm Device** refuses to arm.
-- [ ] **3. Arming Countdown & Calibration Window**
-  - With camera permission granted, click **Arm Device**.
-  - Verify the visible countdown banner ticks down (`10s` default, configurable in Settings).
-  - Verify clicking **Cancel Arming** during the countdown aborts cleanly without sounding the alarm.
-  - Let the countdown complete -> verify status transitions to **Armed & Monitoring** and the macOS camera indicator light turns green.
-- [ ] **4. Scene-Motion Alarm Trigger**
-  - Wait 2 seconds after arming finishes so baseline calibration completes.
-  - Wave a hand in front of the webcam or tilt the laptop lid.
-  - Verify the full-screen **ALARM TRIGGERED** overlay appears immediately, local siren audio loops at the configured volume, and a single `Real Trigger` incident is recorded.
-- [ ] **5. Wrong PIN Lockout & Correct PIN Disarm**
-  - While alarming, enter an incorrect 6-digit PIN 3 times.
-  - Verify the alarm continues sounding and a temporary lockout countdown is displayed.
-  - Enter the correct 6-digit PIN -> verify the siren stops immediately, the macOS camera indicator light turns off, and the incident is marked **Disarmed with PIN** in the Incidents tab.
-- [ ] **6. Low-Light / Covered Lens Warning**
-  - Cover the webcam lens completely while armed.
-  - Verify the dashboard surfaces a degraded-input warning explaining that the camera view is too dark (`meanLuma < 8.0`) for reliable motion detection.
-- [ ] **7. Independent 5-Second Test Alarm**
-  - Click **Test Alarm (5s max)** on the Dashboard.
-  - Verify the siren plays even if no camera is available or camera permission is denied.
-  - Verify the test alarm stops automatically after 5 seconds (or immediately when clicking **Stop Test Alarm Now**) and logs an incident labeled **`[TEST]`** in the Incidents tab.
-- [ ] **8. Honest Unconfigured & Limitations Messaging**
-  - Open **Paired Devices** -> verify the banner clearly states **Not configured** and does not list fake paired phones.
-  - Open **Settings** -> verify the Operating System & Audio Honesty Notice clearly explains that WATSafe does not override OS lock screens, hardware mute keys, or forced shutdown.
+- [ ] Build and install on a physical iPhone/iPad; simulator-only success is insufficient for Core Motion validation.
+- [ ] Grant Motion & Fitness permission where prompted.
+- [ ] Arm in the foreground and verify Core Motion events are received.
+- [ ] Lock the screen or switch apps; confirm WATSafe pauses instead of continuing to claim protection.
+- [ ] Return to the foreground and verify monitoring resumes only after capability check and successful detector restart.
+- [ ] Verify paired-laptop push notifications on a locked iPhone when relay/APNs/Web Push credentials are configured.
+- [ ] Confirm the UI communicates the iOS foreground-only limitation clearly.
+
+## 6. Relay / companion physical checklist
+
+- [ ] Configure a permanent HTTPS relay endpoint.
+- [ ] Use PostgreSQL or another durable store for cloud deployments; do not rely on ephemeral container storage for pairing data.
+- [ ] Configure VAPID / APNs / FCM / webhook credentials as required by the chosen delivery route.
+- [ ] Pair a real phone, restart laptop / phone / relay, and confirm the pairing recovers without rescanning.
+- [ ] Verify push arrival on a locked phone and tap-through to the correct incident.
+- [ ] Check location sharing is opt-in and that no PINs or camera frames appear in relay payloads.
+
+## 7. Known verification gaps
+
+- Platform test suites include mocked native channels; they do not replace the physical-device checklist above.
+- PIN lockout persistence and KDF work-factor benchmarking are tracked separately in [Issue #23](https://github.com/jonathannerd/WATSafe/issues/23).
+- Review of the extra 0600-protected macOS Application Support copy is tracked in [Issue #26](https://github.com/jonathannerd/WATSafe/issues/26).
+- Do not describe a platform as physically verified until the relevant checks have been run and recorded on hardware.
