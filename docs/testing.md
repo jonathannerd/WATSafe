@@ -70,8 +70,7 @@ OWASP's Password Storage Cheat Sheet advises tuning password-hash work factors t
 
 - [ ] Build and install on a physical iPhone/iPad; simulator-only success is insufficient for Core Motion validation.
 - [ ] Grant Motion & Fitness permission where prompted.
-- [ ] On iOS/iPadOS 27.2+, verify not-determined prompts for access, authorized permits arming, and denied/restricted states block arming.
-- [ ] On earlier supported iOS versions, confirm the UI does not claim a separate permission check exists; validate that actual sensor startup succeeds before reporting monitoring active.
+- [ ] Confirm the app does not show a separate Motion permission prompt for live Core Motion samples; arm and verify that actual accelerometer/device-motion samples are received.
 - [ ] Arm in the foreground and verify Core Motion events are received.
 - [ ] Lock the screen or switch apps; confirm WATSafe pauses instead of continuing to claim protection.
 - [ ] Return to the foreground and verify monitoring resumes only after capability check and successful detector restart.
