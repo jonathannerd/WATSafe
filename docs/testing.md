@@ -24,7 +24,19 @@ The main CI workflow runs dependency installation, repository-wide Dart formatti
 
 The live PostgreSQL integration test is skipped unless AIVEN_DATABASE_URL or DATABASE_URL is configured.
 
-## 2. macOS physical-device checklist
+## 2. PIN KDF performance benchmark
+
+The production PIN verifier target is 600,000 PBKDF2-HMAC-SHA256 iterations. Benchmark the exact Dart implementation on each supported device before release. The benchmark uses a dummy PIN and deterministic non-secret salt; it does not read or expose the user's PIN.
+
+Run on a connected physical device (substitute its Flutter device ID):
+
+    flutter test integration_test/pin_kdf_benchmark_test.dart -d <device-id>
+
+The test prints a line beginning with `WATSAFE_PIN_KDF_BENCHMARK`, including each sample and the average time in microseconds. Record results separately for macOS, Windows, Android, and iOS devices used for release validation. Repeat after a cold app launch when practical.
+
+OWASP's Password Storage Cheat Sheet advises tuning password-hash work factors to the deployment's performance and gives less than one second as a general target for a hash calculation. Review the production setting if a supported device exceeds that target; do not lower it silently without recording the security/performance trade-off.
+
+## 3. macOS physical-device checklist
 
 - [ ] Run flutter run -d macos or open a debug build on a Mac.
 - [ ] Complete first-run onboarding and create a 6–12 digit PIN.
@@ -35,7 +47,7 @@ The live PostgreSQL integration test is skipped unless AIVEN_DATABASE_URL or DAT
 - [ ] Restart the app and confirm the PIN remains available through Keychain.
 - [ ] Verify sleep/lid interruption and the wake/reconciliation behavior.
 
-## 3. Windows physical-device checklist
+## 4. Windows physical-device checklist
 
 - [ ] Build and launch the Windows target on a Windows 10/11 machine.
 - [ ] Check camera discovery, privacy permission, camera-in-use handling, and first-frame startup.
@@ -44,7 +56,7 @@ The live PostgreSQL integration test is skipped unless AIVEN_DATABASE_URL or DAT
 - [ ] Verify the persistent system lifecycle / sleep / lid / shutdown warning behavior that applies to the device.
 - [ ] Verify PIN storage through DPAPI and confirm alarm audio routing.
 
-## 4. Android physical-device checklist
+## 5. Android physical-device checklist
 
 - [ ] Install a debug build on a physical Android device and grant requested permissions.
 - [ ] Verify linear-acceleration sensor or accelerometer fallback detection.
@@ -54,7 +66,7 @@ The live PostgreSQL integration test is skipped unless AIVEN_DATABASE_URL or DAT
 - [ ] Verify successful PIN disarm stops the sensor service.
 - [ ] Repeat on a device with aggressive OEM battery management.
 
-## 5. iOS physical-device checklist
+## 6. iOS physical-device checklist
 
 - [ ] Build and install on a physical iPhone/iPad; simulator-only success is insufficient for Core Motion validation.
 - [ ] Grant Motion & Fitness permission where prompted.
@@ -64,7 +76,7 @@ The live PostgreSQL integration test is skipped unless AIVEN_DATABASE_URL or DAT
 - [ ] Verify paired-laptop push notifications on a locked iPhone when relay/APNs/Web Push credentials are configured.
 - [ ] Confirm the UI communicates the iOS foreground-only limitation clearly.
 
-## 6. Relay / companion physical checklist
+## 7. Relay / companion physical checklist
 
 - [ ] Configure a permanent HTTPS relay endpoint.
 - [ ] Use PostgreSQL or another durable store for cloud deployments; do not rely on ephemeral container storage for pairing data.
@@ -73,9 +85,9 @@ The live PostgreSQL integration test is skipped unless AIVEN_DATABASE_URL or DAT
 - [ ] Verify push arrival on a locked phone and tap-through to the correct incident.
 - [ ] Check location sharing is opt-in and that no PINs or camera frames appear in relay payloads.
 
-## 7. Known verification gaps
+## 8. Known verification gaps
 
 - Platform test suites include mocked native channels; they do not replace the physical-device checklist above.
-- PIN lockout persistence and KDF work-factor benchmarking are tracked separately in [Issue #23](https://github.com/jonathannerd/WATSafe/issues/23).
+- Automated restart, expiry, concurrent-attempt, storage-failure, and legacy-record migration coverage is in `test/pin_security_persistence_test.dart`. The physical KDF benchmark remains a release check tracked by [Issue #23](https://github.com/jonathannerd/WATSafe/issues/23).
 - Review of the extra 0600-protected macOS Application Support copy is tracked in [Issue #26](https://github.com/jonathannerd/WATSafe/issues/26).
 - Do not describe a platform as physically verified until the relevant checks have been run and recorded on hardware.
