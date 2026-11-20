@@ -371,7 +371,7 @@ class PinSecurityService {
   }
 
   void _restoreBackoff(StoredPinRecord record) {
-    _failedAttempts = record.failedAttempts;
+    _failedAttempts = record.failedAttempts.clamp(0, 1000000).toInt();
     final rawLockedUntil = record.lockedUntilUtcIso;
     final parsed = rawLockedUntil == null
         ? null
