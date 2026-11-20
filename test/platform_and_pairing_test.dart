@@ -195,7 +195,9 @@ void main() {
       await adapter.dispose();
     });
 
-    test('iOS Core Motion does not claim permission before the user has decided', () async {
+    test(
+      'iOS Core Motion does not claim permission before the user has decided',
+      () async {
       var permissionStatus = 'notDetermined';
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(iosMethodChannel, (MethodCall call) async {
@@ -205,7 +207,8 @@ void main() {
                   'hasMotionHardware': true,
                   'deviceName': 'Apple Core Motion IMU',
                   'permissionStatus': permissionStatus,
-                  'detail': 'Permission state supplied by the native Core Motion bridge.',
+                  'detail':
+                      'Permission state supplied by the native Core Motion bridge.',
                 };
               case 'requestPermission':
                 permissionStatus = 'denied';
@@ -231,10 +234,13 @@ void main() {
       expect(denied.permissionStatus, PermissionStatus.denied);
       expect(denied.status, CapabilityStatus.permissionRequired);
       expect(denied.canArm, isFalse);
-      await adapter.dispose();
-    });
+        await adapter.dispose();
+      },
+    );
 
-    test('iOS versions without a separate live-sensor permission status rely on actual sensor startup', () async {
+    test(
+      'iOS versions without a separate live-sensor permission status rely on actual sensor startup',
+      () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(iosMethodChannel, (MethodCall call) async {
             switch (call.method) {
@@ -243,7 +249,8 @@ void main() {
                   'hasMotionHardware': true,
                   'deviceName': 'Apple Core Motion IMU',
                   'permissionStatus': 'notApplicable',
-                  'detail': 'This OS does not expose a separate live-sensor authorization status.',
+                  'detail':
+                      'This OS does not expose a separate live-sensor authorization status.',
                 };
               case 'requestPermission':
                 return 'notApplicable';
@@ -261,8 +268,9 @@ void main() {
       expect(capability.status, CapabilityStatus.ready);
       expect(capability.canArm, isTrue);
       expect(await adapter.requestPermission(), PermissionStatus.notApplicable);
-      await adapter.dispose();
-    });
+        await adapter.dispose();
+      },
+    );
 
     test('AndroidMotionDetectorAdapter bridges foreground motion sensors from a paired Android companion on non-Android hosts', () async {
       final notificationService = ConfigurableRemoteNotificationService(
