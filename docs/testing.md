@@ -12,7 +12,7 @@ Run these commands from the repository root:
     dart analyze tool/ backend/ lib/
     flutter test
 
-The main CI workflow runs dependency installation, repository-wide Dart formatting, Flutter analysis, standalone backend/CLI analysis, and the automated test suite. Native compilation is validated separately by PR #24 while that workflow is being introduced.
+The main CI workflow runs dependency installation, repository-wide Dart formatting, Flutter analysis, standalone backend/CLI analysis, and the automated test suite. A separate native-platform workflow compiles Web and Android on Linux, macOS and unsigned iOS on macOS, and Windows on Windows. The Android build job pins JDK 17 to match the repository Gradle wrapper.
 
 ### Automated coverage
 
@@ -76,5 +76,6 @@ The live PostgreSQL integration test is skipped unless AIVEN_DATABASE_URL or DAT
 ## 7. Known verification gaps
 
 - Platform test suites include mocked native channels; they do not replace the physical-device checklist above.
-- PIN lockout persistence and KDF work-factor benchmarking are tracked separately in Issue #23.
+- PIN lockout persistence and KDF work-factor benchmarking are tracked separately in [Issue #23](https://github.com/jonathannerd/WATSafe/issues/23).
+- Review of the extra 0600-protected macOS Application Support copy is tracked in [Issue #26](https://github.com/jonathannerd/WATSafe/issues/26).
 - Do not describe a platform as physically verified until the relevant checks have been run and recorded on hardware.
