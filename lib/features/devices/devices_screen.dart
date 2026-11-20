@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/alarm/alarm_controller.dart';
@@ -370,7 +371,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
           : !sharingEnabled
           ? 'Location is optional. Enable sharing only when you want WATSafe to attach this device’s position to incident reports.'
           : permissionBlocked
-          ? 'Allow location access in Safari website settings, then return here and refresh.'
+          ? (kIsWeb
+                ? 'Allow location access for this site in your browser settings, then return here and refresh.'
+                : 'Allow location access in your device settings, then return here and refresh.')
           : (selected?.statusExplanation ??
                 'Allow location access so WATSafe can attach this device’s position to an incident report.');
       final canOfferAction =
