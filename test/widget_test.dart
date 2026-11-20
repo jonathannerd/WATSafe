@@ -113,9 +113,7 @@ void main() {
       await fakeDetector.dispose();
     },
   );
-  testWidgets(
-    'iPad portrait and landscape use the adaptive navigation rail without layout errors',
-    (WidgetTester tester) async {
+  testWidgets('iPad portrait and landscape use the adaptive navigation rail without layout errors', (WidgetTester tester) async {
     final fakeDetector = FakeMotionDetector();
     final pinStorage = InMemorySecurePinStorage();
     final pinService = PinSecurityService(
@@ -172,6 +170,5 @@ void main() {
       controller.dispose();
       await fakeDetector.dispose();
     }
-    },
-  );
+  });
 }
