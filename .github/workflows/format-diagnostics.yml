@@ -1,0 +1,24 @@
+name: Temporary Format Diagnostics
+
+on:
+  push:
+    branches: [fix/pin-storage-ios-relay-ipad]
+
+permissions:
+  contents: read
+
+jobs:
+  format-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Print iOS permission test diff
+        run: |
+          dart format test/platform_and_pairing_test.dart
+          git diff -- test/platform_and_pairing_test.dart
