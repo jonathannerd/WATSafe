@@ -1,120 +1,276 @@
 # WATSafe
 
-**WATSafe** is a cross-platform device protection application built with Flutter (`3.47.9` / Dart `3.13.7`) and native platform adapters for **macOS**, **Windows**, **iOS**, **Android**, and **Web**.
+**Laptop protection that keeps your phone in the loop.**
 
-Desktop builds protect laptops against unauthorized physical movement while armed. Companion phones (iPhone and Android via the permanent HTTPS Home Screen web app or native mobile builds) pair **once**, receive real RFC 8291/8292 Web Push notifications even when locked, survive laptop/phone/relay restarts with offline shell caching, and open the exact event with the protected laptop’s recorded location in **Activity**.
+WATSafe watches for device movement and camera tampering while protection is armed, sounds a local alarm, and sends alerts to your paired phone. Open an alert to see the affected device on a map, alongside your phone's shared location.
 
----
+Built with **Flutter, native macOS and Windows integrations, a Dart relay, and PostgreSQL**. The phone companion installs from the browser—no separate native iPhone build is needed to use it.
 
-## Current Capabilities Summary
+[![WATSafe CI](https://github.com/jonathannerd/WATSafe/actions/workflows/ci.yml/badge.svg)](https://github.com/jonathannerd/WATSafe/actions/workflows/ci.yml)
 
-| Capability | Status | Details |
-|---|---|---|
-| **4-Destination Adaptive UI (`Home`, `Devices`, `Activity`, `Settings`)** | **Implemented & Tested** | Consistent Material 3 navigation (`NavigationRail` on desktop, `NavigationBar` on phone, and matching 4-tab Companion PWA) with plain-language statuses (`Off`, `Arming`, `Protected`, `Movement detected — checking…`, `Monitoring paused`, `Alarm triggered`), one primary action per state, and accessible contrast. |
-| **Permanent HTTPS Companion & Offline PWA Shell** | **Implemented & Tested** | Stable Web App Manifest (`id: '/companion'`, `start_url: '/companion?source=homescreen'`, `scope: '/'`, `display: 'standalone'`) and Service Worker (`/sw.js`) pre-caching the companion shell. Opening the Home Screen icon while offline or during proxy/tunnel outages always renders WATSafe (**Laptop offline** / **Connecting…** / **Service temporarily unavailable** with last-seen time and **Retry**)—never white proxy error pages (`HTTP 530` / Error `1033`). |
-| **Durable One-Time Pairing & Auto-Reconnect** | **Implemented & Tested** | Device identities and pairing credentials persist securely (macOS Keychain + `0600` Application Support on desktop; mirrored `localStorage` + `IndexedDB` on PWA) and survive relay restarts via `PostgresRelayStore` (`DATABASE_URL` / `AIVEN_DATABASE_URL`, with durable VAPID keys in `watsafe_server_secrets`) or local `FileRelayStore` (`~/.watsafe/relay`). Reconnects automatically on app launch, foreground resume, and Wi-Fi/cellular switches; handles token rotation (`POST /v1/companion/token/refresh`) and `pushsubscriptionchange` renewal without re-pairing. |
-| **Real RFC 8291/8292 Web Push & Incident Map Routing** | **Implemented & Tested** | Built-in pure-Dart VAPID (`ES256`) + `aes128gcm` Web Push sender plus verified `FCM` / `APNs` / webhook adapters. Unified delivery path for **Send test alert** and real alarms; Service Worker receipt acknowledgements (`/v1/companion/events/<id>/ack`); tapping an alarm notification opens the exact incident and affected device with its map immediately visible. |
-| **Devices Map, Multi-Device Pins & Post-Alarm Tracking** | **Implemented & Tested** | Readable light cartography (OpenFreeMap `liberty` + MapLibre GL JS on the Companion PWA; natural OpenStreetMap tiles + light street-grid offline fallback in Flutter) with iPhone standalone safe-area header/navigation (`apple-mobile-web-app-status-bar-style="black"`). Distinct laptop and phone markers with automatic `< 28 m` co-located fan-out, a single compact horizontal device selector (`>= 44 px`), one concise detail card (separate Connection & Protection badges, area/accuracy summary, natural `"Just now"` relative age, **Center on device**, **Open in Maps**, and expandable **Coordinates**), opt-in foreground-only **Share this phone’s location** (`POST|DELETE /v1/companion/location`), bounded 15s post-alarm laptop tracking, strict `403` anti-impersonation/session isolation, and 7-day retention pruning. |
-| **Armed Lid-Close, Sleep Interruption & Cloud Watchdog** | **Implemented & Tested** | Native desktop power & clamshell bridges (`IOPMrootDomain` `"AppleClamshellState"`, `IORegisterForSystemPower`, `NSWorkspace` sleep/power-off/session-resign, `applicationShouldTerminate` / `windowShouldClose` on macOS; `GUID_LIDSWITCH_STATE_CHANGE`, `PBT_APMSUSPEND`, `WM_QUERYENDSESSION`, `WM_CLOSE` on Windows) plus optional keyboard/trackpad idle-reset detection (`CGEventSource` / `GetLastInputInfo` with an 8s PIN grace period). Closing the lid or entering sleep while armed never silently pauses or disarms: WATSafe immediately starts the siren and sends a non-blocking `protectionInterrupted` alert (`<= 1.4s` urgent flush) with last-known coordinates (`isLastKnown: true`). Independently, the relay’s 15s heartbeat / 45s timeout watchdog sends one deduplicated missed-heartbeat warning per armed episode if an armed laptop abruptly goes silent (`POST /v1/host/offline` never clears `hostArmed`—only verified PIN disarm `disarmVerified: true` clears it). |
-| **Theft Ego-Motion Detection & False-Alarm Reduction** | **Implemented & Tested** | Separates rigid camera ego-motion (lift, tilt, carry, slow slide via 4-frame drift window) from passersby, radial looming/leaning, brief hand passes, room lighting/shadow shifts, and seated occupancy; treats AC power-cable unplug strictly as weak supporting corroboration; brief **Movement detected — checking…** stage for borderline camera-only motion; plain-language presets (**Fewer false alarms**, **Balanced**, **Higher sensitivity**), silent **Guided protection test**, and non-frame numerical diagnostics in **Settings -> Advanced**. |
-| **Central Alarm, PIN & Future Owner Face-Verify Design** | **Implemented & Tested** | Generation-guarded state machine, immediate siren & location-timer stop on verified 6+ digit PIN, PBKDF2-HMAC-SHA256 salted PIN storage, development-only **Preview onboarding** & **Reset demo**, and architecture design doc for optional future local owner face verification ([`docs/owner-face-recognition-design.md`](docs/owner-face-recognition-design.md), disabled by default). |
+[Get started](#get-started) · [Pair your phone](#pair-your-phone) · [How protection works](#how-protection-works) · [Development](#development) · [Troubleshooting](#troubleshooting)
 
----
+## What you can do
 
-## One-Time Setup: Permanent HTTPS Companion & Durable Aiven PostgreSQL Storage
+- **Arm your laptop before stepping away.** Camera-based movement detection aims to distinguish laptop movement from people passing nearby. Supported motion sensors provide another detection option.
+- **Detect camera tampering.** Sustained obstruction or capture loss while armed triggers an interruption response instead of silently disabling protection.
+- **Receive phone alerts.** Install the companion once, enable notifications, and keep the pairing across normal app and relay restarts.
+- **Find your devices.** View laptop and phone markers on a detailed OpenStreetMap basemap with location accuracy and freshness.
+- **Disarm with your PIN.** A valid PIN stops the alarm.
+- **Choose your appearance.** Six themes style the desktop—including its sidebar—and the phone companion.
 
-### Why Temporary Quick Tunnels Caused White Error Pages After Restarts
-Running an anonymous quick tunnel (`*.trycloudflare.com`, `*.lhr.life`, or dynamic `ngrok`) creates a **new random hostname** every time the launcher restarts. Because iOS Safari pins an installed Home Screen bookmark strictly to the domain it was installed from, closing and reopening the laptop launcher retired the previous `*.trycloudflare.com` tunnel—causing the old Home Screen icon to hit Cloudflare’s retired-tunnel page (`HTTP 530` / Error `1033` with a white page and *“Was this helpful?”*) instead of WATSafe.
+The phone has two tabs: **Devices** and **Settings**. Alarm notifications open **Devices** with the affected device selected.
 
-### Important Storage Rules for Cloud Deployments
-- [`render.yaml`](render.yaml) deploys the `watsafe-relay` Docker web service (providing a permanent `https://<your-render-service>.onrender.com` origin via Let’s Encrypt) and **prompts (`sync: false`) for environment secrets**. It **does not** provision PostgreSQL automatically.
-- **Do not** use Render’s free PostgreSQL tier (it expires and deletes data after 30 days) or Render’s container filesystem (ephemeral: wiped on every redeploy and container spin-down) as permanent storage. `/v1/health` explicitly reports `storageDurable: false` if a cloud container runs without PostgreSQL.
-- **Use our existing Aiven PostgreSQL (`AIVEN_DATABASE_URL`)** for permanent cloud storage, keeping credentials strictly in Render environment secrets (never in Git). When `AIVEN_DATABASE_URL` is set, WATSafe stores pairing sessions (`watsafe_pairing_sessions`), paired phone bonds & Web Push subscriptions (`watsafe_companion_bonds`), incidents (`watsafe_session_alerts`), and VAPID keys (`watsafe_server_secrets`) durably in Aiven PostgreSQL across restarts and redeployments.
+> WATSafe is a developing deterrent and alerting tool, not a guarantee against theft. Test protection on your own hardware before relying on it. See [protection limits](#protection-limits).
 
-### Option 1 — Render HTTPS Web Service + Existing Aiven PostgreSQL (Recommended)
-1. In the [Render Dashboard](https://dashboard.render.com), click **New -> Blueprint** and select `jonathannerd/WATSafe` ([`render.yaml`](render.yaml) + [`Dockerfile`](Dockerfile)).
-2. When prompted for `sync: false` environment secrets:
-   - Set **`AIVEN_DATABASE_URL`** to our Aiven PostgreSQL Service URI (`postgres://avnadmin:<password>@<project>.aivencloud.com:<port>/defaultdb?sslmode=require`).
-   - *(Optional)* Set **`AIVEN_CA_CERT`** (PEM text) only if your URI specifies `?sslmode=verify-full` or `?sslmode=verify-ca`.
-   - *(Optional)* Leave `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` blank to let WATSafe generate and persist them automatically in `watsafe_server_secrets`, or supply explicit keys from `dart run tool/generate_vapid_keys.dart`.
-3. **Verify the live HTTPS endpoint and persistence across a relay restart/redeploy before calling setup complete:**
-   ```bash
-   # Step A: Verify HTTPS, PWA manifest/service worker, durable Aiven storage, and record a test bond + push subscription
-   dart run tool/verify_deployment.dart --require-postgres --phase=before-restart https://<your-render-service>.onrender.com
+## Get started
 
-   # Step B: Restart or redeploy `watsafe-relay` in Render, then verify VAPID keys + pairing + push subscription survived
-   # and save the verified URL locally for WATSafe.app and ./scripts/run_watsafe.sh:
-   dart run tool/verify_deployment.dart --require-postgres --phase=after-restart --save https://<your-render-service>.onrender.com
-   ```
+### Requirements
 
-### Option 2 — Permanent Named Cloudflare Tunnel + Local Mac Relay
-If you route a permanent Cloudflare hostname (`https://watsafe.<your-domain>`) to `http://127.0.0.1:8787`:
+For building from source:
+
+- Git and Flutter. CI currently uses **Flutter 3.47.9**; `pubspec.yaml` requires Flutter `>=3.47.0` and Dart `^3.13.0`.
+- The desktop build tools for your target: Xcode for macOS, or Visual Studio with the C++ desktop workload for Windows.
+- A webcam for camera protection; motion-sensor support depends on the device.
+- An internet connection for remote alerts and map tiles.
+
+Run `flutter doctor` and resolve the checks for the platform you intend to build. Building the Mac app requires Apple's desktop toolchain; installing the **phone web companion** does not require Xcode or an App Store build.
+
+### 1. Get the project
+
 ```bash
-export WATSAFE_CLOUDFLARE_TUNNEL_TOKEN="<your-named-tunnel-token>"
-./scripts/run_watsafe.sh --save-permanent-url=https://watsafe.<your-domain>
+git clone https://github.com/jonathannerd/WATSafe.git
+cd WATSafe
+flutter pub get
 ```
-On your Mac, the local relay stores pairings, push subscriptions, and VAPID keys durably on disk in `~/.watsafe/relay/` (or in Aiven PostgreSQL if `AIVEN_DATABASE_URL` is exported in your shell environment).
 
----
+### 2. Connect to the team's relay
 
-## Normal Everyday Launch (After One-Time Setup)
+Save the permanent service address once:
 
-Once your verified permanent HTTPS URL is saved (stored in `~/.watsafe/relay_service.json`, synced to the macOS `WATSafe.app` sandbox container, and persisted in `ProtectionSettings`):
+```bash
+dart run tool/dev_launcher.dart --save-permanent-url=https://watsafe-relay.onrender.com --save-only
+```
 
-- **Open `WATSafe.app` directly** (`build/macos/Build/Products/Debug/WATSafe.app` or `Release/WATSafe.app`) — **no terminal required**. The desktop app remembers the permanent HTTPS endpoint, reconnects automatically, restores your paired phone, and sends host presence heartbeats (`POST /v1/host/heartbeat`) plus clean sign-off (`POST /v1/host/offline`) on exit.
-- **Or launch from source with one command:**
-  ```bash
-  ./scripts/run_watsafe.sh
-  ```
-  When a permanent HTTPS URL is saved, `run_watsafe.sh` connects directly to that permanent origin instead of spawning a temporary tunnel.
+The team's companion is hosted at [watsafe-relay.onrender.com/companion](https://watsafe-relay.onrender.com/companion). You do not need to deploy a server or create a database to use the existing team service.
 
----
+For your own deployment, substitute your stable HTTPS origin. A temporary tunnel address is unsuitable for a lasting Home Screen installation.
 
-## One-Time Migration & Physical iPhone Test Checklist
+### 3. Launch
 
-### One-Time Migration from an Old Temporary Tunnel Bookmark
-Apple WebKit isolates Home Screen web apps, Service Workers, `IndexedDB`/`localStorage`, and `PushManager` subscriptions per origin (`scheme + host + port`). When moving from an old `*.trycloudflare.com` tunnel to your verified permanent `https://<your-render-service>.onrender.com` origin:
-1. Delete any old temporary **WATSafe** bookmark from your iPhone Home Screen.
-2. Open **WATSafe** on your Mac -> **Pair your phone**, scan the QR code in Safari (`https://<your-render-service>.onrender.com/pair?...`), and tap **Connect to \<Your Mac\>**.
-3. Tap **Copy setup code**, tap Safari **Share -> Add to Home Screen -> Add**, open the new **WATSafe** Home Screen icon, paste the 6-character setup code, and tap **Enable notifications -> Allow**.
+**macOS**
 
-### Physical iPhone Verification Checklist
-1. **Close and reopen the desktop app:** Quit `WATSafe.app` on your Mac -> confirm the installed iPhone app stays paired and switches to **Laptop offline** (with last-seen time). Reopen `WATSafe.app` normally -> confirm both Mac and iPhone return to **Connected** automatically without scanning a QR code.
-2. **Close and reopen the installed phone app:** Swipe away the **WATSafe** Home Screen app on iPhone and reopen it -> confirm it opens directly in standalone mode as **Connected** with **Notifications on** retained.
-3. **Restart the relay:** Trigger a restart/redeploy of `watsafe-relay` on Render -> confirm the iPhone shows **Connecting…** / **Service temporarily unavailable** (never a white error page) and automatically returns to **Connected** with its push subscription and VAPID key intact.
-4. **Switch Wi-Fi to cellular:** Turn off Wi-Fi on iPhone so it switches to cellular data -> confirm the installed Home Screen app stays **Connected** and tap **Send test alert** to verify delivery over cellular.
-5. **Receive a locked-screen alarm notification:** Tap **Send test alert (5s — lock phone now)** or arm the Mac and trigger an alarm while the iPhone screen is locked -> confirm the lock-screen push notification arrives (device name + plain message only, no coordinates) and tapping it opens the exact event with location in **Activity**.
+```bash
+./scripts/run_watsafe.sh
+```
 
----
+The launcher builds the app when needed and reuses the existing bundle on subsequent unchanged launches. After the initial build and relay configuration, you can also open it directly:
 
-## First-Use & Fresh-Start Testing
+```bash
+open build/macos/Build/Products/Debug/WATSafe.app
+```
 
-In debug/development builds, open **Settings -> Advanced** (`First-use & demo testing`):
-- **Preview onboarding:** Inspects the welcome & PIN setup walkthrough without modifying saved PIN, paired phone, settings, or Activity history.
-- **Reset demo and restart onboarding:** Stops active monitoring and silences siren audio immediately, revokes **only** this installation’s paired session and Web Push subscription on the relay, clears this device’s saved PIN and secure pairing credentials (while keeping your configured permanent HTTPS server URL), and returns to `Welcome to WATSafe`.
+**Windows**
 
-### Physical Hardware, Sleep & Free-Tier Watchdog Limits
-- **Asleep or powered-off laptops:** Standard macOS and Windows laptops cannot run user-space camera/sensor capture, play local siren audio, or stream new Wi-Fi locations once fully asleep or powered off, and standard laptop hardware cannot detect touching the outer aluminum chassis without movement or keyboard/trackpad input. Keep the lid open while armed.
-- **Pre-sleep & independent cloud watchdog timing:** On macOS/Windows, closing the lid while armed triggers a local siren and best-effort urgent `protectionInterrupted` push (`<= 1.4s` flush inside the brief OS power hold) before sleep completes. While armed, the desktop app sends authenticated heartbeats every `15s`, keeping a Render Free web service awake during active protection. If an armed laptop loses power or network before its pre-sleep alert reaches the relay, Render’s 15-minute post-traffic active window allows the in-process watchdog (`15s` sweep, `45s` timeout) to dispatch one deduplicated missed-heartbeat warning within `~45–55s` without burning Render’s `750 hours/month` free cap when disarmed. If a Free-tier container is cold-starting (`~50–60s` after 15 minutes of zero traffic) when arming begins, WATSafe waits up to `65s` to persist `hostArmed` in PostgreSQL and runs an immediate overdue watchdog sweep whenever the relay boots.
+From PowerShell in the repository:
 
----
+```powershell
+flutter run -d windows --dart-define=WATSAFE_API_URL=https://watsafe-relay.onrender.com
+```
 
-## Verification Commands
+This uses the hosted relay; no separate backend command is needed.
+
+### 4. Complete setup
+
+Choose a device name, create your PIN, and grant the permissions needed for the features you want to use. Pair your phone, check its notification status, then run a supervised protection test before leaving a device unattended.
+
+## Pair your phone
+
+### iPhone
+
+1. On the laptop, select **Pair your phone**.
+2. Scan the QR code with your iPhone and open the permanent HTTPS page in Safari.
+3. Confirm the laptop name and connect.
+4. Copy the Home Screen setup code when prompted.
+5. Use **Share → Add to Home Screen → Add**.
+6. Open **WATSafe from its Home Screen icon**, enter the setup code if prompted, and enable notifications.
+7. Allow location access if you want the phone to appear on the shared map.
+
+Use an iPhone running iOS 16.4 or later for Home Screen Web Push. Complete notification setup inside the installed companion, not just an ordinary browser tab.
+
+### Android
+
+Scan the laptop's QR code in a supported browser such as Chrome, complete pairing, and follow the browser's **Install app** or **Add to Home screen** flow. Enable notifications and optionally share the phone's location.
+
+**Pairing is normally a one-time process.** Reopening either app should reconnect automatically. A sleeping laptop may appear offline without losing its pairing.
+
+Existing permanent-origin installations should update when reopened online. Reinstalling is not the normal update procedure. Moving from an old temporary tunnel to a different permanent domain requires a new installation/pairing on that origin.
+
+## How protection works
+
+1. **Arm:** WATSafe starts the selected detector and registers the protected session with the relay.
+2. **Detect:** Movement, sustained camera obstruction, or an interruption can trigger an incident.
+3. **Alert:** The laptop attempts a local siren and reports the incident. The relay sends Web Push to the paired phone.
+4. **Locate:** Tapping the notification opens the device map with the available location.
+5. **Disarm:** Enter the correct PIN on the laptop to stop the alarm.
+
+### Lid closure and unexpected disconnection
+
+Native desktop reporting attempts to send an urgent interruption alert before sleep, independently of the Flutter UI. On macOS, audio handling is separated from emergency reporting so audio teardown does not block the network path.
+
+The relay also watches for an armed laptop that stops responding. Current defaults are an **8-second armed heartbeat**, **30-second timeout**, and **5-second watchdog sweep**. With a running, reachable relay, the fallback can detect a missing host approximately **30–35 seconds after its last heartbeat**. Push delivery adds its own latency; this is not a guaranteed notification deadline.
+
+The fallback reports **“Protected laptop stopped responding.”** It cannot determine whether the cause was theft, lost connectivity, or power loss.
+
+### Location updates
+
+With sharing enabled, the running laptop requests location on launch, resume, pairing, and arming, and approximately every **four minutes** even when disarmed. Supported refresh requests and bounded post-alarm tracking provide additional updates.
+
+The phone shares its **own** location while the companion is open and permitted to do so. Laptop and phone coordinates are kept separate. Accuracy and timestamps matter: **Last known** is not a live position.
+
+### Protection limits
+
+- A fully sleeping or powered-off laptop cannot continue normal camera capture, location updates, or local siren playback. Pre-sleep reporting is best effort; the cloud watchdog is the fallback.
+- Remote alerts depend on connectivity, the relay, the push provider, and phone notification settings.
+- An in-process watchdog cannot run while its server is suspended or unavailable. Free hosting may introduce cold starts or interruptions.
+- Phone PWA location sharing is foreground-only; it is not continuous background GPS tracking.
+- Movement detection can produce false positives or miss events. Sensor availability varies by hardware.
+- macOS and Windows have native integrations, but a passing shared test suite does not establish identical behavior on every device. Verify each target physically.
+
+## Privacy
+
+- Camera frames are processed locally in memory rather than uploaded to the relay.
+- PIN material stays on the device.
+- Pairings use authenticated, session-scoped credentials.
+- Location access is restricted to the paired session; precise coordinates are omitted from lock-screen notification text.
+- Stored location history has a seven-day retention policy and can be deleted through settings.
+- Map tiles come from OpenStreetMap infrastructure; loading the map makes requests to that provider.
+- Database credentials, private push keys, and tunnel tokens belong in secret storage, never in Git or screenshots.
+
+## Development
+
+### Run with hot reload
+
+On macOS:
+
+```bash
+./scripts/run_watsafe.sh --flutter-run
+```
+
+In a Flutter run session, press `r` for hot reload, `R` for hot restart, and `q` to quit. A normal restart preserves settings and pairing.
+
+For browser UI development:
+
+```bash
+flutter run -d chrome --dart-define=WATSAFE_API_URL=https://watsafe-relay.onrender.com
+```
+
+The Flutter web target and the relay-served phone companion are separate interfaces. To change the installed phone experience, inspect `lib/relay/pwa_assets.dart`; a Flutter web build alone does not update the hosted companion.
+
+### Project structure
+
+| Path | Purpose |
+|---|---|
+| `lib/core/` | Alarm state, contracts, and shared models |
+| `lib/features/` | Flutter screens and user flows |
+| `lib/services/` | Pairing, location, notifications, storage, and relay configuration |
+| `lib/platform/` | Platform detector adapters |
+| `lib/relay/` | Relay server, phone PWA, and Web Push |
+| `macos/`, `windows/` | Native desktop bridges |
+| `android/`, `ios/` | Native mobile targets |
+| `backend/server.dart` | Standalone relay entry point |
+| `tool/`, `scripts/` | Launcher and deployment verification |
+| `test/` | Automated regression tests |
+
+### Checks before a pull request
+
 ```bash
 flutter pub get
 dart format --output=none --set-exit-if-changed .
 flutter analyze
 dart analyze tool/ backend/ lib/
 flutter test
-flutter build web
-flutter build macos --debug
-./scripts/run_watsafe.sh --check-only --no-tunnel
 ```
 
----
+Build affected targets on the appropriate machine:
 
-## Privacy & Security Invariants
-- **Volatile Camera Frames & Local PINs:** Camera frames are analyzed strictly in memory and never saved or uploaded; PINs and PBKDF2 hashes never leave the device.
-- **Secrets Strictly Outside Git:** `AIVEN_DATABASE_URL`, `AIVEN_CA_CERT`, `VAPID_PRIVATE_KEY`, and tunnel tokens live exclusively in environment secrets or restricted local `0600`/Keychain storage—never in Git, query strings, client bundles, or logs.
-- **Authentic-Origin Revocation Guard:** Saved pairings are cleared only on explicit user disconnect/reset or an authentic WATSafe `401` (`X-WATSafe-Companion: 1`), never on transient network errors or third-party proxy error pages.
-- **Authenticated Session-Isolated Coordinates, 7-Day Retention & Private Lock-Screen Push Text:** Device locations and post-alarm trails require authenticated session tokens (`403` on cross-session/device ID queries), expire automatically after 7 days (or immediately via **Delete stored location history**), never plot missing coordinates at `(0, 0)`, and never appear in lock-screen Web Push text, URLs, or routine logs.
+```bash
+flutter build web
+flutter build macos --debug
+```
+
+For Windows, use `flutter build windows` on Windows. Automated tests do not replace a real locked-phone notification test or a physical lid-close test.
+
+### Working together
+
+Start a task from an up-to-date `main` with a clean working tree:
+
+```bash
+git switch main
+git pull --ff-only origin main
+git switch -c feat/your-change
+```
+
+Make and verify your changes, commit the intended files, and push your branch:
+
+```bash
+git push -u origin feat/your-change
+```
+
+Open a pull request into `main` and wait for CI and review. Commit or stash unfinished work before switching branches or pulling. If Git reports a conflict or divergence, resolve it without discarding teammates' work or force-pushing shared history.
+
+### Preview a fresh install
+
+Debug builds provide **Preview onboarding** and **Reset demo and restart onboarding** under the advanced settings.
+
+Preview preserves data. Reset clears this installation's setup and revokes its pairing, so use it only when you intend to pair again.
+
+## Hosting your own relay
+
+The deployment consists of a stable HTTPS web service and durable PostgreSQL storage. The team's deployment uses **Render and Neon PostgreSQL**; Aiven is an optional supported provider, not a prerequisite.
+
+1. Deploy the root [Render blueprint](render.yaml) and [Dockerfile](Dockerfile).
+2. Set `DATABASE_URL` to your PostgreSQL connection URI through the host's secret settings. For Aiven, the alternative `AIVEN_DATABASE_URL` is supported.
+3. Retain the same database and VAPID keys across deployments to preserve pairing and push subscriptions.
+4. Verify persistence before switching users to the new origin.
+
+Use your actual service URL in place of `YOUR-SERVICE`:
+
+```bash
+dart run tool/verify_deployment.dart --require-postgres --phase=before-restart https://YOUR-SERVICE.onrender.com
+```
+
+Restart or redeploy that relay, then run:
+
+```bash
+dart run tool/verify_deployment.dart --require-postgres --phase=after-restart --save https://YOUR-SERVICE.onrender.com
+```
+
+The blueprint does not create a database for you. Container-local files are not a substitute for durable cloud storage. Health responses may use the legacy label `aiven_postgres` for the PostgreSQL adapter even when the database is Neon.
+
+See [backend documentation](backend/README.md) for environment variables and endpoints. Verify the current hosting plan's availability and resource limits before depending on it for time-sensitive alerts.
+
+## Troubleshooting
+
+| Problem | What to check |
+|---|---|
+| Phone is paired but receives no alerts | Open the installed companion, check **Settings → Connection**, allow notifications, and use **Repair notifications** if offered. Check the phone's notification/Focus settings. |
+| Old bookmark opens a tunnel error page | Install from the permanent HTTPS origin. An expired temporary hostname cannot be repaired by restarting the laptop. |
+| Map is blank | Check connectivity, retry map loading, and reopen the companion online to receive updated assets. Markers alone do not prove map tiles loaded. |
+| Map position looks old | Check the timestamp, location permission, sharing setting, and whether the source device is awake and online. |
+| Alarm only occurs after reopening the lid | Confirm the updated desktop build and relay are in use. Repeat the closed-lid test below and report timing; waking up is not proof of successful pre-sleep delivery. |
+| macOS asks for Keychain access after a rebuild | A changed app signature can require renewed permission. The normal launcher reuses an unchanged bundle; hot-reload builds may prompt again. |
+| SDK constraint error | Compare `flutter --version` with `pubspec.yaml` and the pinned CI toolchain. |
+| App reconnects slowly after inactivity | The relay or database may be waking up. Check service health before resetting or re-pairing devices. |
+
+### A useful hardware test
+
+With your phone paired and notifications enabled:
+
+1. Arm the laptop, lock the phone, and close the laptop.
+2. Keep the lid closed for at least 45 seconds and record notification timing.
+3. Reopen the laptop, check for duplicate incidents, and disarm with your PIN.
+4. Separately test camera covering and loss of laptop network access.
+5. Repeat after important native or notification changes.
+
+When reporting a problem, include device/OS, app commit, steps, expected result, actual result, and elapsed time. Remove credentials and precise location data from logs.
