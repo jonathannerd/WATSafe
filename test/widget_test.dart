@@ -113,7 +113,9 @@ void main() {
       await fakeDetector.dispose();
     },
   );
-  testWidgets('iPad portrait and landscape use the adaptive navigation rail without layout errors', (WidgetTester tester) async {
+  testWidgets(
+    'iPad portrait and landscape use the adaptive navigation rail without layout errors',
+    (WidgetTester tester) async {
     final fakeDetector = FakeMotionDetector();
     final pinStorage = InMemorySecurePinStorage();
     final pinService = PinSecurityService(
@@ -142,8 +144,14 @@ void main() {
       await controller.initialize();
       await tester.pumpWidget(WatSafeApp(controller: controller));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('desktop_navigation_rail')), findsOneWidget);
-      expect(find.byKey(const Key('compact_navigation_bar')), findsNothing);
+      expect(
+        find.byKey(const Key('desktop_navigation_rail')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const Key('compact_navigation_bar')),
+        findsNothing,
+      );
       expect(tester.takeException(), isNull);
 
       // A 768pt-wide portrait iPad still uses the rail at the current breakpoint.
@@ -154,13 +162,16 @@ void main() {
 
       await tester.tap(find.text('Settings'));
       await tester.pumpAndSettle();
-      expect(find.byKey(const Key('settings_category_list')), findsOneWidget);
+      expect(
+        find.byKey(const Key('settings_category_list')),
+        findsOneWidget,
+      );
       expect(tester.takeException(), isNull);
     } finally {
       await tester.binding.setSurfaceSize(null);
       controller.dispose();
       await fakeDetector.dispose();
     }
-  });
-
+    },
+  );
 }
