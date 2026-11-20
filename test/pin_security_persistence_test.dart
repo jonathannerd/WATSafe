@@ -137,33 +137,45 @@ void main() {
         service.verifyPin('111111'),
       ]);
 
-      expect(results.map((result) => result.failedAttempts), <int>[1, 2]);
+      expect(results.map((result) => result.failedAttempts).toList(), <int>[1, 2]);
       expect(results.last.isLockedOut, isTrue);
       expect((await storage.readPinRecord())?.failedAttempts, 2);
     });
 
-    test('write failures fail closed and retry persistence before another PIN check', () async {
+    test('write failures preserve in-memory backoff and disclose failed persistence', () async {
       final storage = _ControlledPinStorage();
       final service = createService(storage);
       await service.setupInitialPin(pin: '987654', confirmPin: '987654');
 
       storage.failWrites = true;
-      final failed = await service.verifyPin('000000');
-      expect(failed.verified, isFalse);
-      expect(failed.securityStatePersisted, isFalse);
-      expect(failed.failedAttempts, 1);
+      final firstFailure = await service.verifyPin('000000');
+      expect(firstFailure.verified, isFalse);
+      expect(firstFailure.securityStatePersisted, isFalse);
+      expect(firstFailure.failedAttempts, 1);
 
-      // Correct PIN is not evaluated while the new failed-attempt state cannot
-      // be committed to the secure record.
-      final blocked = await service.verifyPin('987654');
-      expect(blocked.verified, isFalse);
-      expect(blocked.securityStatePersisted, isFalse);
-      expect(blocked.message, contains('temporarily blocked'));
+      final secondFailure = await service.verifyPin('111111');
+      expect(secondFailure.verified, isFalse);
+      expect(secondFailure.securityStatePersisted, isFalse);
+      expect(secondFailure.failedAttempts, 2);
+      expect(secondFailure.isLockedOut, isTrue);
+
+      final blockedDuringLockout = await service.verifyPin('987654');
+      expect(blockedDuringLockout.verified, isFalse);
+      expect(blockedDuringLockout.isLockedOut, isTrue);
+
+      // Once the normal lockout expires, a correct PIN can still disarm the
+      // alarm even if persistence remains unavailable. The result tells the
+      // caller explicitly that the reset did not survive storage failure.
+      now = now.add(const Duration(seconds: 3));
+      final disarm = await service.verifyPin('987654');
+      expect(disarm.verified, isTrue);
+      expect(disarm.securityStatePersisted, isFalse);
+      expect(disarm.message, contains('could not be saved'));
 
       storage.failWrites = false;
-      final recovered = await service.verifyPin('987654');
-      expect(recovered.verified, isTrue);
-      expect(recovered.securityStatePersisted, isTrue);
+      final retry = await service.verifyPin('987654');
+      expect(retry.verified, isTrue);
+      expect(retry.securityStatePersisted, isTrue);
       expect(storage.record?.failedAttempts, 0);
     });
 
