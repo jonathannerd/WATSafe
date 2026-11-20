@@ -42,8 +42,7 @@ The matrix describes code in the repository. It does not mean every optional int
 ### iOS
 
 - Motion detection uses CMMotionManager through the native Core Motion bridge.
-- On iOS/iPadOS 27.2 and later, readiness checks use CMMotionManager.authorizationStatus and request authorization by starting a short-lived sensor probe when the status is not determined. A denied or restricted status prevents arming.
-- Earlier supported releases do not expose this separate live-sensor authorization status; WATSafe reports it as not applicable and validates sensor startup before claiming monitoring has started.
+- WATSafe uses live accelerometer/device-motion samples. The Core Motion API used for live sampling does not expose a separate permission prompt/status; WATSafe reports permission as not applicable and validates sensor availability when monitoring starts. Do not confuse this with authorization for stored motion-activity data.
 - Live monitoring is deliberately foreground-only. When iOS backgrounds or suspends the app (including screen lock), the bridge stops motion updates and emits a lifecycle pause; the controller must not continue displaying Protected while monitoring is inactive.
 - Returning to the foreground triggers a capability check and a guarded monitoring restart. iOS does not provide indefinite background accelerometer capture for this app.
 
@@ -76,6 +75,6 @@ Physical-device verification is still required for:
 - macOS Keychain behavior, camera permission prompts, sleep/lid interruption, and local siren routing;
 - Windows webcam/accelerometer availability, camera-in-use errors, lid/sleep reporting, and audio routing;
 - Android sensor availability, foreground-service notification, screen-off monitoring, OEM battery restrictions, and service-stop handling;
-- iPhone/iPad Core Motion permission, screen-lock pause, foreground resume, and real notification delivery.
+- iPhone/iPad Core Motion sensor startup, screen-lock pause, foreground resume, and real notification delivery.
 
 WATSafe cannot prevent a user or operating system from powering off, force-quitting, muting, or physically disconnecting a device. A laptop that is asleep or powered off cannot keep sampling its camera or playing its local siren; the relay watchdog can only act on information already received and while the relay itself is available.
