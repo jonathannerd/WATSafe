@@ -120,16 +120,22 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
         );
       }
 
-      if (permissionStatus == PermissionStatus.denied ||
+      if (permissionStatus == PermissionStatus.notDetermined ||
+          permissionStatus == PermissionStatus.denied ||
           permissionStatus == PermissionStatus.restricted) {
+        final guidance = permissionStatus == PermissionStatus.notDetermined
+            ? 'Tap Grant Motion Sensor Permission and allow WATSafe to access motion data.'
+            : 'Open iOS Settings and allow WATSafe to access motion data, then tap Refresh Readiness.';
         return DetectorCapability(
           type: DetectorType.iosCoreMotionForeground,
           status: CapabilityStatus.permissionRequired,
           permissionStatus: permissionStatus,
           hardwareDeviceName: deviceName ?? 'Apple Core Motion IMU',
-          summary: 'iOS Motion & Fitness permission is disabled for WATSafe.',
+          summary: permissionStatus == PermissionStatus.notDetermined
+              ? 'iOS motion access has not been decided yet.'
+              : 'iOS motion access is disabled or restricted for WATSafe.',
           statusDetail: detail,
-          guidance: 'Open iOS Settings → Privacy & Security → Motion & Fitness, enable WATSafe, then tap Refresh Readiness.',
+          guidance: guidance,
         );
       }
 
