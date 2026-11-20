@@ -105,7 +105,8 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
 
       final hasHardware = response['hasMotionHardware'] as bool? ?? false;
       final deviceName = response['deviceName'] as String?;
-      final permRaw = response['permissionStatus'] as String? ?? 'notDetermined';
+      final permRaw =
+          response['permissionStatus'] as String? ?? 'notDetermined';
       final permissionStatus = _parsePermissionStatus(permRaw);
       final detail = response['detail'] as String?;
 
