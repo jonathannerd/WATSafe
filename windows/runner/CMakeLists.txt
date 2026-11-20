@@ -48,6 +48,7 @@ target_link_libraries(${BINARY_NAME} PRIVATE
   "oleaut32.lib"
   "shell32.lib"
   "comdlg32.lib"
+  "winhttp.lib"
 )
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 

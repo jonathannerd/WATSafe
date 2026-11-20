@@ -370,7 +370,20 @@ class PlatformAudioAlarmService implements AudioAlarmAdapter {
 
   @override
   Future<void> prepareForAlarm() async {
-    await _loadAlarmAssetBytes();
+    final wavBytes = await _loadAlarmAssetBytes();
+    if (wavBytes == null || wavBytes.isEmpty) {
+      return;
+    }
+    try {
+      await _channel.invokeMethod<void>('prepareAlarm', <String, Object?>{
+        'wavBytes': wavBytes,
+        'soundId': _selectedSoundId,
+      });
+    } on MissingPluginException {
+      // Optional native pre-cache hook; safe no-op in tests or web.
+    } on PlatformException {
+      // Safe no-op.
+    }
   }
 
   @override

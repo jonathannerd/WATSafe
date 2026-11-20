@@ -801,7 +801,7 @@ class _ProtectionDetailsCard extends StatelessWidget {
             _detailLine(
               palette: palette,
               icon: Icons.laptop_mac_rounded,
-              text: 'Keep your laptop lid open while armed. Closing the lid alerts your phone before sleep, and the cloud relay warns you within ~45–55s if an armed laptop goes offline.',
+              text: 'Keep your laptop lid open while armed. Closing the lid alerts your phone before sleep, and the cloud relay warns you within ~30–35s if an armed laptop goes offline.',
             ),
             const SizedBox(height: 8),
             _detailLine(

@@ -1222,13 +1222,28 @@ class EnvironmentPushProviderAdapter implements PushProviderAdapter {
     final isCameraBlocked =
         lowerSummary.contains('camera blocked') ||
         lowerSummary.contains('webcam view obstructed');
+    final isWatchdogTimeout =
+        alert.detectorType == 'heartbeat_watchdog' ||
+        lowerSummary.contains('stopped responding');
+    final isLidClosed = lowerSummary.contains('lid closed');
+    final isEnteringSleep =
+        !isLidClosed &&
+        !isWatchdogTimeout &&
+        (lowerSummary.contains('going to sleep') ||
+            lowerSummary.contains('entering sleep'));
     final body = alert.isTest
         ? 'Test alert from $title — tap to view on Devices.'
-        : (isCameraBlocked
-              ? 'Camera blocked on $title — webcam view obstructed while armed. Tap to view location.'
-              : (alert.kind == 'protectionInterrupted'
-                    ? 'Protection interrupted on $title — tap to view status and location.'
-                    : 'Alarm triggered on $title — movement detected. Tap to view location.'));
+        : (isWatchdogTimeout
+              ? 'Protected laptop stopped responding ($title) — protection interrupted. Tap to view last known location.'
+              : (isCameraBlocked
+                    ? 'Camera blocked on $title — webcam view obstructed while armed. Tap to view location.'
+                    : (isLidClosed
+                          ? 'Protection interrupted on $title — laptop lid closed while armed. Tap to view location.'
+                          : (isEnteringSleep
+                                ? 'Protection interrupted on $title — laptop entering sleep while armed. Tap to view location.'
+                                : (alert.kind == 'protectionInterrupted'
+                                      ? 'Protection interrupted on $title — tap to view status and location.'
+                                      : 'Alarm triggered on $title — movement detected. Tap to view location.')))));
     final nowIso = DateTime.now().toUtc().toIso8601String();
 
     for (final bond in bonds) {
@@ -4408,8 +4423,8 @@ class WatSafeRelayServer {
     this.pairingCodeTtl = const Duration(minutes: 5),
     this.handoffCodeTtl = const Duration(minutes: 10),
     this.hostOnlineTtl = const Duration(seconds: 45),
-    this.armedHeartbeatTimeout = const Duration(seconds: 45),
-    this.watchdogSweepInterval = const Duration(seconds: 10),
+    this.armedHeartbeatTimeout = const Duration(seconds: 30),
+    this.watchdogSweepInterval = const Duration(seconds: 5),
     this.tokenRefreshGraceWindow = const Duration(seconds: 60),
     this.maxFailedPairingAttempts = 5,
     this.failedAttemptWindow = const Duration(minutes: 10),
@@ -4431,8 +4446,8 @@ class WatSafeRelayServer {
     DateTime Function()? clock,
     Duration pairingCodeTtl = const Duration(minutes: 5),
     Duration hostOnlineTtl = const Duration(seconds: 45),
-    Duration armedHeartbeatTimeout = const Duration(seconds: 45),
-    Duration watchdogSweepInterval = const Duration(seconds: 10),
+    Duration armedHeartbeatTimeout = const Duration(seconds: 30),
+    Duration watchdogSweepInterval = const Duration(seconds: 5),
   }) {
     final pgStore = PostgresRelayStore.fromEnvironment(environment);
     return WatSafeRelayServer(
@@ -4494,6 +4509,13 @@ class WatSafeRelayServer {
       <String, DateTime>{};
   final Map<String, DateTime> _lastLocationRefreshAcceptedAtBySession =
       <String, DateTime>{};
+  final Set<String> _pushAcceptedIncidentKeys = <String>{};
+  final Map<
+    String,
+    ({int attempts, DateTime nextRetryAtUtc, String incidentId})
+  >
+  _watchdogPushRetriesByEpisode =
+      <String, ({int attempts, DateTime nextRetryAtUtc, String incidentId})>{};
 
   int get port => _server?.port ?? 0;
   String get storageBackend => _store.backendName;
@@ -4628,8 +4650,12 @@ class WatSafeRelayServer {
               session.hostArmedSessionId!.trim().isNotEmpty)
           ? session.hostArmedSessionId!.trim()
           : 'armed_${session.pairingSessionId}';
+      final episodeKey = '${session.pairingSessionId}::$armedKey';
       if (session.watchdogAlertSentForSession == armedKey) {
-        continue;
+        final retryState = _watchdogPushRetriesByEpisode[episodeKey];
+        if (retryState == null || nowUtc.isBefore(retryState.nextRetryAtUtc)) {
+          continue;
+        }
       }
 
       AlertLocationData? lastKnownLoc = session.hostLatestLocation;
@@ -4648,15 +4674,13 @@ class WatSafeRelayServer {
       }
 
       final nowIso = nowUtc.toIso8601String();
-      final incidentId = 'watchdog_${session.pairingSessionId}_$armedKey';
+      final pendingRetry = _watchdogPushRetriesByEpisode[episodeKey];
+      final incidentId =
+          pendingRetry?.incidentId ??
+          'watchdog_${session.pairingSessionId}_$armedKey';
       final locStatus = lastKnownLoc != null
           ? 'attached'
           : session.hostLocationStatus;
-
-      session.watchdogAlertSentForSession = armedKey;
-      session.watchdogAlertSentAtUtc = nowUtc;
-      session.hostActiveIncidentId ??= incidentId;
-      await _store.saveSession(session);
 
       final activeBonds = await _store.listActiveBondsForSession(
         session.pairingSessionId,
@@ -4669,7 +4693,7 @@ class WatSafeRelayServer {
         detectorType: 'heartbeat_watchdog',
         triggeredAtUtc: nowIso,
         triggerSummary:
-            '${session.hostDisplayName} stopped responding while protection was armed (last contact at ${lastBeat.toIso8601String()}). Missed heartbeats indicate sleep, lid closure, power loss, or lost network connectivity — not confirmed theft.',
+            'Protected laptop stopped responding — ${session.hostDisplayName} missed armed heartbeats (last contact at ${lastBeat.toIso8601String()}). Missed heartbeats indicate sleep, lid closure, power loss, or lost network connectivity, not confirmed theft.',
         createdAtUtc: nowIso,
         hostDisplayName: session.hostDisplayName,
         isTest: false,
@@ -4677,13 +4701,47 @@ class WatSafeRelayServer {
         locationStatus: locStatus,
       );
 
-      await _dispatchRecordedSessionAlert(
+      final dispatchFields = await _dispatchRecordedSessionAlert(
         pairingSessionId: session.pairingSessionId,
         hostDisplayName: session.hostDisplayName,
         recorded: recorded,
         activeBonds: activeBonds,
       );
-      triggeredCount += 1;
+
+      final pushAttempted =
+          (dispatchFields['pushAttemptedCount'] as num?)?.toInt() ?? 0;
+      final pushAccepted =
+          (dispatchFields['pushAcceptedCount'] as num?)?.toInt() ?? 0;
+      final pushFailed =
+          (dispatchFields['pushFailedCount'] as num?)?.toInt() ?? 0;
+      final transientPushFailure =
+          pushAttempted > 0 && pushAccepted == 0 && pushFailed > 0;
+
+      session.watchdogAlertSentForSession = armedKey;
+      session.watchdogAlertSentAtUtc ??= nowUtc;
+      session.hostActiveIncidentId ??= incidentId;
+      await _store.saveSession(session);
+
+      if (transientPushFailure) {
+        final priorAttempts = pendingRetry?.attempts ?? 0;
+        final nextAttempts = priorAttempts + 1;
+        if (nextAttempts <= 3) {
+          final delaySeconds = 10 * (1 << (nextAttempts - 1));
+          _watchdogPushRetriesByEpisode[episodeKey] = (
+            attempts: nextAttempts,
+            nextRetryAtUtc: nowUtc.add(Duration(seconds: delaySeconds)),
+            incidentId: incidentId,
+          );
+        } else {
+          _watchdogPushRetriesByEpisode.remove(episodeKey);
+        }
+      } else {
+        _watchdogPushRetriesByEpisode.remove(episodeKey);
+      }
+      if (!transientPushFailure &&
+          (!recorded.deduplicated || pushAccepted > 0)) {
+        triggeredCount += 1;
+      }
     }
     return triggeredCount;
   }
@@ -4851,13 +4909,19 @@ class WatSafeRelayServer {
     return '$proto://$host';
   }
 
+  Duration _effectiveHostOnlineTtl(RelaySessionRecord? session) =>
+      (session != null && session.hostArmed)
+      ? armedHeartbeatTimeout
+      : hostOnlineTtl;
+
   Map<String, Object?> _hostPresenceFields(
     RelaySessionRecord? session,
     DateTime nowUtc,
   ) {
-    final online = session?.isHostOnlineAt(nowUtc, ttl: hostOnlineTtl) ?? false;
+    final effectiveTtl = _effectiveHostOnlineTtl(session);
+    final online = session?.isHostOnlineAt(nowUtc, ttl: effectiveTtl) ?? false;
     final trackingLive =
-        session?.isHostTrackingLiveAt(nowUtc, ttl: hostOnlineTtl) ?? false;
+        session?.isHostTrackingLiveAt(nowUtc, ttl: effectiveTtl) ?? false;
     final watchdogTriggered =
         session != null &&
         session.hostArmed &&
@@ -4947,10 +5011,11 @@ class WatSafeRelayServer {
     CompanionBondRecord? requesterBond,
   }) async {
     await _maybeSweepLocationRetention(nowUtc);
-    final hostOnline = session.isHostOnlineAt(nowUtc, ttl: hostOnlineTtl);
+    final effectiveTtl = _effectiveHostOnlineTtl(session);
+    final hostOnline = session.isHostOnlineAt(nowUtc, ttl: effectiveTtl);
     final trackingLive = session.isHostTrackingLiveAt(
       nowUtc,
-      ttl: hostOnlineTtl,
+      ttl: effectiveTtl,
     );
     final watchdogInterrupted =
         session.hostArmed &&
@@ -5232,8 +5297,18 @@ class WatSafeRelayServer {
     required List<CompanionBondRecord> activeBonds,
   }) async {
     final dedupKey = '$pairingSessionId::${recorded.alert.incidentId}';
+    final alreadyPushAccepted =
+        _pushAcceptedIncidentKeys.contains(dedupKey) ||
+        recorded.alert.isReceiptConfirmed ||
+        activeBonds.any(
+          (b) =>
+              !b.isRevoked &&
+              b.lastReceiptIncidentId == recorded.alert.incidentId,
+        );
     PushDispatchSummary summary;
-    if (recorded.deduplicated) {
+    final skipPushForDeduplicated =
+        recorded.deduplicated && alreadyPushAccepted;
+    if (skipPushForDeduplicated) {
       summary = PushDispatchSummary(
         activeBondCount: activeBonds.where((b) => !b.isRevoked).length,
         pushAttemptedCount: 0,
@@ -5256,13 +5331,19 @@ class WatSafeRelayServer {
           _syncPairedSnapshot(expiredBond);
         },
       );
+      if (summary.pushAcceptedCount > 0) {
+        _pushAcceptedIncidentKeys.add(dedupKey);
+      }
     }
+    final pushRejected =
+        summary.pushFailedCount > 0 && summary.pushAcceptedCount == 0;
     final delivered =
-        recorded.deduplicated ||
-        summary.pushAcceptedCount > 0 ||
-        (summary.activeBondCount > 0 &&
-            summary.pushFailedCount == 0 &&
-            summary.webBondsMissingPushCount == 0);
+        !pushRejected &&
+        (skipPushForDeduplicated ||
+            summary.pushAcceptedCount > 0 ||
+            (summary.activeBondCount > 0 &&
+                summary.pushFailedCount == 0 &&
+                summary.webBondsMissingPushCount == 0));
     return <String, Object?>{
       'delivered': delivered,
       'alertRecorded': true,
@@ -5270,10 +5351,10 @@ class WatSafeRelayServer {
       'pairingSessionId': pairingSessionId,
       'incidentId': recorded.alert.incidentId,
       'alertSeq': recorded.alert.alertSeq,
-      'deliveryStage': recorded.deduplicated
+      'deliveryStage': skipPushForDeduplicated
           ? 'deduplicated'
           : summary.deliveryStage,
-      'pushAccepted': summary.pushAcceptedCount > 0,
+      'pushAccepted': skipPushForDeduplicated || summary.pushAcceptedCount > 0,
       'receiptConfirmed': recorded.alert.isReceiptConfirmed,
       'receiptConfirmedAtUtc': ?recorded.alert.receiptConfirmedAtUtc,
       'receiptSource': ?recorded.alert.receiptSource,
@@ -6674,22 +6755,48 @@ class WatSafeRelayServer {
                 ?.trim();
         final disarmVerified = body['disarmVerified'] as bool? ?? false;
 
-        session.markHostSeen(
-          nowUtc,
-          displayName: body['hostDisplayName'] as String?,
-          deviceId: body['hostDeviceId'] as String?,
-          protectionState: reqProtectionState,
-        );
-        if (wasOfflineOrTimedOut &&
-            session.watchdogAlertSentForSession != null) {
-          session.hostReconnectedAtUtc = nowUtc;
+        final isUnverifiedDisarmAttempt =
+            session.hostArmed &&
+            !disarmVerified &&
+            (reqArmed == false ||
+                reqProtectionState == 'off' ||
+                reqProtectionState == 'Off' ||
+                reqProtectionState == 'disarmed');
+
+        if (!isUnverifiedDisarmAttempt) {
+          session.markHostSeen(
+            nowUtc,
+            displayName: body['hostDisplayName'] as String?,
+            deviceId: body['hostDeviceId'] as String?,
+            protectionState: reqProtectionState,
+          );
+          if (wasOfflineOrTimedOut &&
+              session.watchdogAlertSentForSession != null) {
+            session.hostReconnectedAtUtc = nowUtc;
+          }
+        } else {
+          final reqName = (body['hostDisplayName'] as String?)?.trim();
+          if (reqName != null && reqName.isNotEmpty) {
+            session.hostDisplayName = reqName;
+          }
+          final reqDevId = (body['hostDeviceId'] as String?)?.trim();
+          if (reqDevId != null && reqDevId.isNotEmpty) {
+            session.hostDeviceId = reqDevId;
+          }
         }
 
         // Only an explicit verified PIN disarm (or arming cancellation before
         // entering armed state) may clear server-side armed watchdog tracking.
         // Unverified `hostArmed: false` payloads (e.g., an out-of-order pre-arm
-        // poll or unauthenticated app restart) must never silently disarm.
+        // poll or unauthenticated app restart) must never silently disarm or
+        // refresh `hostLastSeenAtUtc` to postpone the armed watchdog.
         if (disarmVerified) {
+          final clearedKey = session.hostArmedSessionId;
+          if (clearedKey != null) {
+            _watchdogPushRetriesByEpisode.remove(
+              '${session.pairingSessionId}::$clearedKey',
+            );
+          }
           session.hostArmed = false;
           session.hostArmedSessionId = null;
           session.hostArmedAtUtc = null;
@@ -7013,6 +7120,26 @@ class WatSafeRelayServer {
             (initialLocation != null ? 'attached' : 'notRequested');
 
         final reportedKind = (body['kind'] as String?) ?? 'realDetectorTrigger';
+        final reportedEpId = (body['sessionId'] as String?)?.trim();
+        final armedKey =
+            (session.hostArmedSessionId != null &&
+                session.hostArmedSessionId!.trim().isNotEmpty)
+            ? session.hostArmedSessionId!.trim()
+            : ((reportedEpId != null &&
+                      reportedEpId.isNotEmpty &&
+                      reportedEpId != 'unknown_session')
+                  ? reportedEpId
+                  : 'armed_${session.pairingSessionId}');
+        final episodeKey = '${session.pairingSessionId}::$armedKey';
+        final existingWatchdogIncidentId =
+            'watchdog_${session.pairingSessionId}_$armedKey';
+        final watchdogAlreadyDeliveredEpisode =
+            !isTestIncident &&
+            reportedKind == 'protectionInterrupted' &&
+            session.watchdogAlertSentForSession == armedKey &&
+            session.hostActiveIncidentId == existingWatchdogIncidentId &&
+            !_watchdogPushRetriesByEpisode.containsKey(episodeKey);
+
         session.markHostSeen(
           nowUtc,
           displayName: hostNameOverride,
@@ -7022,6 +7149,47 @@ class WatSafeRelayServer {
                     ? 'interrupted'
                     : 'triggered'),
         );
+        if (initialLocation != null) {
+          session.hostLatestLocation = initialLocation;
+          session.hostLocationStatus = 'attached';
+          session.hostLocationUpdatedAtUtc = nowUtc;
+        } else if (locStatus != 'notRequested') {
+          session.hostLocationStatus = locStatus;
+        }
+
+        if (watchdogAlreadyDeliveredEpisode) {
+          session.hostReconnectedAtUtc ??= nowUtc;
+          await _store.saveSession(session);
+          if (initialLocation != null) {
+            await _store.updateSessionAlertLocation(
+              pairingSessionId: session.pairingSessionId,
+              incidentId: existingWatchdogIncidentId,
+              location: initialLocation,
+              locationStatus: 'attached',
+              locationTrackingState: 'last_known',
+            );
+          }
+          _writeJson(request.response, HttpStatus.ok, <String, Object?>{
+            'delivered': true,
+            'alertRecorded': true,
+            'deduplicated': true,
+            'deduplicatedByWatchdog': true,
+            'pairingSessionId': session.pairingSessionId,
+            'incidentId': existingWatchdogIncidentId,
+            'deliveryStage': 'deduplicated_watchdog',
+            'pushAccepted': true,
+            'receiptConfirmed': false,
+            'dispatchedCount': 0,
+            'pushAttemptedCount': 0,
+            'pushAcceptedCount': 0,
+            'pushDispatchedCount': 0,
+            'pushFailedCount': 0,
+            'webBondsMissingPushCount': 0,
+            'pushFailureReasons': const <String>[],
+          });
+          return;
+        }
+
         if (!isTestIncident) {
           session.hostActiveIncidentId = incidentId;
           if (locStatus == 'pending' || locStatus == 'attached') {
@@ -7029,40 +7197,13 @@ class WatSafeRelayServer {
               boundedAlarmTrackingMaxTtl,
             );
           }
-          // Deduplicate server-side heartbeat watchdog if the laptop already
-          // succeeded in sending an interruption or alarm alert for this episode
-          // (including when the urgent alert arrives ahead of the initial
-          // arming heartbeat).
-          if (reportedKind == 'protectionInterrupted' ||
-              reportedKind == 'realDetectorTrigger' ||
-              reportedKind == 'detectorFailureDuringMonitoring') {
-            final reportedEpId = (body['sessionId'] as String?)?.trim();
-            final armedKey =
-                (session.hostArmedSessionId != null &&
-                    session.hostArmedSessionId!.trim().isNotEmpty)
-                ? session.hostArmedSessionId!.trim()
-                : ((reportedEpId != null &&
-                          reportedEpId.isNotEmpty &&
-                          reportedEpId != 'unknown_session')
-                      ? reportedEpId
-                      : 'armed_${session.pairingSessionId}');
-            if (!session.hostArmed &&
-                (reportedKind == 'protectionInterrupted' ||
-                    reportedKind == 'realDetectorTrigger')) {
-              session.hostArmed = true;
-              session.hostArmedSessionId = armedKey;
-              session.hostArmedAtUtc ??= nowUtc;
-            }
-            session.watchdogAlertSentForSession = armedKey;
-            session.watchdogAlertSentAtUtc = nowUtc;
+          if (!session.hostArmed &&
+              (reportedKind == 'protectionInterrupted' ||
+                  reportedKind == 'realDetectorTrigger')) {
+            session.hostArmed = true;
+            session.hostArmedSessionId = armedKey;
+            session.hostArmedAtUtc ??= nowUtc;
           }
-        }
-        if (initialLocation != null) {
-          session.hostLatestLocation = initialLocation;
-          session.hostLocationStatus = 'attached';
-          session.hostLocationUpdatedAtUtc = nowUtc;
-        } else if (locStatus != 'notRequested') {
-          session.hostLocationStatus = locStatus;
         }
         await _store.saveSession(session);
 
@@ -7093,6 +7234,30 @@ class WatSafeRelayServer {
           recorded: recorded,
           activeBonds: activeBonds,
         );
+
+        // Mark the episode satisfied for the server-side heartbeat watchdog
+        // ONLY when the alert push was accepted (or no push bonds were
+        // attempted), so if an initial pre-sleep push fails transiently at the
+        // push gateway, the backend watchdog still follows up independently!
+        if (!isTestIncident &&
+            (reportedKind == 'protectionInterrupted' ||
+                reportedKind == 'realDetectorTrigger' ||
+                reportedKind == 'detectorFailureDuringMonitoring')) {
+          final pushAttempted =
+              (dispatchFields['pushAttemptedCount'] as num?)?.toInt() ?? 0;
+          final pushAccepted =
+              (dispatchFields['pushAcceptedCount'] as num?)?.toInt() ?? 0;
+          final pushFailed =
+              (dispatchFields['pushFailedCount'] as num?)?.toInt() ?? 0;
+          final transientPushFailure =
+              pushAttempted > 0 && pushAccepted == 0 && pushFailed > 0;
+          if (!transientPushFailure) {
+            session.watchdogAlertSentForSession = armedKey;
+            session.watchdogAlertSentAtUtc = nowUtc;
+            _watchdogPushRetriesByEpisode.remove(episodeKey);
+            await _store.saveSession(session);
+          }
+        }
 
         _writeJson(request.response, HttpStatus.ok, dispatchFields);
         return;
@@ -7406,7 +7571,7 @@ class WatSafeRelayServer {
           'locationStatus': session.hostLocationStatus,
           'hostTrackingLive': session.isHostTrackingLiveAt(
             nowUtc,
-            ttl: hostOnlineTtl,
+            ttl: _effectiveHostOnlineTtl(session),
           ),
           'updatedSeq': ?updatedIncident?.effectiveSeq,
         });
@@ -7613,7 +7778,11 @@ class WatSafeRelayServer {
                 .toLowerCase();
         final wantRefresh = rawWantRefresh == '1' || rawWantRefresh == 'true';
         var hostLocationRefreshQueued = false;
-        if (wantRefresh && session.isHostOnlineAt(nowUtc, ttl: hostOnlineTtl)) {
+        if (wantRefresh &&
+            session.isHostOnlineAt(
+              nowUtc,
+              ttl: _effectiveHostOnlineTtl(session),
+            )) {
           final lastAccepted =
               _lastLocationRefreshAcceptedAtBySession[session.pairingSessionId];
           if (lastAccepted == null ||

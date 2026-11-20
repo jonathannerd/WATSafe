@@ -109,6 +109,9 @@ Future<String?> readPersistedJson(
   return file.readAsString();
 }
 
+int _atomicWriteSeq = 0;
+final Set<String> _tightenedPaths = <String>{};
+
 Future<void> writePersistedJson(
   String filename,
   String content, {
@@ -117,11 +120,18 @@ Future<void> writePersistedJson(
   final dir = await _resolveStorageDir(storageDirectory);
   await dir.create(recursive: true);
   final file = File('${dir.path}${Platform.pathSeparator}$filename');
-  final tmp = File('${file.path}.tmp');
+  final tmp = File(
+    '${file.path}.tmp.${DateTime.now().microsecondsSinceEpoch}_${++_atomicWriteSeq}',
+  );
   await tmp.writeAsString(content, flush: true);
-  await _tightenPosixPermissions(tmp);
-  await tmp.rename(file.path);
-  await _tightenPosixPermissions(file);
+  if (!_tightenedPaths.contains(file.path)) {
+    await _tightenPosixPermissions(tmp);
+    await tmp.rename(file.path);
+    await _tightenPosixPermissions(file);
+    _tightenedPaths.add(file.path);
+  } else {
+    await tmp.rename(file.path);
+  }
 }
 
 Future<String?> readSecurePersistedSecret(

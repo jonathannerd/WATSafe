@@ -65,10 +65,10 @@ class CompanionPwaAssets {
     });
   }
 
-  static const String serviceWorkerVersion = '2026.11.18-v8';
+  static const String serviceWorkerVersion = '2026.11.19-v9';
 
   static const String serviceWorkerJs = r'''
-const SHELL_CACHE = 'watsafe-shell-2026.11.18-v8';
+const SHELL_CACHE = 'watsafe-shell-2026.11.19-v9';
 const SHELL_URLS = [
   '/companion',
   '/manifest.webmanifest',
@@ -533,8 +533,6 @@ self.addEventListener('notificationclick', (event) => {
   <link rel="icon" type="image/png" href="/favicon.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="anonymous">
-  <script defer src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin="anonymous"></script>
   <title>WATSafe Phone Companion</title>
   <style>
     :root {
@@ -850,12 +848,14 @@ self.addEventListener('notificationclick', (event) => {
     .map-stage {
       position: relative;
       width: 100%;
-      height: clamp(320px, 47vh, 480px);
+      height: clamp(356px, 53vh, 520px);
       border-radius: 12px;
       overflow: hidden;
       border: 1.5px solid var(--border);
-      background: #EEF2F6;
+      background: #E5E7EB;
       touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
     }
     .selected-device-card {
       border-color: var(--accent-border);
@@ -867,21 +867,14 @@ self.addEventListener('notificationclick', (event) => {
       }
       .devices-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1.45fr) minmax(252px, 0.85fr);
+        grid-template-columns: minmax(0, 1.48fr) minmax(252px, 0.85fr);
         align-items: start;
         gap: 12px;
       }
       .devices-grid .card { margin-bottom: 0; }
       .map-stage {
-        height: clamp(185px, 52vh, 380px);
+        height: clamp(210px, 58vh, 390px);
       }
-    }
-    .maplibregl-ctrl-attrib.maplibregl-compact {
-      min-height: 20px;
-      margin: 0 6px 6px 0 !important;
-      background-color: rgba(255, 255, 255, 0.86) !important;
-      font-size: 10px !important;
-      line-height: 1.25 !important;
     }
     .alarm-banner {
       background: var(--alert-bg);
@@ -1087,18 +1080,39 @@ self.addEventListener('notificationclick', (event) => {
       margin: 0;
       flex-shrink: 0;
     }
+    .map-tile-layer {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      z-index: 1;
+      pointer-events: none;
+    }
+    .map-tile-img {
+      position: absolute;
+      left: 0;
+      top: 0;
+      max-width: none;
+      user-select: none;
+      -webkit-user-drag: none;
+      pointer-events: none;
+      filter: none;
+      will-change: transform;
+    }
     .map-canvas {
       position: absolute;
       inset: 0;
       width: 100%;
       height: 100%;
       display: block;
+      z-index: 2;
+      pointer-events: none;
     }
-    .map-vector-host {
+    .map-markers-layer {
       position: absolute;
       inset: 0;
-      width: 100%;
-      height: 100%;
+      overflow: hidden;
+      z-index: 3;
+      pointer-events: none;
     }
     .map-overlay-top {
       position: absolute;
@@ -1120,6 +1134,18 @@ self.addEventListener('notificationclick', (event) => {
       gap: 6px;
       z-index: 5;
     }
+    @media (max-height: 440px) {
+      .map-overlay-top { right: 92px; }
+      .map-controls {
+        display: grid;
+        grid-template-columns: repeat(2, 36px);
+        gap: 5px;
+      }
+      .map-controls .map-ctrl-btn {
+        width: 36px;
+        height: 36px;
+      }
+    }
     .map-ctrl-btn {
       width: 40px;
       height: 40px;
@@ -1133,32 +1159,97 @@ self.addEventListener('notificationclick', (event) => {
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.2);
-      transition: background-color 0.15s, border-color 0.15s;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.22);
+      transition: background-color 0.15s, border-color 0.15s, opacity 0.15s;
     }
-    .map-ctrl-btn:hover,
-    .map-ctrl-btn:active {
+    .map-ctrl-btn:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    .map-ctrl-btn:hover:not(:disabled),
+    .map-ctrl-btn:active:not(:disabled) {
       background: var(--elevated);
       border-color: var(--accent);
+    }
+    .map-scale-bar {
+      position: absolute;
+      bottom: 6px;
+      left: 8px;
+      z-index: 4;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.9);
+      color: #1E293B;
+      border: 1px solid rgba(15, 23, 42, 0.14);
+      border-radius: 5px;
+      padding: 2px 7px;
+      font-size: 10px;
+      font-weight: 700;
+      pointer-events: none;
+    }
+    .map-scale-line {
+      height: 5px;
+      border-left: 1.5px solid #334155;
+      border-right: 1.5px solid #334155;
+      border-bottom: 1.5px solid #334155;
     }
     .map-attrib {
       position: absolute;
       bottom: 6px;
       right: 8px;
-      left: 8px;
       width: fit-content;
-      margin-left: auto;
-      max-width: calc(100% - 16px);
+      max-width: calc(100% - 104px);
       z-index: 4;
-      background: rgba(255, 255, 255, 0.9);
+      background: rgba(255, 255, 255, 0.88);
       color: #334155;
-      border: 1px solid rgba(15, 23, 42, 0.1);
-      font-size: 10px;
-      padding: 2px 7px;
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      font-size: 9.5px;
+      font-weight: 600;
+      padding: 2px 6px;
       border-radius: 5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
       pointer-events: none;
     }
+    .map-loading-pill {
+      position: absolute;
+      left: 50%;
+      bottom: 34px;
+      transform: translateX(-50%);
+      z-index: 5;
+      background: rgba(255, 255, 255, 0.95);
+      color: #0F172A;
+      border: 1px solid rgba(15, 23, 42, 0.16);
+      border-radius: 999px;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
+      pointer-events: none;
+    }
+    .map-error-state {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      top: 56%;
+      transform: translateY(-50%);
+      max-width: 268px;
+      margin: 0 auto;
+      z-index: 6;
+      background: var(--surface);
+      color: var(--text);
+      border: 1.5px solid var(--border);
+      border-radius: 14px;
+      padding: 13px 15px;
+      text-align: center;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
+    }
     .map-pin-wrap {
+      position: absolute;
+      left: 0;
+      top: 0;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -1166,8 +1257,9 @@ self.addEventListener('notificationclick', (event) => {
       min-width: 44px;
       min-height: 44px;
       padding: 4px;
-      z-index: 2;
+      z-index: 3;
       cursor: pointer;
+      pointer-events: auto;
       user-select: none;
       -webkit-tap-highlight-color: transparent;
     }
@@ -3547,20 +3639,22 @@ self.addEventListener('notificationclick', (event) => {
     }
 
     function formatRelativeAge(iso, isLastKnown) {
-      if (!iso) return 'Update time unavailable';
+      if (!iso) return isLastKnown ? 'Last known' : 'Time unavailable';
       const ts = new Date(iso).getTime();
-      if (isNaN(ts)) return isLastKnown ? 'Last known recently' : 'Updated recently';
+      if (isNaN(ts)) return isLastKnown ? 'Last known' : 'Updated recently';
       const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
-      const prefix = isLastKnown ? 'Last known · ' : 'Updated ';
       if (sec < 60) return isLastKnown ? 'Last known · just now' : 'Updated just now';
       const min = Math.max(1, Math.floor(sec / 60));
-      if (min === 1) return prefix + '1 minute ago';
-      if (min < 60) return prefix + min + ' minutes ago';
+      if (min < 60) {
+        return isLastKnown ? ('Last known · ' + min + ' min ago') : (min + ' min ago');
+      }
       const hr = Math.floor(min / 60);
-      if (hr === 1) return prefix + '1 hour ago';
-      if (hr < 24) return prefix + hr + ' hours ago';
+      if (hr < 24) {
+        return isLastKnown ? ('Last known · ' + hr + ' hr ago') : (hr + ' hr ago');
+      }
       const days = Math.floor(hr / 24);
-      return prefix + days + (days === 1 ? ' day ago' : ' days ago');
+      const dayLabel = days + (days === 1 ? ' day ago' : ' days ago');
+      return isLastKnown ? ('Last known · ' + dayLabel) : dayLabel;
     }
 
     function formatAccuracyLabel(loc) {
@@ -3586,7 +3680,7 @@ self.addEventListener('notificationclick', (event) => {
       if (rawTracking === 'reconnecting') {
         return { label: 'Reconnecting', cls: 'pill-warn' };
       }
-      return { label: 'Last known location', cls: 'pill-map-light' };
+      return { label: 'Last known', cls: 'pill-map-light' };
     }
 
     function getReadableLocationSummary(loc) {
@@ -3908,14 +4002,37 @@ self.addEventListener('notificationclick', (event) => {
       return offsets;
     }
 
+    const DEFAULT_OSM_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+
+    function resolveOsmTileTemplate() {
+      if (typeof window !== 'undefined' && typeof window.__WATSAFE_OSM_TILE_TEMPLATE === 'string' && window.__WATSAFE_OSM_TILE_TEMPLATE.trim()) {
+        return window.__WATSAFE_OSM_TILE_TEMPLATE.trim();
+      }
+      return DEFAULT_OSM_TILE_URL;
+    }
+
+    function computeScaleBarMetrics(lat, zoom) {
+      const mpp = Math.max(0.02, (156543.03392 * Math.cos(Math.max(-85, Math.min(85, Number(lat) || 0)) * Math.PI / 180)) / Math.pow(2, zoom));
+      const targetMeters = mpp * 68;
+      const steps = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+      let chosen = steps[0];
+      for (let i = 0; i < steps.length; i++) {
+        if (steps[i] <= targetMeters * 1.35) {
+          chosen = steps[i];
+        } else {
+          break;
+        }
+      }
+      const widthPx = Math.max(28, Math.min(96, Math.round(chosen / mpp)));
+      const label = chosen >= 1000 ? ((chosen / 1000) + ' km') : (chosen + ' m');
+      return { widthPx: widthPx, label: label };
+    }
+
     function destroyMapController(mapKey) {
       const prev = mapControllers[mapKey];
       if (!prev) return;
-      if (Array.isArray(prev.mlMarkers)) {
-        prev.mlMarkers.forEach(m => { try { m.remove(); } catch (_) {} });
-      }
-      if (prev.mlMap) {
-        try { prev.mlMap.remove(); } catch (_) {}
+      if (typeof prev.cleanup === 'function') {
+        try { prev.cleanup(); } catch (_) {}
       }
       delete mapControllers[mapKey];
     }
@@ -3923,78 +4040,100 @@ self.addEventListener('notificationclick', (event) => {
     function mountInteractiveMap(stageEl, mapKey, opts) {
       if (!stageEl || !opts || !isValidCoord(opts.primary)) return null;
       const existing = mapControllers[mapKey];
-      if (existing && existing.stageEl === stageEl && stageEl.contains(existing.canvas)) {
+      if (existing && existing.stageEl === stageEl && stageEl.contains(existing.tileLayerEl)) {
         existing.update(opts);
         return existing;
       }
       destroyMapController(mapKey);
 
       const initialAcc = Number(opts.primary.accuracyMeters || (opts.primary.isApproximate ? 180 : 25));
-      let zoom = initialAcc >= 600 ? 13.0 : (initialAcc >= 180 ? 14.3 : 15.6);
+      let zoom = initialAcc >= 600 ? 13.0 : (initialAcc >= 180 ? 14.5 : 16.0);
       let centerLat = Number(opts.primary.latitude);
       let centerLon = Number(opts.primary.longitude);
 
       stageEl.innerHTML =
+        '<div class="map-tile-layer"></div>' +
         '<canvas class="map-canvas"></canvas>' +
-        '<div class="map-vector-host"></div>' +
+        '<div class="map-markers-layer"></div>' +
         '<div class="map-overlay-top"></div>' +
         '<div class="map-controls">' +
-        '<button type="button" class="map-ctrl-btn" data-act="in" title="Zoom in">+</button>' +
-        '<button type="button" class="map-ctrl-btn" data-act="out" title="Zoom out">−</button>' +
+        '<button type="button" class="map-ctrl-btn" data-act="in" title="Zoom in" aria-label="Zoom in">+</button>' +
+        '<button type="button" class="map-ctrl-btn" data-act="out" title="Zoom out" aria-label="Zoom out">−</button>' +
+        '<button type="button" class="map-ctrl-btn" data-act="center" title="Center on selected device" aria-label="Center on selected device">' +
+        '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="7"></circle><circle cx="12" cy="12" r="2.2" fill="currentColor"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path></svg>' +
+        '</button>' +
+        '<button type="button" class="map-ctrl-btn" data-act="fit" title="Fit all devices" aria-label="Fit all devices">' +
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"></path></svg>' +
+        '</button>' +
         '</div>' +
-        '<details class="map-fallback-attrib" style="position:absolute;right:8px;bottom:8px;z-index:4;background:rgba(255,255,255,0.88);color:#334155;border-radius:12px;padding:2px 7px;font-size:10px;border:1px solid rgba(15,23,42,0.12);">' +
-        '<summary style="cursor:pointer;list-style:none;font-weight:700;user-select:none;" aria-label="Map attribution">ⓘ</summary>' +
-        '<span style="margin-left:4px;">OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors</span>' +
-        '</details>';
+        '<div class="map-loading-pill hidden" role="status">Loading map…</div>' +
+        '<div class="map-error-state hidden" role="alert">' +
+        '<div style="font-weight:800;font-size:15px;margin-bottom:4px;">Map couldn’t load</div>' +
+        '<div style="font-size:12.5px;color:var(--muted);line-height:1.4;margin-bottom:10px;">Street tiles couldn’t be reached right now. Device status and last-known timestamps remain available below.</div>' +
+        '<button type="button" class="btn btn-primary btn-compact" data-act="retry-map">Retry</button>' +
+        '</div>' +
+        '<div class="map-scale-bar"><span class="map-scale-text">100 m</span><span class="map-scale-line" style="width:52px;"></span></div>' +
+        '<div class="map-attrib">© OpenStreetMap contributors</div>';
 
+      const tileLayerEl = stageEl.querySelector('.map-tile-layer');
       const canvas = stageEl.querySelector('.map-canvas');
-      const vectorHost = stageEl.querySelector('.map-vector-host');
+      const markersLayerEl = stageEl.querySelector('.map-markers-layer');
       const overlayTop = stageEl.querySelector('.map-overlay-top');
-      const fallbackAttrib = stageEl.querySelector('.map-fallback-attrib');
+      const loadingPillEl = stageEl.querySelector('.map-loading-pill');
+      const errorStateEl = stageEl.querySelector('.map-error-state');
+      const scaleTextEl = stageEl.querySelector('.map-scale-text');
+      const scaleLineEl = stageEl.querySelector('.map-scale-line');
+      const fitBtnEl = stageEl.querySelector('[data-act="fit"]');
 
-      const ctrl = {
-        stageEl: stageEl,
-        canvas: canvas,
-        mlMap: null,
-        mlReady: false,
-        mlMarkers: [],
-        opts: opts,
-        userInteracted: false,
-        lastLocatedSig: '',
-        centerOnDevice: targetLoc => {
-          const loc = isValidCoord(targetLoc) ? targetLoc : ctrl.opts.primary;
-          if (!isValidCoord(loc)) return;
-          const acc = Number(loc.accuracyMeters || (loc.isApproximate ? 180 : 25));
-          zoom = Math.max(zoom, acc >= 600 ? 13.2 : (acc >= 180 ? 14.5 : 15.6));
-          centerLat = Number(loc.latitude);
-          centerLon = Number(loc.longitude);
-          if (ctrl.mlMap && ctrl.mlReady) {
-            ctrl.mlMap.flyTo({ center: [centerLon, centerLat], zoom: zoom, essential: true });
-          } else {
-            drawCanvasFallback();
-          }
-        },
-        update: nextOpts => {
-          ctrl.opts = nextOpts;
-          renderTopBadges();
-          const markers = effectiveMarkers(nextOpts);
-          const sig = markers.map(m => m.deviceId).join('|');
-          if (!ctrl.userInteracted && sig !== ctrl.lastLocatedSig) {
-            ctrl.lastLocatedSig = sig;
-            fitViewportToMarkers(markers, nextOpts.primary);
-          }
-          drawCanvasFallback();
-          if (ctrl.mlMap && ctrl.mlReady) {
-            syncMapLibreOverlays();
-          }
-        },
-        redrawTheme: () => {
-          drawCanvasFallback();
-          if (ctrl.mlMap && ctrl.mlReady) {
-            syncMapLibreOverlays();
-          }
+      const tilePool = new Map();
+      let renderTick = 0;
+      let retryNonce = 0;
+      let totalLoadedEver = 0;
+      let visibleLoadedCount = 0;
+      let visiblePendingCount = 0;
+      let visibleErrorCount = 0;
+      let basemapFailed = false;
+      let loadTimeoutId = null;
+      let disposed = false;
+
+      function scheduleLoadWatchdog() {
+        if (loadTimeoutId) {
+          clearTimeout(loadTimeoutId);
+          loadTimeoutId = null;
         }
-      };
+        if (visibleLoadedCount > 0 || basemapFailed) return;
+        loadTimeoutId = setTimeout(() => {
+          loadTimeoutId = null;
+          if (!disposed && visibleLoadedCount === 0 && totalLoadedEver === 0) {
+            basemapFailed = true;
+            syncLoadingAndErrorUi();
+          }
+        }, 8000);
+      }
+
+      function syncLoadingAndErrorUi() {
+        if (disposed) return;
+        const offlineNoTiles = (typeof navigator !== 'undefined' && navigator.onLine === false && visibleLoadedCount === 0 && totalLoadedEver === 0);
+        if (offlineNoTiles) {
+          basemapFailed = true;
+        } else if (visibleLoadedCount > 0) {
+          basemapFailed = false;
+        } else if (visiblePendingCount === 0 && visibleErrorCount > 0 && totalLoadedEver === 0) {
+          basemapFailed = true;
+        }
+        const showErr = basemapFailed && visibleLoadedCount === 0;
+        const showLoading = !showErr && visibleLoadedCount === 0 && visiblePendingCount > 0;
+        if (loadingPillEl) loadingPillEl.classList.toggle('hidden', !showLoading);
+        if (errorStateEl) errorStateEl.classList.toggle('hidden', !showErr);
+      }
+
+      function getStageSize() {
+        const rect = stageEl.getBoundingClientRect();
+        return {
+          w: Math.max(240, rect.width || stageEl.clientWidth || 344),
+          h: Math.max(190, rect.height || stageEl.clientHeight || 360)
+        };
+      }
 
       function effectiveMarkers(o) {
         if (Array.isArray(o.markers) && o.markers.length > 0) {
@@ -4012,6 +4151,7 @@ self.addEventListener('notificationclick', (event) => {
       }
 
       function fitViewportToMarkers(markers, fallbackPrimary) {
+        const sz = getStageSize();
         if (markers.length >= 2) {
           let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
           markers.forEach(m => {
@@ -4022,33 +4162,45 @@ self.addEventListener('notificationclick', (event) => {
             if (lo < minLon) minLon = lo;
             if (lo > maxLon) maxLon = lo;
           });
-          centerLat = (minLat + maxLat) / 2;
-          centerLon = (minLon + maxLon) / 2;
+          const pNorthWest = mercatorProject(maxLat, minLon, 256);
+          const pSouthEast = mercatorProject(minLat, maxLon, 256);
+          const midWorld = {
+            x: (pNorthWest.x + pSouthEast.x) / 2,
+            y: (pNorthWest.y + pSouthEast.y) / 2
+          };
+          const unproj = mercatorUnproject(midWorld.x, midWorld.y, 256);
+          centerLat = unproj.lat;
+          centerLon = unproj.lon;
+
+          const dx0 = Math.abs(pSouthEast.x - pNorthWest.x);
+          const dy0 = Math.abs(pSouthEast.y - pNorthWest.y);
+          const availW = Math.max(110, sz.w - 132);
+          const availH = Math.max(96, sz.h - 138);
+          if (dx0 < 1e-6 && dy0 < 1e-6) {
+            zoom = 16.0;
+          } else {
+            const zx = dx0 > 1e-6 ? Math.log2(availW / dx0) : 16.0;
+            const zy = dy0 > 1e-6 ? Math.log2(availH / dy0) : 16.0;
+            zoom = Math.max(3.0, Math.min(16.0, Math.floor(Math.min(zx, zy) * 2) / 2));
+          }
           const spanMeters = haversineMeters(
             { latitude: minLat, longitude: minLon },
             { latitude: maxLat, longitude: maxLon }
           );
-          if (spanMeters < 60) zoom = 16.0;
-          else if (spanMeters < 350) zoom = 15.0;
-          else if (spanMeters < 1500) zoom = 13.6;
-          else if (spanMeters < 8000) zoom = 11.8;
-          else zoom = 9.8;
-          if (ctrl.mlMap && ctrl.mlReady && spanMeters >= 60) {
-            try {
-              ctrl.mlMap.fitBounds([[minLon, minLat], [maxLon, maxLat]], {
-                padding: { top: 54, bottom: 54, left: 48, right: 56 },
-                maxZoom: 16,
-                duration: 450
-              });
-              return;
-            } catch (_) {}
+          if (spanMeters < 90) {
+            zoom = 16.0;
           }
+        } else if (markers.length === 1 && isValidCoord(markers[0].location)) {
+          const loc = markers[0].location;
+          const acc = Number(loc.accuracyMeters || (loc.isApproximate ? 180 : 25));
+          centerLat = Number(loc.latitude);
+          centerLon = Number(loc.longitude);
+          zoom = acc >= 600 ? 13.0 : (acc >= 180 ? 15.0 : 16.0);
         } else if (isValidCoord(fallbackPrimary)) {
+          const acc = Number(fallbackPrimary.accuracyMeters || (fallbackPrimary.isApproximate ? 180 : 25));
           centerLat = Number(fallbackPrimary.latitude);
           centerLon = Number(fallbackPrimary.longitude);
-        }
-        if (ctrl.mlMap && ctrl.mlReady) {
-          ctrl.mlMap.jumpTo({ center: [centerLon, centerLat], zoom: zoom });
+          zoom = acc >= 600 ? 13.0 : (acc >= 180 ? 15.0 : 16.0);
         }
       }
 
@@ -4067,69 +4219,213 @@ self.addEventListener('notificationclick', (event) => {
         overlayTop.innerHTML = html;
       }
 
-      function drawCanvasFallback() {
-        const o = ctrl.opts;
-        const rect = stageEl.getBoundingClientRect();
-        const w = Math.max(240, rect.width || 340);
-        const h = Math.max(200, rect.height || 360);
-        const dpr = window.devicePixelRatio || 1;
-        canvas.width = Math.round(w * dpr);
-        canvas.height = Math.round(h * dpr);
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      function buildTileUrl(z, wrappedX, ty) {
+        const tpl = resolveOsmTileTemplate();
+        const base = tpl
+          .replace('{z}', String(z))
+          .replace('{x}', String(wrappedX))
+          .replace('{y}', String(ty));
+        if (retryNonce > 0) {
+          return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'r=' + retryNonce;
+        }
+        return base;
+      }
 
-        ctx.fillStyle = '#EEF2F6';
-        ctx.fillRect(0, 0, w, h);
+      function syncTiles(sz) {
+        renderTick += 1;
+        const tileZ = Math.max(3, Math.min(19, Math.round(zoom)));
+        const tileCount = Math.pow(2, tileZ);
+        const scale = Math.pow(2, zoom - tileZ);
+        const tileDrawPx = 256 * scale;
+        const worldSize = 256 * Math.pow(2, zoom);
+        const cw = mercatorProject(centerLat, centerLon, worldSize);
+        const topLeftX = cw.x - sz.w / 2;
+        const topLeftY = cw.y - sz.h / 2;
+
+        const startTx = Math.floor(topLeftX / tileDrawPx);
+        const endTx = Math.floor((topLeftX + sz.w) / tileDrawPx);
+        const startTy = Math.floor(topLeftY / tileDrawPx);
+        const endTy = Math.floor((topLeftY + sz.h) / tileDrawPx);
+
+        visibleLoadedCount = 0;
+        visiblePendingCount = 0;
+        visibleErrorCount = 0;
+
+        const activeKeys = new Set();
+        const offlineNow = (typeof navigator !== 'undefined' && navigator.onLine === false);
+
+        for (let tx = startTx; tx <= endTx; tx++) {
+          for (let ty = startTy; ty <= endTy; ty++) {
+            if (ty < 0 || ty >= tileCount) continue;
+            const wrappedX = ((tx % tileCount) + tileCount) % tileCount;
+            const instKey = tileZ + '/' + tx + '/' + ty;
+            activeKeys.add(instKey);
+
+            let entry = tilePool.get(instKey);
+            if (!entry) {
+              const img = document.createElement('img');
+              img.className = 'map-tile-img';
+              img.alt = '';
+              img.decoding = 'async';
+              img.draggable = false;
+              entry = {
+                key: instKey,
+                el: img,
+                z: tileZ,
+                tx: tx,
+                ty: ty,
+                wrappedX: wrappedX,
+                status: offlineNow ? 'error' : 'loading',
+                lastTick: renderTick
+              };
+              if (!offlineNow) {
+                img.onload = () => {
+                  if (disposed || entry.removed) return;
+                  entry.status = 'loaded';
+                  totalLoadedEver += 1;
+                  entry.el.style.opacity = '1';
+                  refreshTileCountsAndPrune();
+                };
+                img.onerror = () => {
+                  if (disposed || entry.removed) return;
+                  entry.status = 'error';
+                  entry.el.style.display = 'none';
+                  refreshTileCountsAndPrune();
+                };
+                img.style.opacity = '0';
+                img.style.transition = 'opacity 0.14s ease';
+                img.src = buildTileUrl(tileZ, wrappedX, ty);
+              } else {
+                img.style.display = 'none';
+              }
+              tileLayerEl.appendChild(img);
+              tilePool.set(instKey, entry);
+            }
+
+            entry.lastTick = renderTick;
+            if (entry.status !== 'error') {
+              entry.el.style.display = 'block';
+              entry.el.style.zIndex = '2';
+              const leftPx = tx * tileDrawPx - topLeftX;
+              const topPx = ty * tileDrawPx - topLeftY;
+              entry.el.style.width = (tileDrawPx + 0.5).toFixed(2) + 'px';
+              entry.el.style.height = (tileDrawPx + 0.5).toFixed(2) + 'px';
+              entry.el.style.transform = 'translate3d(' + leftPx.toFixed(2) + 'px,' + topPx.toFixed(2) + 'px,0)';
+            }
+
+            if (entry.status === 'loaded') visibleLoadedCount += 1;
+            else if (entry.status === 'loading') visiblePendingCount += 1;
+            else visibleErrorCount += 1;
+          }
+        }
+
+        const allCurrentLoaded = (visiblePendingCount === 0 && visibleLoadedCount > 0);
+
+        tilePool.forEach((entry, key) => {
+          if (activeKeys.has(key)) return;
+          if (!allCurrentLoaded && entry.status === 'loaded' && Math.abs(entry.z - tileZ) === 1) {
+            const entryScale = Math.pow(2, zoom - entry.z);
+            const entryDrawPx = 256 * entryScale;
+            const lx = entry.tx * entryDrawPx - topLeftX;
+            const ly = entry.ty * entryDrawPx - topLeftY;
+            if (lx + entryDrawPx > -64 && lx < sz.w + 64 && ly + entryDrawPx > -64 && ly < sz.h + 64) {
+              entry.el.style.display = 'block';
+              entry.el.style.zIndex = '1';
+              entry.el.style.width = (entryDrawPx + 0.75).toFixed(2) + 'px';
+              entry.el.style.height = (entryDrawPx + 0.75).toFixed(2) + 'px';
+              entry.el.style.transform = 'translate3d(' + lx.toFixed(2) + 'px,' + ly.toFixed(2) + 'px,0)';
+              return;
+            }
+          }
+          entry.el.style.display = 'none';
+        });
+
+        if (tilePool.size > 140) {
+          const candidates = [];
+          tilePool.forEach((entry, key) => {
+            if (!activeKeys.has(key)) candidates.push({ key: key, lastTick: entry.lastTick });
+          });
+          candidates.sort((a, b) => a.lastTick - b.lastTick);
+          const toDrop = tilePool.size - 110;
+          for (let i = 0; i < Math.min(toDrop, candidates.length); i++) {
+            const victim = tilePool.get(candidates[i].key);
+            if (victim) {
+              victim.removed = true;
+              try { victim.el.remove(); } catch (_) {}
+              tilePool.delete(candidates[i].key);
+            }
+          }
+        }
+
+        scheduleLoadWatchdog();
+        syncLoadingAndErrorUi();
+      }
+
+      function refreshTileCountsAndPrune() {
+        if (disposed) return;
+        syncTiles(getStageSize());
+      }
+
+      function renderOverlayAndMarkers(sz) {
+        const o = ctrl.opts;
+        const dpr = window.devicePixelRatio || 1;
+        const targetCw = Math.round(sz.w * dpr);
+        const targetCh = Math.round(sz.h * dpr);
+        if (canvas.width !== targetCw || canvas.height !== targetCh) {
+          canvas.width = targetCw;
+          canvas.height = targetCh;
+        }
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.clearRect(0, 0, sz.w, sz.h);
+        }
 
         const worldSize = 256 * Math.pow(2, zoom);
         const cw = mercatorProject(centerLat, centerLon, worldSize);
-        const step = 48;
-        const sx = -((cw.x % step) + step) % step;
-        const sy = -((cw.y % step) + step) % step;
-
-        ctx.fillStyle = '#E2F1E8';
-        ctx.fillRect(sx + step * 0.15, sy + step * 0.15, step * 1.7, step * 1.2);
-        ctx.fillRect(w - step * 2.2, h - step * 1.8, step * 1.5, step * 1.1);
-
-        for (let x = sx, i = 0; x < w + step; x += step, i++) {
-          ctx.strokeStyle = i % 3 === 0 ? '#CBD5E1' : '#FFFFFF';
-          ctx.lineWidth = i % 3 === 0 ? 4.5 : 2.5;
-          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-        }
-        for (let y = sy, i = 0; y < h + step; y += step, i++) {
-          ctx.strokeStyle = i % 3 === 0 ? '#CBD5E1' : '#FFFFFF';
-          ctx.lineWidth = i % 3 === 0 ? 4.5 : 2.5;
-          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-        }
-
         const toScr = loc => {
           const p = mercatorProject(loc.latitude, loc.longitude, worldSize);
-          return { x: w / 2 + (p.x - cw.x), y: h / 2 + (p.y - cw.y) };
+          return { x: sz.w / 2 + (p.x - cw.x), y: sz.h / 2 + (p.y - cw.y) };
         };
 
-        const trail = Array.isArray(o.trail) ? o.trail.filter(isValidCoord) : [];
-        if (trail.length >= 2) {
-          ctx.strokeStyle = '#D97706';
-          ctx.lineWidth = 3.5;
-          ctx.beginPath();
-          trail.forEach((pt, idx) => {
-            const sp = toScr(pt);
-            if (idx === 0) ctx.moveTo(sp.x, sp.y); else ctx.lineTo(sp.x, sp.y);
-          });
-          ctx.stroke();
-        }
+        if (ctx) {
+          const trail = Array.isArray(o.trail) ? o.trail.filter(isValidCoord) : [];
+          if (trail.length >= 2) {
+            ctx.strokeStyle = '#D97706';
+            ctx.lineWidth = 3.5;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            trail.forEach((pt, idx) => {
+              const sp = toScr(pt);
+              if (idx === 0) ctx.moveTo(sp.x, sp.y); else ctx.lineTo(sp.x, sp.y);
+            });
+            ctx.stroke();
+          }
 
-        if (o.alarmOrigin && isValidCoord(o.alarmOrigin) && differsMeaningfully(o.primary, o.alarmOrigin)) {
-          const ap = toScr(o.alarmOrigin);
-          ctx.fillStyle = '#D97706';
-          ctx.beginPath(); ctx.arc(ap.x, ap.y, 6.5, 0, Math.PI * 2); ctx.fill();
-          ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2; ctx.stroke();
+          if (o.alarmOrigin && isValidCoord(o.alarmOrigin) && differsMeaningfully(o.primary, o.alarmOrigin)) {
+            const ap = toScr(o.alarmOrigin);
+            ctx.fillStyle = '#D97706';
+            ctx.beginPath(); ctx.arc(ap.x, ap.y, 6.5, 0, Math.PI * 2); ctx.fill();
+            ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2; ctx.stroke();
+          }
         }
 
         const markers = effectiveMarkers(o);
         const offsets = computeMarkerPixelOffsets(markers, zoom);
-        const mpp = (156543.03 * Math.cos(centerLat * Math.PI / 180)) / Math.pow(2, zoom);
+        const mpp = Math.max(0.05, (156543.03 * Math.cos(centerLat * Math.PI / 180)) / Math.pow(2, zoom));
+        const activeSpec = getActiveThemeSpec();
+
+        if (fitBtnEl) {
+          fitBtnEl.title = markers.length >= 2 ? ('Fit all ' + markers.length + ' devices') : 'Fit device in view';
+        }
+
+        const existingPins = new Map();
+        Array.from(markersLayerEl.children).forEach(el => {
+          const id = el.getAttribute('data-device-id');
+          if (id) existingPins.set(id, el);
+        });
+        const seenIds = new Set();
 
         markers.forEach((m, idx) => {
           const base = toScr(m.location);
@@ -4137,56 +4433,77 @@ self.addEventListener('notificationclick', (event) => {
           const px = base.x + off.x;
           const py = base.y + off.y;
           const mAcc = Number(m.location.accuracyMeters || 30);
-          if (m.isSelected) {
-            const rPx = Math.max(18, Math.min(88, mAcc / Math.max(0.05, mpp)));
-            ctx.fillStyle = m.isAlarming ? 'rgba(214,69,58,0.14)' : (m.role === 'protected_device' ? 'rgba(46,155,104,0.15)' : 'rgba(37,99,235,0.14)');
+
+          if (ctx && m.isSelected) {
+            const rPx = Math.max(18, Math.min(88, mAcc / mpp));
+            ctx.fillStyle = m.isAlarming ? 'rgba(214,69,58,0.13)' : (m.role === 'protected_device' ? 'rgba(15,138,95,0.14)' : 'rgba(37,99,235,0.13)');
             ctx.beginPath(); ctx.arc(base.x, base.y, rPx, 0, Math.PI * 2); ctx.fill();
-            ctx.strokeStyle = m.isAlarming ? 'rgba(214,69,58,0.55)' : (m.role === 'protected_device' ? 'rgba(46,155,104,0.55)' : 'rgba(37,99,235,0.5)');
-            ctx.lineWidth = 1.5; ctx.stroke();
-          }
-          if (off.coLocated) {
-            ctx.strokeStyle = 'rgba(15,23,42,0.35)';
+            ctx.strokeStyle = m.isAlarming ? 'rgba(214,69,58,0.52)' : (m.role === 'protected_device' ? 'rgba(15,138,95,0.52)' : 'rgba(37,99,235,0.48)');
             ctx.lineWidth = 1.5;
+            ctx.stroke();
+          }
+          if (ctx && off.coLocated) {
+            ctx.strokeStyle = 'rgba(15,23,42,0.42)';
+            ctx.lineWidth = 1.6;
             ctx.beginPath(); ctx.moveTo(base.x, base.y); ctx.lineTo(px, py); ctx.stroke();
-            ctx.fillStyle = '#334155';
+            ctx.fillStyle = '#1E293B';
             ctx.beginPath(); ctx.arc(base.x, base.y, 3, 0, Math.PI * 2); ctx.fill();
           }
-          const activeSpec = getActiveThemeSpec();
+
+          seenIds.add(m.deviceId);
           const pinColor = m.isAlarming ? activeSpec.crimson : (m.role === 'protected_device' ? activeSpec.laptopMarker : activeSpec.phoneMarker);
-          if (m.isSelected) {
-            ctx.fillStyle = activeSpec.accentHalo;
-            ctx.beginPath(); ctx.arc(px, py, 19, 0, Math.PI * 2); ctx.fill();
+          const lblText = m.isCurrentRequester ? (m.displayName + ' · This phone') : m.displayName;
+          let wrap = existingPins.get(m.deviceId);
+          if (!wrap) {
+            wrap = document.createElement('div');
+            wrap.setAttribute('data-device-id', m.deviceId);
+            wrap.setAttribute('role', 'button');
+            wrap.setAttribute('tabindex', '0');
+            const selectThisMarker = ev => {
+              ev.stopPropagation();
+              if (typeof ctrl.opts.onSelectDevice === 'function') {
+                ctrl.opts.onSelectDevice(m.deviceId);
+              }
+            };
+            wrap.onclick = selectThisMarker;
+            wrap.onkeydown = ev => {
+              if (ev.key === 'Enter' || ev.key === ' ') {
+                ev.preventDefault();
+                selectThisMarker(ev);
+              }
+            };
+            markersLayerEl.appendChild(wrap);
           }
-          ctx.fillStyle = '#FFFFFF';
-          ctx.beginPath(); ctx.arc(px, py, 15, 0, Math.PI * 2); ctx.fill();
-          ctx.fillStyle = pinColor;
-          ctx.beginPath(); ctx.arc(px, py, 12.5, 0, Math.PI * 2); ctx.fill();
 
-          ctx.strokeStyle = '#FFFFFF';
-          ctx.lineWidth = 1.8;
-          if (m.role === 'protected_device') {
-            ctx.strokeRect(px - 5.5, py - 4.5, 11, 7);
-            ctx.beginPath(); ctx.moveTo(px - 7.5, py + 4.5); ctx.lineTo(px + 7.5, py + 4.5); ctx.stroke();
-          } else {
-            ctx.strokeRect(px - 4, py - 6, 8, 12);
+          wrap.className = 'map-pin-wrap' + (m.isSelected ? ' selected' : '');
+          wrap.setAttribute('aria-label', 'Select ' + lblText);
+          const renderSig = [pinColor, lblText, Boolean(off.labelAbove), Boolean(m.isSelected), m.role].join('|');
+          if (wrap.getAttribute('data-sig') !== renderSig) {
+            wrap.setAttribute('data-sig', renderSig);
+            const badgeHtml =
+              '<div class="map-pin-badge" style="background:' + pinColor + ';">' +
+              deviceSvgIcon(m.role, 16) +
+              '</div>';
+            const labelHtml = off.labelAbove
+              ? '<div class="map-pin-label" style="margin-top:0;margin-bottom:4px;">' + escapeHtml(lblText) + '</div>'
+              : '<div class="map-pin-label">' + escapeHtml(lblText) + '</div>';
+            wrap.innerHTML = off.labelAbove ? (labelHtml + badgeHtml) : (badgeHtml + labelHtml);
           }
-
-          const lbl = m.isCurrentRequester ? (m.displayName + ' · This phone') : m.displayName;
-          ctx.font = '700 11px -apple-system, BlinkMacSystemFont, sans-serif';
-          const tw = Math.min(144, ctx.measureText(lbl).width + 12);
-          const lx = px - tw / 2;
-          const ly = off.labelAbove ? (py - 35) : (py + 17);
-          ctx.fillStyle = 'rgba(255,255,255,0.95)';
-          ctx.fillRect(lx, ly, tw, 18);
-          ctx.strokeStyle = 'rgba(15,23,42,0.18)';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(lx, ly, tw, 18);
-          ctx.fillStyle = '#0F172A';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(lbl.length > 21 ? (lbl.slice(0, 20) + '…') : lbl, px, ly + 9.5);
+          const yAnchorShift = off.labelAbove ? -11 : 11;
+          wrap.style.transform = 'translate3d(' + px.toFixed(1) + 'px,' + (py + yAnchorShift).toFixed(1) + 'px,0) translate(-50%, -50%)';
         });
-        ctrl.lastCanvasHitTargets = markers.map((m, idx) => {
+
+        existingPins.forEach((el, id) => {
+          if (!seenIds.has(id)) {
+            try { el.remove(); } catch (_) {}
+          }
+        });
+
+        const scaleInfo = computeScaleBarMetrics(centerLat, zoom);
+        if (scaleTextEl) scaleTextEl.textContent = scaleInfo.label;
+        if (scaleLineEl) scaleLineEl.style.width = scaleInfo.widthPx + 'px';
+
+        ctrl.lastHitTargets = markers.map((m, idx) => {
           const base = toScr(m.location);
           return {
             deviceId: m.deviceId,
@@ -4196,183 +4513,301 @@ self.addEventListener('notificationclick', (event) => {
         });
       }
 
-      function syncMapLibreOverlays() {
-        const ml = ctrl.mlMap;
-        if (!ml || !ctrl.mlReady) return;
-        const o = ctrl.opts;
-        ctrl.mlMarkers.forEach(m => { try { m.remove(); } catch (_) {} });
-        ctrl.mlMarkers = [];
-
-        const trail = Array.isArray(o.trail) ? o.trail.filter(isValidCoord) : [];
-        const trailGeo = {
-          type: 'Feature',
-          geometry: {
-            type: 'LineString',
-            coordinates: trail.map(p => [Number(p.longitude), Number(p.latitude)])
-          }
-        };
-        if (ml.getSource('incident-trail')) {
-          ml.getSource('incident-trail').setData(trailGeo);
-        } else if (trail.length >= 2) {
-          ml.addSource('incident-trail', { type: 'geojson', data: trailGeo });
-          ml.addLayer({
-            id: 'incident-trail-line',
-            type: 'line',
-            source: 'incident-trail',
-            paint: { 'line-color': '#D97706', 'line-width': 3.5 }
-          });
-        }
-
-        if (o.alarmOrigin && isValidCoord(o.alarmOrigin) && differsMeaningfully(o.primary, o.alarmOrigin)) {
-          const originEl = document.createElement('div');
-          originEl.style.cssText = 'width:13px;height:13px;border-radius:50%;background:#D97706;border:2px solid #FFFFFF;box-shadow:0 2px 6px rgba(15,23,42,0.25);';
-          const om = new window.maplibregl.Marker({ element: originEl })
-            .setLngLat([Number(o.alarmOrigin.longitude), Number(o.alarmOrigin.latitude)])
-            .addTo(ml);
-          ctrl.mlMarkers.push(om);
-        }
-
-        const markers = effectiveMarkers(o);
-        const offsets = computeMarkerPixelOffsets(markers, ml.getZoom());
-        const activeSpec = getActiveThemeSpec();
-        markers.forEach((m, idx) => {
-          const off = offsets[idx];
-          const pinColor = m.isAlarming ? activeSpec.crimson : (m.role === 'protected_device' ? activeSpec.laptopMarker : activeSpec.phoneMarker);
-          const lblText = m.isCurrentRequester ? (m.displayName + ' · This phone') : m.displayName;
-          const wrap = document.createElement('div');
-          wrap.className = 'map-pin-wrap' + (m.isSelected ? ' selected' : '');
-          wrap.setAttribute('data-device-id', m.deviceId);
-          wrap.setAttribute('role', 'button');
-          wrap.setAttribute('tabindex', '0');
-          wrap.setAttribute('aria-label', 'Select ' + lblText);
-          const badgeHtml =
-            '<div class="map-pin-badge" style="background:' + pinColor + ';">' +
-            deviceSvgIcon(m.role, 16) +
-            '</div>';
-          const labelHtml = off.labelAbove
-            ? '<div class="map-pin-label" style="margin-top:0;margin-bottom:4px;">' + escapeHtml(lblText) + '</div>'
-            : '<div class="map-pin-label">' + escapeHtml(lblText) + '</div>';
-          wrap.innerHTML = off.labelAbove ? (labelHtml + badgeHtml) : (badgeHtml + labelHtml);
-          const selectThisMarker = ev => {
-            ev.stopPropagation();
-            if (typeof o.onSelectDevice === 'function') {
-              o.onSelectDevice(m.deviceId);
-            }
-          };
-          wrap.onclick = selectThisMarker;
-          wrap.onkeydown = ev => {
-            if (ev.key === 'Enter' || ev.key === ' ') {
-              ev.preventDefault();
-              selectThisMarker(ev);
-            }
-          };
-          const marker = new window.maplibregl.Marker({
-            element: wrap,
-            offset: [off.x, off.y]
-          })
-            .setLngLat([Number(m.location.longitude), Number(m.location.latitude)])
-            .addTo(ml);
-          ctrl.mlMarkers.push(marker);
-        });
+      function renderViewport() {
+        if (disposed) return;
+        const sz = getStageSize();
+        syncTiles(sz);
+        renderOverlayAndMarkers(sz);
       }
+
+      function zoomAroundScreenPoint(nextZoomRaw, focalX, focalY) {
+        const clampedZoom = Math.max(3.0, Math.min(19.0, nextZoomRaw));
+        const sz = getStageSize();
+        const fx = isFinite(focalX) ? focalX : (sz.w / 2);
+        const fy = isFinite(focalY) ? focalY : (sz.h / 2);
+        const oldWorldSize = 256 * Math.pow(2, zoom);
+        const oldCw = mercatorProject(centerLat, centerLon, oldWorldSize);
+        const anchorWorldOld = {
+          x: oldCw.x + (fx - sz.w / 2),
+          y: Math.max(0, Math.min(oldWorldSize, oldCw.y + (fy - sz.h / 2)))
+        };
+        const anchorGeo = mercatorUnproject(anchorWorldOld.x, anchorWorldOld.y, oldWorldSize);
+
+        zoom = clampedZoom;
+        const newWorldSize = 256 * Math.pow(2, zoom);
+        const anchorWorldNew = mercatorProject(anchorGeo.lat, anchorGeo.lon, newWorldSize);
+        const nextCw = {
+          x: anchorWorldNew.x - (fx - sz.w / 2),
+          y: Math.max(0, Math.min(newWorldSize, anchorWorldNew.y - (fy - sz.h / 2)))
+        };
+        const nextCenter = mercatorUnproject(nextCw.x, nextCw.y, newWorldSize);
+        centerLat = nextCenter.lat;
+        centerLon = nextCenter.lon;
+        renderViewport();
+      }
+
+      const ctrl = {
+        stageEl: stageEl,
+        tileLayerEl: tileLayerEl,
+        canvas: canvas,
+        opts: opts,
+        userInteracted: false,
+        lastLocatedSig: '',
+        centerOnDevice: targetLoc => {
+          const markers = effectiveMarkers(ctrl.opts);
+          const selectedMarker = markers.find(m => m.isSelected);
+          const loc = isValidCoord(targetLoc)
+            ? targetLoc
+            : (selectedMarker && isValidCoord(selectedMarker.location) ? selectedMarker.location : ctrl.opts.primary);
+          if (!isValidCoord(loc)) return;
+          const acc = Number(loc.accuracyMeters || (loc.isApproximate ? 180 : 25));
+          zoom = Math.max(Math.round(zoom), acc >= 600 ? 13.0 : (acc >= 180 ? 15.0 : 16.0));
+          centerLat = Number(loc.latitude);
+          centerLon = Number(loc.longitude);
+          renderViewport();
+        },
+        fitAllDevices: () => {
+          const markers = effectiveMarkers(ctrl.opts);
+          fitViewportToMarkers(markers, ctrl.opts.primary);
+          renderViewport();
+        },
+        retryTiles: () => {
+          retryNonce += 1;
+          basemapFailed = false;
+          const toReset = [];
+          tilePool.forEach((entry, key) => {
+            if (entry.status === 'error' || entry.status === 'loading') {
+              toReset.push(key);
+            }
+          });
+          toReset.forEach(key => {
+            const victim = tilePool.get(key);
+            if (victim) {
+              victim.removed = true;
+              try { victim.el.remove(); } catch (_) {}
+              tilePool.delete(key);
+            }
+          });
+          renderViewport();
+        },
+        update: nextOpts => {
+          ctrl.opts = nextOpts;
+          renderTopBadges();
+          const markers = effectiveMarkers(nextOpts);
+          const sig = markers.map(m => m.deviceId).join('|');
+          if (!ctrl.userInteracted && sig !== ctrl.lastLocatedSig) {
+            ctrl.lastLocatedSig = sig;
+            fitViewportToMarkers(markers, nextOpts.primary);
+          }
+          renderViewport();
+        },
+        redrawTheme: () => {
+          renderViewport();
+        },
+        getDiagnostics: () => ({
+          centerLat: centerLat,
+          centerLon: centerLon,
+          zoom: zoom,
+          userInteracted: ctrl.userInteracted,
+          visibleLoadedCount: visibleLoadedCount,
+          visiblePendingCount: visiblePendingCount,
+          visibleErrorCount: visibleErrorCount,
+          totalLoadedEver: totalLoadedEver,
+          basemapFailed: basemapFailed
+        }),
+        cleanup: () => {
+          disposed = true;
+          if (loadTimeoutId) {
+            clearTimeout(loadTimeoutId);
+            loadTimeoutId = null;
+          }
+          if (resizeObs) {
+            try { resizeObs.disconnect(); } catch (_) {}
+          }
+          window.removeEventListener('resize', onWinResize);
+          window.removeEventListener('online', onNetOnline);
+          tilePool.forEach(entry => {
+            entry.removed = true;
+            try { entry.el.remove(); } catch (_) {}
+          });
+          tilePool.clear();
+        }
+      };
 
       renderTopBadges();
       const initMarkers = effectiveMarkers(opts);
       ctrl.lastLocatedSig = initMarkers.map(m => m.deviceId).join('|');
       fitViewportToMarkers(initMarkers, opts.primary);
-      drawCanvasFallback();
+      renderViewport();
 
-      let dragLast = null;
-      let dragMoved = false;
+      const activePointers = new Map();
+      let singleDragMoved = false;
+      let pinchPrevMid = null;
+      let pinchPrevDist = 0;
+      let lastTapMs = 0;
+      let lastTapPos = null;
+
+      function localStageCoords(clientX, clientY) {
+        const rect = stageEl.getBoundingClientRect();
+        return { x: clientX - rect.left, y: clientY - rect.top };
+      }
+
       stageEl.onpointerdown = e => {
-        if (e.target && (e.target.closest('.map-ctrl-btn') || e.target.closest('.map-pin-wrap') || e.target.closest('.map-fallback-attrib'))) return;
-        dragLast = { x: e.clientX, y: e.clientY };
-        dragMoved = false;
-      };
-      stageEl.onpointermove = e => {
-        if (!dragLast || (ctrl.mlMap && ctrl.mlReady)) return;
-        const dx = e.clientX - dragLast.x;
-        const dy = e.clientY - dragLast.y;
-        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
-          dragMoved = true;
-          ctrl.userInteracted = true;
+        if (e.target && (e.target.closest('.map-ctrl-btn') || e.target.closest('.map-pin-wrap') || e.target.closest('.map-error-state'))) {
+          return;
         }
-        dragLast = { x: e.clientX, y: e.clientY };
-        const worldSize = 256 * Math.pow(2, zoom);
-        const cw = mercatorProject(centerLat, centerLon, worldSize);
-        const next = mercatorUnproject(cw.x - dx, Math.max(0, Math.min(worldSize, cw.y - dy)), worldSize);
-        centerLat = next.lat;
-        centerLon = next.lon;
-        drawCanvasFallback();
+        try { stageEl.setPointerCapture(e.pointerId); } catch (_) {}
+        activePointers.set(e.pointerId, localStageCoords(e.clientX, e.clientY));
+        if (activePointers.size === 1) {
+          singleDragMoved = false;
+        } else if (activePointers.size === 2) {
+          const pts = Array.from(activePointers.values());
+          pinchPrevMid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+          pinchPrevDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+          singleDragMoved = true;
+        }
       };
-      stageEl.onpointerup = e => {
-        if (dragLast && !dragMoved && !(ctrl.mlMap && ctrl.mlReady) && Array.isArray(ctrl.lastCanvasHitTargets)) {
-          const rect = stageEl.getBoundingClientRect();
-          const cx = e.clientX - rect.left;
-          const cy = e.clientY - rect.top;
-          const hit = ctrl.lastCanvasHitTargets.find(t => Math.hypot(t.x - cx, t.y - cy) <= 24);
-          if (hit && typeof ctrl.opts.onSelectDevice === 'function') {
-            ctrl.opts.onSelectDevice(hit.deviceId);
+
+      stageEl.onpointermove = e => {
+        if (!activePointers.has(e.pointerId)) return;
+        const nextPt = localStageCoords(e.clientX, e.clientY);
+        const prevPt = activePointers.get(e.pointerId);
+        activePointers.set(e.pointerId, nextPt);
+
+        if (activePointers.size === 1 && prevPt) {
+          const dx = nextPt.x - prevPt.x;
+          const dy = nextPt.y - prevPt.y;
+          if (Math.abs(dx) > 2.5 || Math.abs(dy) > 2.5) {
+            singleDragMoved = true;
+            ctrl.userInteracted = true;
+          }
+          if (singleDragMoved) {
+            const worldSize = 256 * Math.pow(2, zoom);
+            const cw = mercatorProject(centerLat, centerLon, worldSize);
+            const next = mercatorUnproject(cw.x - dx, Math.max(0, Math.min(worldSize, cw.y - dy)), worldSize);
+            centerLat = next.lat;
+            centerLon = next.lon;
+            renderViewport();
+          }
+        } else if (activePointers.size >= 2) {
+          const pts = Array.from(activePointers.values());
+          const newMid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+          const newDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+          if (pinchPrevMid && pinchPrevDist > 12 && newDist > 12) {
+            ctrl.userInteracted = true;
+            const zoomDelta = Math.log2(newDist / pinchPrevDist);
+            const oldWorldSize = 256 * Math.pow(2, zoom);
+            const sz = getStageSize();
+            const oldCw = mercatorProject(centerLat, centerLon, oldWorldSize);
+            const anchorOld = {
+              x: oldCw.x + (pinchPrevMid.x - sz.w / 2),
+              y: Math.max(0, Math.min(oldWorldSize, oldCw.y + (pinchPrevMid.y - sz.h / 2)))
+            };
+            const anchorGeo = mercatorUnproject(anchorOld.x, anchorOld.y, oldWorldSize);
+
+            zoom = Math.max(3.0, Math.min(19.0, zoom + zoomDelta));
+            const newWorldSize = 256 * Math.pow(2, zoom);
+            const anchorNew = mercatorProject(anchorGeo.lat, anchorGeo.lon, newWorldSize);
+            const nextCw = {
+              x: anchorNew.x - (newMid.x - sz.w / 2),
+              y: Math.max(0, Math.min(newWorldSize, anchorNew.y - (newMid.y - sz.h / 2)))
+            };
+            const unproj = mercatorUnproject(nextCw.x, nextCw.y, newWorldSize);
+            centerLat = unproj.lat;
+            centerLon = unproj.lon;
+            renderViewport();
+          }
+          pinchPrevMid = newMid;
+          pinchPrevDist = newDist;
+        }
+      };
+
+      function finishPointer(e) {
+        const hadOne = activePointers.size === 1;
+        const upPos = localStageCoords(e.clientX, e.clientY);
+        activePointers.delete(e.pointerId);
+        try { stageEl.releasePointerCapture(e.pointerId); } catch (_) {}
+
+        if (activePointers.size < 2) {
+          pinchPrevMid = null;
+          pinchPrevDist = 0;
+        }
+
+        if (hadOne && !singleDragMoved && e.type === 'pointerup') {
+          if (Array.isArray(ctrl.lastHitTargets)) {
+            const hit = ctrl.lastHitTargets.find(t => Math.hypot(t.x - upPos.x, t.y - upPos.y) <= 24);
+            if (hit && typeof ctrl.opts.onSelectDevice === 'function') {
+              ctrl.opts.onSelectDevice(hit.deviceId);
+              return;
+            }
+          }
+          const nowMs = Date.now();
+          if (lastTapPos && (nowMs - lastTapMs) <= 300 && Math.hypot(upPos.x - lastTapPos.x, upPos.y - lastTapPos.y) <= 28) {
+            lastTapMs = 0;
+            lastTapPos = null;
+            ctrl.userInteracted = true;
+            zoomAroundScreenPoint(Math.min(19, Math.round(zoom) + 1), upPos.x, upPos.y);
+          } else {
+            lastTapMs = nowMs;
+            lastTapPos = upPos;
           }
         }
-        dragLast = null;
-      };
-      stageEl.onpointercancel = () => { dragLast = null; };
+      }
+
+      stageEl.onpointerup = finishPointer;
+      stageEl.onpointercancel = finishPointer;
+
+      stageEl.addEventListener('wheel', e => {
+        e.preventDefault();
+        ctrl.userInteracted = true;
+        const pt = localStageCoords(e.clientX, e.clientY);
+        const step = e.deltaY < 0 ? 0.5 : -0.5;
+        zoomAroundScreenPoint(zoom + step, pt.x, pt.y);
+      }, { passive: false });
 
       stageEl.querySelector('[data-act="in"]').onclick = () => {
         ctrl.userInteracted = true;
-        zoom = Math.min(18, (ctrl.mlMap && ctrl.mlReady ? ctrl.mlMap.getZoom() : zoom) + 1);
-        if (ctrl.mlMap && ctrl.mlReady) ctrl.mlMap.zoomTo(zoom); else drawCanvasFallback();
+        const sz = getStageSize();
+        zoomAroundScreenPoint(Math.min(19, Math.round(zoom) + 1), sz.w / 2, sz.h / 2);
       };
       stageEl.querySelector('[data-act="out"]').onclick = () => {
         ctrl.userInteracted = true;
-        zoom = Math.max(3, (ctrl.mlMap && ctrl.mlReady ? ctrl.mlMap.getZoom() : zoom) - 1);
-        if (ctrl.mlMap && ctrl.mlReady) ctrl.mlMap.zoomTo(zoom); else drawCanvasFallback();
+        const sz = getStageSize();
+        zoomAroundScreenPoint(Math.max(3, Math.round(zoom) - 1), sz.w / 2, sz.h / 2);
       };
+      stageEl.querySelector('[data-act="center"]').onclick = () => {
+        ctrl.userInteracted = true;
+        ctrl.centerOnDevice(null);
+      };
+      stageEl.querySelector('[data-act="fit"]').onclick = () => {
+        ctrl.userInteracted = true;
+        ctrl.fitAllDevices();
+      };
+      const retryBtn = stageEl.querySelector('[data-act="retry-map"]');
+      if (retryBtn) {
+        retryBtn.onclick = () => {
+          ctrl.retryTiles();
+        };
+      }
 
-      if (window.maplibregl && navigator.onLine !== false) {
+      const onWinResize = () => {
+        if (!disposed) renderViewport();
+      };
+      const onNetOnline = () => {
+        if (!disposed && (basemapFailed || visibleLoadedCount === 0)) {
+          ctrl.retryTiles();
+        }
+      };
+      window.addEventListener('resize', onWinResize);
+      window.addEventListener('online', onNetOnline);
+
+      let resizeObs = null;
+      if (typeof ResizeObserver === 'function') {
         try {
-          const ml = new window.maplibregl.Map({
-            container: vectorHost,
-            style: 'https://tiles.openfreemap.org/styles/liberty',
-            center: [centerLon, centerLat],
-            zoom: zoom,
-            attributionControl: false
+          resizeObs = new ResizeObserver(() => {
+            if (!disposed) renderViewport();
           });
-          if (typeof window.maplibregl.AttributionControl === 'function') {
-            ml.addControl(
-              new window.maplibregl.AttributionControl({
-                compact: true,
-                customAttribution: 'OpenFreeMap © OpenMapTiles · Data © OpenStreetMap contributors'
-              }),
-              'bottom-right'
-            );
-          }
-          ctrl.mlMap = ml;
-          ml.on('dragstart', () => { ctrl.userInteracted = true; });
-          ml.on('zoomstart', e => {
-            if (e && e.originalEvent) ctrl.userInteracted = true;
-          });
-          ml.on('zoomend', () => {
-            zoom = ml.getZoom();
-            if (ctrl.mlReady) syncMapLibreOverlays();
-          });
-          ml.on('load', () => {
-            ctrl.mlReady = true;
-            if (fallbackAttrib) fallbackAttrib.classList.add('hidden');
-            const curMarkers = effectiveMarkers(ctrl.opts);
-            if (!ctrl.userInteracted && curMarkers.length >= 2) {
-              fitViewportToMarkers(curMarkers, ctrl.opts.primary);
-            }
-            syncMapLibreOverlays();
-          });
-          ml.on('error', () => {
-            if (!ctrl.mlReady) {
-              try { ml.remove(); } catch (_) {}
-              ctrl.mlMap = null;
-              if (fallbackAttrib) fallbackAttrib.classList.remove('hidden');
-            }
-          });
+          resizeObs.observe(stageEl);
         } catch (_) {}
       }
 
@@ -4490,10 +4925,20 @@ self.addEventListener('notificationclick', (event) => {
     function eventKindMeta(ev) {
       if (ev && ev.isTest) return { label: 'Test alert', cls: 'pill-warn' };
       const summary = String((ev && ev.triggerSummary) || '').toLowerCase();
+      const detectorType = String((ev && ev.detectorType) || '').toLowerCase();
       const kind = String((ev && ev.kind) || '').trim();
+      if (detectorType === 'heartbeat_watchdog' || summary.indexOf('stopped responding') >= 0) {
+        return { label: 'Protected laptop stopped responding', cls: 'pill-alert' };
+      }
       if (summary.indexOf('camera') >= 0 &&
           (summary.indexOf('blocked') >= 0 || summary.indexOf('covered') >= 0 || summary.indexOf('obstructed') >= 0)) {
         return { label: 'Camera blocked', cls: 'pill-alert' };
+      }
+      if (summary.indexOf('lid closed') >= 0) {
+        return { label: 'Lid closed while armed', cls: 'pill-alert' };
+      }
+      if (summary.indexOf('going to sleep') >= 0 || summary.indexOf('entering sleep') >= 0) {
+        return { label: 'Sleep while armed', cls: 'pill-alert' };
       }
       if (kind === 'protectionInterrupted' || kind === 'detectorFailureDuringMonitoring') {
         return { label: 'Protection interrupted', cls: 'pill-alert' };

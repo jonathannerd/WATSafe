@@ -1392,8 +1392,8 @@ void main() {
               uri: Uri.parse('$endpoint/v1/health'),
             );
             expect(resp.statusCode, 200);
-            expect(resp.json['swVersion'], '2026.11.18-v8');
-            expect(resp.json['watchdogTimeoutSeconds'], 45);
+            expect(resp.json['swVersion'], '2026.11.19-v9');
+            expect(resp.json['watchdogTimeoutSeconds'], 30);
 
             final pwaReq = await client.getUrl(
               Uri.parse('$endpoint/companion'),
@@ -1408,7 +1408,7 @@ void main() {
             );
             expect(
               html,
-              contains('https://tiles.openfreemap.org/styles/liberty'),
+              contains('https://tile.openstreetmap.org/{z}/{x}/{y}.png'),
             );
             expect(html, contains('device-chip-bar'));
             expect(html, contains('Share phone location'));

@@ -867,7 +867,7 @@ void main() {
             expect(pwaResp.statusCode, 200);
             expect(pwaHtml, contains('id="tabDevices"'));
             expect(pwaHtml, contains('id="devicesMapStage"'));
-            expect(pwaHtml, contains('OpenFreeMap'));
+            expect(pwaHtml, contains('tile.openstreetmap.org'));
             expect(pwaHtml, contains('OpenStreetMap contributors'));
             expect(pwaHtml, contains('/v1/devices/locations'));
             expect(pwaHtml, contains('/v1/location-history'));

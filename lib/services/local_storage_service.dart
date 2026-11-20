@@ -40,10 +40,60 @@ class FileIncidentStorage implements IncidentStorageAdapter {
   FileIncidentStorage({this._directory});
 
   final Directory? _directory;
+  static int _tmpCounter = 0;
 
   Future<File> _resolveFile() async {
     final dir = _directory ?? await LocalAppDataPaths.resolveDirectory();
     return File('${dir.path}${Platform.pathSeparator}incidents.json');
+  }
+
+  static Object? _decodeJsonToleratingTrailingBytes(String raw) {
+    try {
+      return jsonDecode(raw);
+    } on FormatException {
+      // Self-heal if an interrupted non-atomic write left trailing bytes after
+      // the top-level JSON array/object.
+      final trimmed = raw.trimLeft();
+      if (trimmed.isEmpty) {
+        return null;
+      }
+      final openChar = trimmed[0];
+      final closeChar = openChar == '[' ? ']' : (openChar == '{' ? '}' : '');
+      if (closeChar.isEmpty) {
+        return null;
+      }
+      var depth = 0;
+      var inString = false;
+      var escaped = false;
+      for (var i = 0; i < trimmed.length; i++) {
+        final ch = trimmed[i];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+          } else if (ch == r'\') {
+            escaped = true;
+          } else if (ch == '"') {
+            inString = false;
+          }
+          continue;
+        }
+        if (ch == '"') {
+          inString = true;
+        } else if (ch == openChar) {
+          depth++;
+        } else if (ch == closeChar) {
+          depth--;
+          if (depth == 0) {
+            try {
+              return jsonDecode(trimmed.substring(0, i + 1));
+            } on FormatException {
+              return null;
+            }
+          }
+        }
+      }
+      return null;
+    }
   }
 
   @override
@@ -56,7 +106,7 @@ class FileIncidentStorage implements IncidentStorageAdapter {
     if (raw.trim().isEmpty) {
       return const <IncidentRecord>[];
     }
-    final decoded = jsonDecode(raw);
+    final decoded = _decodeJsonToleratingTrailingBytes(raw);
     if (decoded is! List) {
       return const <IncidentRecord>[];
     }
@@ -110,7 +160,11 @@ class FileIncidentStorage implements IncidentStorageAdapter {
     final payload = jsonEncode(
       records.map((item) => item.toJson()).toList(growable: false),
     );
-    await file.writeAsString(payload, flush: true);
+    final tmp = File(
+      '${file.path}.tmp.${DateTime.now().microsecondsSinceEpoch}_${++_tmpCounter}',
+    );
+    await tmp.writeAsString(payload, flush: true);
+    await tmp.rename(file.path);
   }
 }
 
@@ -119,6 +173,7 @@ class FileSettingsStorage implements SettingsStorageAdapter {
   FileSettingsStorage({this._directory});
 
   final Directory? _directory;
+  static int _tmpCounter = 0;
 
   Future<File> _resolveFile() async {
     final dir = _directory ?? await LocalAppDataPaths.resolveDirectory();
@@ -135,7 +190,7 @@ class FileSettingsStorage implements SettingsStorageAdapter {
     if (raw.trim().isEmpty) {
       return const ProtectionSettings();
     }
-    final decoded = jsonDecode(raw);
+    final decoded = FileIncidentStorage._decodeJsonToleratingTrailingBytes(raw);
     if (decoded is! Map<String, Object?>) {
       return const ProtectionSettings();
     }
@@ -147,7 +202,11 @@ class FileSettingsStorage implements SettingsStorageAdapter {
     final file = await _resolveFile();
     await file.parent.create(recursive: true);
     final payload = jsonEncode(settings.toJson());
-    await file.writeAsString(payload, flush: true);
+    final tmp = File(
+      '${file.path}.tmp.${DateTime.now().microsecondsSinceEpoch}_${++_tmpCounter}',
+    );
+    await tmp.writeAsString(payload, flush: true);
+    await tmp.rename(file.path);
   }
 }
 

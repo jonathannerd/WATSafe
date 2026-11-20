@@ -19,6 +19,7 @@
 #include <sensorsapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <winhttp.h>
 #include <windows.devices.sensors.h>
 #include <winstring.h>
 #include <wrl/client.h>
@@ -226,6 +227,15 @@ class WindowsAudioAlarmBridge {
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
     const auto* args = GetArgsMap(call.arguments());
     const std::string& method = call.method_name();
+
+    if (method == "prepareAlarm") {
+      const auto* wav_bytes = GetBytesArg(args, "wavBytes");
+      if (wav_bytes != nullptr && wav_bytes->size() > 44) {
+        raw_wav_bytes_ = *wav_bytes;
+      }
+      result->Success();
+      return;
+    }
 
     if (method == "startLoopingAlarm") {
       const double volume = std::clamp(GetDoubleArg(args, "volume", 0.85), 0.0, 1.0);
@@ -3548,12 +3558,61 @@ class WindowsSystemLifecycleBridge {
         armed_since_ms_.store(CurrentTimeMillis());
       }
       armed_.store(next_armed);
+      {
+        std::lock_guard<std::mutex> lock(emergency_mutex_);
+        if (!next_armed) {
+          armed_session_id_.clear();
+          correlation_incident_id_.clear();
+          delivered_session_id_.clear();
+          relay_endpoint_url_.clear();
+          host_token_.clear();
+          device_name_.clear();
+          detector_type_.clear();
+          has_pending_report_ = false;
+          pending_report_.clear();
+        } else {
+          const std::string next_session =
+              GetStringArg(args, "armedSessionId", armed_session_id_);
+          if (!next_session.empty() && next_session != armed_session_id_) {
+            delivered_session_id_.clear();
+            has_pending_report_ = false;
+            pending_report_.clear();
+          }
+          armed_session_id_ =
+              next_session.empty() ? "armed_windows" : next_session;
+          correlation_incident_id_ = GetStringArg(
+              args, "correlationIncidentId", "lid_" + armed_session_id_);
+          const std::string notified =
+              GetStringArg(args, "alreadyNotifiedSessionId", "");
+          if (!notified.empty()) {
+            delivered_session_id_ = notified;
+          }
+          relay_endpoint_url_ = GetStringArg(args, "relayEndpointUrl", "");
+          host_token_ = GetStringArg(args, "hostToken", "");
+          device_name_ = GetStringArg(args, "deviceName", "My Laptop");
+          detector_type_ =
+              GetStringArg(args, "detectorType", "windows_camera_scene_motion");
+        }
+      }
       if (next_input) {
         StartInputPolling();
       } else {
         StopInputPolling();
       }
       result->Success();
+      return;
+    }
+
+    if (method == "consumePendingEmergencyReport") {
+      std::lock_guard<std::mutex> lock(emergency_mutex_);
+      if (!has_pending_report_) {
+        result->Success(flutter::EncodableValue());
+        return;
+      }
+      flutter::EncodableMap out = std::move(pending_report_);
+      pending_report_.clear();
+      has_pending_report_ = false;
+      result->Success(flutter::EncodableValue(out));
       return;
     }
 
@@ -3617,8 +3676,237 @@ class WindowsSystemLifecycleBridge {
     }
   }
 
+  static std::wstring Utf8ToWide(const std::string& str) {
+    if (str.empty()) {
+      return std::wstring();
+    }
+    int needed = ::MultiByteToWideChar(CP_UTF8, 0, str.data(),
+                                       static_cast<int>(str.size()), nullptr, 0);
+    if (needed <= 0) {
+      return std::wstring();
+    }
+    std::wstring wide(static_cast<size_t>(needed), L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()),
+                          wide.data(), needed);
+    return wide;
+  }
+
+  static std::string EscapeJsonString(const std::string& input) {
+    std::string out;
+    out.reserve(input.size() + 8);
+    for (char c : input) {
+      if (c == '"') {
+        out += "\\\"";
+      } else if (c == '\\') {
+        out += "\\\\";
+      } else if (c == '\n') {
+        out += "\\n";
+      } else if (c == '\r') {
+        out += "\\r";
+      } else {
+        out.push_back(c);
+      }
+    }
+    return out;
+  }
+
+  static std::string CurrentUtcIso8601() {
+    SYSTEMTIME st{};
+    ::GetSystemTime(&st);
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02uT%02u:%02u:%02u.%03uZ",
+                  st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+                  st.wSecond, st.wMilliseconds);
+    return std::string(buf);
+  }
+
+  void DispatchWindowsEmergencyAlertIfNeeded(
+      const std::string& type, const std::string& summary,
+      std::optional<bool> clamshell_closed) {
+    if (!armed_.load() || type == "lidOpened" || type == "systemDidWake" ||
+        type == "userInputDetected") {
+      EmitRawLifecyclePayload(type, summary, clamshell_closed, "", "", nullptr);
+      return;
+    }
+
+    std::string session_id;
+    std::string incident_id;
+    std::string endpoint_url;
+    std::string token;
+    std::string dev_name;
+    std::string det_type;
+    {
+      std::lock_guard<std::mutex> lock(emergency_mutex_);
+      session_id = armed_session_id_;
+      incident_id = correlation_incident_id_;
+      if (!session_id.empty() && delivered_session_id_ == session_id) {
+        if (has_pending_report_) {
+          flutter::EncodableMap copy = pending_report_;
+          EmitRawLifecyclePayload(type, summary, clamshell_closed, incident_id,
+                                  session_id, &copy);
+        }
+        return;
+      }
+      endpoint_url = relay_endpoint_url_;
+      token = host_token_;
+      dev_name = device_name_.empty() ? "My Laptop" : device_name_;
+      det_type = detector_type_.empty() ? "windows_camera_scene_motion"
+                                        : detector_type_;
+    }
+
+    if (endpoint_url.empty() || token.empty() || session_id.empty()) {
+      EmitRawLifecyclePayload(type, summary, clamshell_closed, incident_id,
+                              session_id, nullptr);
+      return;
+    }
+
+    std::thread([this, type, summary, clamshell_closed, session_id, incident_id,
+                 endpoint_url, token, dev_name, det_type]() {
+      const int64_t signal_ms = CurrentTimeMillis();
+      const std::string signal_iso = CurrentUtcIso8601();
+      const std::string full_url = endpoint_url + "/v1/incidents:report";
+      const std::wstring wide_url = Utf8ToWide(full_url);
+
+      URL_COMPONENTS uc{};
+      uc.dwStructSize = sizeof(uc);
+      wchar_t host_buf[256] = {0};
+      wchar_t path_buf[512] = {0};
+      uc.lpszHostName = host_buf;
+      uc.dwHostNameLength = 255;
+      uc.lpszUrlPath = path_buf;
+      uc.dwUrlPathLength = 511;
+
+      DWORD status_code = 0;
+      std::string resp_body;
+      if (::WinHttpCrackUrl(wide_url.c_str(), 0, 0, &uc)) {
+        HINTERNET h_session = ::WinHttpOpen(
+            L"WATSafe-Emergency/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (h_session) {
+          ::WinHttpSetTimeouts(h_session, 1500, 1800, 2200, 2500);
+          HINTERNET h_connect =
+              ::WinHttpConnect(h_session, host_buf, uc.nPort, 0);
+          if (h_connect) {
+            const DWORD flags =
+                (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+            HINTERNET h_req = ::WinHttpOpenRequest(
+                h_connect, L"POST", path_buf, nullptr, WINHTTP_NO_REFERER,
+                WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+            if (h_req) {
+              const std::wstring headers =
+                  L"Content-Type: application/json\r\nAuthorization: Bearer " +
+                  Utf8ToWide(token) + L"\r\n";
+              const std::string body =
+                  "{\"incidentId\":\"" + EscapeJsonString(incident_id) +
+                  "\",\"sessionId\":\"" + EscapeJsonString(session_id) +
+                  "\",\"kind\":\"protectionInterrupted\",\"detectorType\":\"" +
+                  EscapeJsonString(det_type) + "\",\"triggeredAtUtc\":\"" +
+                  signal_iso + "\",\"triggerSummary\":\"" +
+                  EscapeJsonString(summary) + "\",\"deviceName\":\"" +
+                  EscapeJsonString(dev_name) +
+                  "\",\"isTest\":false,\"locationStatus\":\"notRequested\"}";
+              if (::WinHttpSendRequest(
+                      h_req, headers.c_str(), static_cast<DWORD>(headers.size()),
+                      const_cast<char*>(body.data()),
+                      static_cast<DWORD>(body.size()),
+                      static_cast<DWORD>(body.size()), 0) &&
+                  ::WinHttpReceiveResponse(h_req, nullptr)) {
+                DWORD sz = sizeof(status_code);
+                ::WinHttpQueryHeaders(
+                    h_req,
+                    WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                    WINHTTP_HEADER_NAME_BY_INDEX, &status_code, &sz,
+                    WINHTTP_NO_HEADER_INDEX);
+                DWORD avail = 0;
+                while (::WinHttpQueryDataAvailable(h_req, &avail) &&
+                       avail > 0 && resp_body.size() < 4096) {
+                  std::vector<char> chunk(avail);
+                  DWORD read = 0;
+                  if (::WinHttpReadData(h_req, chunk.data(), avail, &read) &&
+                      read > 0) {
+                    resp_body.append(chunk.data(), read);
+                  } else {
+                    break;
+                  }
+                }
+              }
+              ::WinHttpCloseHandle(h_req);
+            }
+            ::WinHttpCloseHandle(h_connect);
+          }
+          ::WinHttpCloseHandle(h_session);
+        }
+      }
+
+      const bool ok = (status_code >= 200 && status_code < 300);
+      const bool push_accepted =
+          ok && (resp_body.find("\"pushAccepted\":true") != std::string::npos);
+      const bool push_failed =
+          ok && !push_accepted &&
+          (resp_body.find("\"pushFailedCount\":0") == std::string::npos &&
+           resp_body.find("\"pushFailedCount\":") != std::string::npos);
+      const bool delivered = ok && !push_failed &&
+                             (push_accepted ||
+                              resp_body.find("\"delivered\":true") !=
+                                  std::string::npos);
+
+      flutter::EncodableMap report{
+          {flutter::EncodableValue("incidentId"),
+           flutter::EncodableValue(incident_id)},
+          {flutter::EncodableValue("sessionId"),
+           flutter::EncodableValue(session_id)},
+          {flutter::EncodableValue("eventType"),
+           flutter::EncodableValue(type)},
+          {flutter::EncodableValue("summary"),
+           flutter::EncodableValue(summary)},
+          {flutter::EncodableValue("triggeredAtMs"),
+           flutter::EncodableValue(signal_ms)},
+          {flutter::EncodableValue("attempted"), flutter::EncodableValue(true)},
+          {flutter::EncodableValue("relayRecorded"),
+           flutter::EncodableValue(ok)},
+          {flutter::EncodableValue("pushAccepted"),
+           flutter::EncodableValue(push_accepted)},
+          {flutter::EncodableValue("pushFailed"),
+           flutter::EncodableValue(push_failed)},
+          {flutter::EncodableValue("delivered"),
+           flutter::EncodableValue(delivered)},
+          {flutter::EncodableValue("httpStatusCode"),
+           flutter::EncodableValue(static_cast<int32_t>(status_code))},
+          {flutter::EncodableValue("nativeSignalAtUtcIso"),
+           flutter::EncodableValue(signal_iso)},
+          {flutter::EncodableValue("nativeHttpCompletedAtUtcIso"),
+           flutter::EncodableValue(CurrentUtcIso8601())},
+      };
+      if (clamshell_closed.has_value()) {
+        report[flutter::EncodableValue("clamshellClosed")] =
+            flutter::EncodableValue(*clamshell_closed);
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(emergency_mutex_);
+        if (delivered || push_accepted) {
+          delivered_session_id_ = session_id;
+        }
+        pending_report_ = report;
+        has_pending_report_ = true;
+      }
+
+      EmitRawLifecyclePayload(type, summary, clamshell_closed, incident_id,
+                              session_id, &report);
+    }).detach();
+  }
+
   void EmitLifecycleEvent(const std::string& type, const std::string& summary,
                           std::optional<bool> clamshell_closed) {
+    DispatchWindowsEmergencyAlertIfNeeded(type, summary, clamshell_closed);
+  }
+
+  void EmitRawLifecyclePayload(const std::string& type,
+                               const std::string& summary,
+                               std::optional<bool> clamshell_closed,
+                               const std::string& incident_id,
+                               const std::string& session_id,
+                               const flutter::EncodableMap* native_report) {
     flutter::EncodableMap payload{
         {flutter::EncodableValue("type"), flutter::EncodableValue(type)},
         {flutter::EncodableValue("summary"), flutter::EncodableValue(summary)},
@@ -3628,6 +3916,18 @@ class WindowsSystemLifecycleBridge {
     if (clamshell_closed.has_value()) {
       payload[flutter::EncodableValue("clamshellClosed")] =
           flutter::EncodableValue(*clamshell_closed);
+    }
+    if (!incident_id.empty()) {
+      payload[flutter::EncodableValue("incidentId")] =
+          flutter::EncodableValue(incident_id);
+    }
+    if (!session_id.empty()) {
+      payload[flutter::EncodableValue("sessionId")] =
+          flutter::EncodableValue(session_id);
+    }
+    if (native_report != nullptr) {
+      payload[flutter::EncodableValue("nativeEmergencyReport")] =
+          flutter::EncodableValue(*native_report);
     }
     dispatcher_->Post([this, payload = std::move(payload)]() {
       if (event_sink_) {
@@ -3644,6 +3944,17 @@ class WindowsSystemLifecycleBridge {
       event_channel_;
   std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> event_sink_;
   std::shared_ptr<MainThreadDispatcher> dispatcher_;
+
+  std::mutex emergency_mutex_;
+  std::string armed_session_id_;
+  std::string correlation_incident_id_;
+  std::string delivered_session_id_;
+  std::string relay_endpoint_url_;
+  std::string host_token_;
+  std::string device_name_;
+  std::string detector_type_;
+  bool has_pending_report_ = false;
+  flutter::EncodableMap pending_report_;
 
   std::atomic<bool> armed_{false};
   std::atomic<bool> has_observed_lid_switch_{false};
