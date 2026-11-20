@@ -1,0 +1,23 @@
+name: Temporary PIN Test Formatter Diagnostics
+
+on:
+  push:
+    branches: [security/persist-pin-lockout-and-kdf-upgrade]
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+      - name: Show canonical Dart formatter diff
+        run: |
+          dart format test/ux_pairing_notifications_location_e2e_test.dart
+          git diff --no-ext-diff --unified=3 -- test/ux_pairing_notifications_location_e2e_test.dart
