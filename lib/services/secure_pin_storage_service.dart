@@ -18,10 +18,9 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
   PlatformSecurePinStorage({
     MethodChannel? channel,
     this._fallbackDirectory,
-    bool? supportsNativeChannelOverride,
+    this._supportsNativeChannelOverride,
   }) : _hasExplicitChannel = channel != null,
-       _channel = channel ?? const MethodChannel('dev.watsafe/secure_storage'),
-       _supportsNativeChannelOverride = supportsNativeChannelOverride;
+       _channel = channel ?? const MethodChannel('dev.watsafe/secure_storage');
 
   final bool _hasExplicitChannel;
   final MethodChannel _channel;

@@ -28,9 +28,7 @@ jobs:
         run: flutter pub get
 
       - name: Verify Dart formatting
-        run: |
-          dart format test/alarm_controller_test.dart
-          git diff -- test/alarm_controller_test.dart
+        run: dart format --output=none --set-exit-if-changed .
 
       - name: Run Flutter analyzer
         run: flutter analyze
