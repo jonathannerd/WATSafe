@@ -124,68 +124,70 @@ void main() {
     },
   );
 
-  testWidgets('browser setup checklist explains required and optional steps', (
-    WidgetTester tester,
-  ) async {
-    await tester.binding.setSurfaceSize(const Size(900, 700));
-    final fakeDetector = FakeMotionDetector(
-      type: DetectorType.browserCameraSceneMotion,
-      initialCapability: const DetectorCapability(
+  testWidgets(
+    'browser Home explains monitoring limits without a setup checklist',
+    (WidgetTester tester) async {
+      await tester.binding.setSurfaceSize(const Size(900, 700));
+      final fakeDetector = FakeMotionDetector(
         type: DetectorType.browserCameraSceneMotion,
-        status: CapabilityStatus.permissionRequired,
-        permissionStatus: PermissionStatus.notDetermined,
-        summary: 'Allow camera access to arm WATSafe.',
-        guidance: 'Keep this tab visible and the device awake.',
-      ),
-    );
-    final pinService = PinSecurityService(
-      storage: InMemorySecurePinStorage(),
-      pbkdf2Iterations: 500,
-    );
-    await pinService.setupInitialPin(pin: '135790', confirmPin: '135790');
-    final controller = AlarmController(
-      detectors: <DetectorType, MotionDetectorAdapter>{
-        DetectorType.browserCameraSceneMotion: fakeDetector,
-      },
-      audioAdapter: FakeAudioAlarmAdapter(),
-      pinService: pinService,
-      incidentStorage: InMemoryIncidentStorage(),
-      settingsStorage: InMemorySettingsStorage(
-        const ProtectionSettings(
-          selectedDetector: DetectorType.browserCameraSceneMotion,
-          onboardingCompleted: true,
-          deviceDisplayName: 'My Browser',
-        ),
-      ),
-      notificationAdapter: const UnconfiguredRemoteNotificationService(),
-    );
-
-    try {
-      await controller.initialize();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: HomeScreen(controller: controller)),
+        initialCapability: const DetectorCapability(
+          type: DetectorType.browserCameraSceneMotion,
+          status: CapabilityStatus.permissionRequired,
+          permissionStatus: PermissionStatus.notDetermined,
+          summary: 'Allow camera access to arm WATSafe.',
+          guidance: 'Keep this tab visible and the device awake.',
         ),
       );
-      await tester.pumpAndSettle();
+      final pinService = PinSecurityService(
+        storage: InMemorySecurePinStorage(),
+        pbkdf2Iterations: 500,
+      );
+      await pinService.setupInitialPin(pin: '135790', confirmPin: '135790');
+      final controller = AlarmController(
+        detectors: <DetectorType, MotionDetectorAdapter>{
+          DetectorType.browserCameraSceneMotion: fakeDetector,
+        },
+        audioAdapter: FakeAudioAlarmAdapter(),
+        pinService: pinService,
+        incidentStorage: InMemoryIncidentStorage(),
+        settingsStorage: InMemorySettingsStorage(
+          const ProtectionSettings(
+            selectedDetector: DetectorType.browserCameraSceneMotion,
+            onboardingCompleted: true,
+            deviceDisplayName: 'My Browser',
+          ),
+        ),
+        notificationAdapter: const UnconfiguredRemoteNotificationService(),
+      );
 
-      expect(
-        find.byKey(const Key('home_setup_readiness_card')),
-        findsOneWidget,
-      );
-      expect(find.text('Camera access · Required'), findsOneWidget);
-      expect(find.text('Phone pairing · Optional'), findsOneWidget);
-      expect(
-        find.byKey(const Key('browser_monitoring_limitations')),
-        findsOneWidget,
-      );
-      expect(find.text('Browser monitoring limits'), findsOneWidget);
-    } finally {
-      controller.dispose();
-      await fakeDetector.dispose();
-      await tester.binding.setSurfaceSize(null);
-    }
-  });
+      try {
+        await controller.initialize();
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: HomeScreen(controller: controller)),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byKey(const Key('home_setup_readiness_card')),
+          findsNothing,
+        );
+        expect(find.text('Setup checklist'), findsNothing);
+        expect(find.text('Camera access · Required'), findsNothing);
+        expect(find.text('Phone pairing · Optional'), findsNothing);
+        expect(
+          find.byKey(const Key('browser_monitoring_limitations')),
+          findsOneWidget,
+        );
+        expect(find.text('Browser monitoring limits'), findsOneWidget);
+      } finally {
+        controller.dispose();
+        await fakeDetector.dispose();
+        await tester.binding.setSurfaceSize(null);
+      }
+    },
+  );
 
   testWidgets(
     'iPad portrait and landscape use the adaptive navigation rail without layout errors',
