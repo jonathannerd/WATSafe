@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:postgres/postgres.dart';
 
@@ -4405,6 +4406,10 @@ class PostgresRelayStore implements RelayStore {
   }
 }
 
+class _RequestBodyTooLargeException implements Exception {
+  const _RequestBodyTooLargeException();
+}
+
 class _FailedAttemptWindow {
   _FailedAttemptWindow({required this.firstFailedAtUtc, this.count = 0});
   DateTime firstFailedAtUtc;
@@ -4499,8 +4504,6 @@ class WatSafeRelayServer {
 
   final Map<String, _FailedAttemptWindow> _failedAttemptsByClient =
       <String, _FailedAttemptWindow>{};
-  final List<Map<String, Object?>> _registeredDevices =
-      <Map<String, Object?>>[];
   final List<Map<String, Object?>> _pairedDevicesSnapshot =
       <Map<String, Object?>>[];
   final Map<String, Map<String, Object?>> _reportedIncidentsSnapshot =
@@ -5621,19 +5624,6 @@ class WatSafeRelayServer {
         return;
       }
 
-      if ((method == 'GET' || method == 'POST') &&
-          path == '/v1/watchdog/sweep') {
-        final nowUtc = _clock().toUtc();
-        final triggered = await sweepArmedHeartbeatWatchdog(nowUtc);
-        _writeJson(request.response, HttpStatus.ok, <String, Object?>{
-          'ok': true,
-          'triggeredCount': triggered,
-          'watchdogTimeoutSeconds': armedHeartbeatTimeout.inSeconds,
-          'checkedAtUtc': nowUtc.toIso8601String(),
-        });
-        return;
-      }
-
       // Loopback-only endpoint used by `tool/dev_launcher.dart` to register the live
       // verified HTTPS tunnel URL after local relay startup.
       if (method == 'POST' && path == '/v1/admin/public-url') {
@@ -5673,21 +5663,6 @@ class WatSafeRelayServer {
           'updated': true,
           'publicOrigin': _dynamicPublicOrigin,
         });
-        return;
-      }
-
-      if (method == 'POST' && path == '/v1/devices/register') {
-        final body = await _readJsonBody(request);
-        final id = 'reg_${++_seq}_${_randomHex(6)}';
-        final entry = <String, Object?>{
-          'deviceId': id,
-          'displayName': body['displayName'] ?? 'WATSafe Host',
-          'platform': body['platform'] ?? 'unknown',
-          'bearerToken': 'tok_${_randomHex(16)}',
-          'registeredAtUtc': _clock().toUtc().toIso8601String(),
-        };
-        _registeredDevices.add(entry);
-        _writeJson(request.response, HttpStatus.ok, entry);
         return;
       }
 
@@ -6134,6 +6109,7 @@ class WatSafeRelayServer {
 
         final bond = await _store.findActiveBondByHandoffCode(normalizedCode);
         if (bond == null) {
+          _recordFailedPairingAttempt(clientKey, nowUtc);
           _writeJson(request.response, HttpStatus.notFound, <String, Object?>{
             'error': 'HANDOFF_CODE_NOT_FOUND',
             'message': 'Setup code was not found or has already been used.',
@@ -6146,6 +6122,7 @@ class WatSafeRelayServer {
           bond.activeHandoffCode = null;
           bond.handoffExpiresAtUtc = null;
           await _store.saveCompanionBond(bond);
+          _recordFailedPairingAttempt(clientKey, nowUtc);
           _writeJson(request.response, HttpStatus.badRequest, <String, Object?>{
             'error': 'HANDOFF_CODE_EXPIRED',
             'message': 'This Home Screen setup code expired. Open Safari or scan a new QR code on your laptop.',
@@ -8116,6 +8093,15 @@ class WatSafeRelayServer {
         'error': 'NOT_FOUND',
         'path': path,
       });
+    } on _RequestBodyTooLargeException {
+      _writeJson(
+        request.response,
+        HttpStatus.requestEntityTooLarge,
+        <String, Object?>{
+          'error': 'REQUEST_BODY_TOO_LARGE',
+          'message': 'JSON request bodies must be 2 MiB or smaller.',
+        },
+      );
     } catch (error) {
       _writeJson(
         request.response,
@@ -8151,8 +8137,24 @@ class WatSafeRelayServer {
     response.headers.set('X-WATSafe-SW-Version', companionSwVersion);
   }
 
+  static const int _maxRequestBodyBytes = 2 * 1024 * 1024;
+
   Future<Map<String, Object?>> _readJsonBody(HttpRequest request) async {
-    final raw = await utf8.decoder.bind(request).join();
+    if (request.contentLength > _maxRequestBodyBytes) {
+      throw const _RequestBodyTooLargeException();
+    }
+
+    final builder = BytesBuilder(copy: false);
+    var totalBytes = 0;
+    await for (final chunk in request) {
+      totalBytes += chunk.length;
+      if (totalBytes > _maxRequestBodyBytes) {
+        throw const _RequestBodyTooLargeException();
+      }
+      builder.add(chunk);
+    }
+
+    final raw = utf8.decode(builder.takeBytes());
     if (raw.trim().isEmpty) {
       return <String, Object?>{};
     }
