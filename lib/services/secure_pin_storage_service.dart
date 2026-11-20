@@ -58,6 +58,10 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
   @override
   String get storageBackendDescription => _backendUsed;
 
+  bool _mustPropagateNativeStorageFailure(PlatformException error) =>
+      error.code == 'KEYCHAIN_READ_FAILED' ||
+      error.code == 'SECURE_STORAGE_WRITE_FAILED';
+
   @override
   Future<StoredPinRecord?> readPinRecord() async {
     if (_supportsNativeSecureChannel) {
@@ -72,8 +76,11 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
         }
       } on MissingPluginException {
         // Fall through to restricted file fallback
-      } on PlatformException {
-        // Fall through to restricted file fallback
+      } on PlatformException catch (error) {
+        if (_mustPropagateNativeStorageFailure(error)) {
+          rethrow;
+        }
+        // Non-Keychain platform adapters may use the restricted file fallback.
       }
     }
     return _readFallbackFile();
@@ -97,8 +104,11 @@ class PlatformSecurePinStorage implements SecurePinStorageAdapter {
         return;
       } on MissingPluginException {
         // Fall through to restricted file fallback
-      } on PlatformException {
-        // Fall through to restricted file fallback
+      } on PlatformException catch (error) {
+        if (_mustPropagateNativeStorageFailure(error)) {
+          rethrow;
+        }
+        // Non-Keychain platform adapters may use the restricted file fallback.
       }
     }
     await _writeFallbackFile(encoded);
