@@ -2,7 +2,7 @@ name: WATSafe Native Platform Builds
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/setup-readiness-safari-activity-filters]
   pull_request:
     branches: [main]
 
