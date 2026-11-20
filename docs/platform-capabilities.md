@@ -7,7 +7,7 @@ This document distinguishes what is implemented in source, what automated tests 
 | Capability | macOS | Windows | Android | iOS | Web |
 |---|---|---|---|---|---|
 | Shared Flutter UI and alarm state machine | Implemented | Implemented | Implemented | Implemented | Implemented |
-| PIN storage | Keychain with protected Application Support fallback | Windows DPAPI | Android Keystore AES-256-GCM | iOS Keychain | Browser-restricted local fallback |
+| PIN storage | Keychain + 0600 Application Support copy | Windows DPAPI | Android Keystore AES-256-GCM | iOS Keychain | Browser-restricted local fallback |
 | Camera scene-motion detection | AVFoundation + shared Dart motion analyzer | Media Foundation native capture and motion pipeline | Not applicable | Not applicable | Browser camera APIs where supported |
 | Motion sensors | No public built-in Mac laptop accelerometer API used | Optional WinRT / Sensor API accelerometer | SensorManager linear-acceleration or accelerometer fallback | Core Motion while foregrounded | Not applicable |
 | Background motion monitoring | Native sleep/lid lifecycle reporting; no capture while asleep | Native sleep/lid/shutdown lifecycle reporting; camera capture pauses during sleep | User-visible special-use foreground service | Foreground only; pauses on background/screen lock | Browser lifecycle and permissions apply |
@@ -53,8 +53,9 @@ The matrix describes code in the repository. It does not mean every optional int
 ## 3. PIN and storage behavior
 
 - PINs are validated as 6–12 digits and stored as salted PBKDF2-HMAC-SHA256 verifier records, not as plaintext PINs.
-- Native storage adapters exist for macOS, Windows, Android, and iOS. A restricted local fallback is used where the native channel is unavailable; it is not intended to be a second copy after a successful native write.
-- The current PIN work factor and in-memory failed-attempt backoff are under a separate security task: Issue #23 — Persist PIN lockout state and strengthen the PIN KDF. A restart currently resets the in-memory lockout counter.
+- Native storage adapters exist for macOS, Windows, Android, and iOS. A restricted local fallback is used where the native channel is unavailable.
+- The macOS native bridge currently also writes a 0600-protected Application Support copy alongside Keychain. This is separate from the Flutter-level fallback removed by PR #11 and is tracked in [Issue #26](https://github.com/jonathannerd/WATSafe/issues/26).
+- The current PIN work factor and in-memory failed-attempt backoff are under [Issue #23](https://github.com/jonathannerd/WATSafe/issues/23). A restart currently resets the in-memory lockout counter.
 - Benchmark any higher KDF cost on target hardware before changing production defaults because PIN verification is part of the disarm flow.
 
 ## 4. Pairing, location, and remote alerts
