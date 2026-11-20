@@ -1,97 +1,53 @@
-# WATSafe Roadmap & Next Assignable Team Tasks
+# WATSafe Roadmap & Remaining Work
 
-This document defines the immediate next tasks after the Milestone 1 foundation. Each task is scoped so that one teammate can complete, test, and open a pull request independently.
+This roadmap reflects the current codebase. Older milestone documents listed several native integrations as planned before they were implemented; check current source and tests before reopening those tasks.
 
----
+## 1. Implemented foundation
 
-## Area 1 — Shared Flutter UI, Core Logic & Vision Refinement
+The repository now contains the following implementation areas:
 
-### Task 1.1: Optical-Flow Ego-Motion Refinement (macOS / Desktop)
-- **Goal:** Upgrade the scene-motion algorithm to distinguish ambient scene movement (a person walking past at a distance) from global camera translation/rotation (someone lifting or tilting the laptop).
-- **Files:** `macos/Runner/MainFlutterWindow.swift`, `lib/core/models/detector_models.dart`, `docs/platform-capabilities.md`.
-- **Acceptance Criteria:**
-  - Estimate 4x4 grid block translation vectors or sparse Lucas-Kanade optical flow across downsampled `64x48` frames.
-  - Trigger high-confidence movement events when coherent global motion vectors occur across the majority of blocks.
-  - Preserve the existing scene-motion mode as a user-selectable sensitivity option.
+- Shared Flutter UI and AlarmController state machine with generation guards, PIN disarm, incident history, lifecycle pause/resume, and local alarm handling.
+- Salted PBKDF2-HMAC-SHA256 PIN verification with native storage bridges for macOS Keychain, Windows DPAPI, Android Keystore, and iOS Keychain. macOS also has a protected Application Support fallback.
+- macOS AVFoundation camera monitoring and a shared Dart camera motion analyzer with optical-flow / camera ego-motion estimation, temporal filtering, lighting normalization, and obstruction warnings.
+- Windows Media Foundation webcam capture, native camera motion processing, and optional WinRT / Sensor API accelerometer support.
+- Android SensorManager motion detection and a user-visible foreground monitoring service.
+- iOS Core Motion foreground detection with explicit pause on background/screen lock and guarded resume on foreground.
+- Relay pairing, authenticated companion requests, location-sharing controls, Web Push and provider adapters, local file persistence, and PostgreSQL-backed relay persistence.
+- Relay request hardening: bounded JSON bodies, failed handoff-code rate limiting, and removal of obsolete unauthenticated registration/watchdog routes (PR #22).
 
-### Task 1.2: Desktop Window Lifecycle & Fullscreen Alarm Focus
-- **Goal:** Improve desktop alarm visibility and keyboard ergonomics during active alarms.
-- **Files:** `lib/features/alarm/active_alarm_overlay.dart`, `lib/features/shell/watsafe_shell.dart`.
-- **Acceptance Criteria:**
-  - Support numeric keypad and hardware keyboard entry directly when the alarm overlay appears without requiring a mouse click into the text field.
-  - Add unit and widget tests verifying focus and keyboard submission.
+These are code-level implementation statements, not a claim that every path has been tested on every physical device.
 
-### Task 1.3: Incident Export & Filtering
-- **Goal:** Allow users to filter local incident history (Real vs. Test, date range) and export a sanitized JSON/CSV diagnostic summary.
-- **Files:** `lib/features/incidents/incidents_screen.dart`, `lib/services/local_storage_service.dart`.
-- **Acceptance Criteria:**
-  - Filter chips on the Incidents screen (`All`, `Real Triggers`, `Test Alarms`).
-  - Export includes only sanitized incident metadata (no PINs, no raw images).
+## 2. Highest-priority remaining work
 
----
+### 2.1 Persist PIN lockouts and review KDF strength
+[Issue #23](https://github.com/jonathannerd/WATSafe/issues/23)
 
-## Area 2 — Desktop Native Integrations (Windows & macOS)
+- Persist failed-attempt count and lockout deadline using protected local storage.
+- Preserve lockout state across app restart / service recreation.
+- Benchmark higher PBKDF2 work factors or Argon2id on real supported devices.
+- Migrate old verifier records without forcing users to reset their PIN.
+- Verify that storage failures do not silently clear security state.
 
-### Task 2.1: Windows Hardware Accelerometer Adapter (C++/WinRT)
-- **Goal:** Implement real hardware motion detection on Windows laptops/tablets equipped with an integrated accelerometer.
-- **Files:** `windows/runner/flutter_window.cpp`, `lib/platform/desktop/windows_detectors.dart`.
-- **Acceptance Criteria:**
-  - Implement MethodChannel `dev.watsafe/windows_accelerometer` and EventChannel `dev.watsafe/windows_accelerometer_events` using `Windows.Devices.Sensors.Accelerometer::GetDefault()`.
-  - Return `DetectorAvailabilityState.unsupported` when `GetDefault()` returns `nullptr` (standard non-convertible desktops/laptops without an HID sensor hub).
-  - Compute magnitude delta from $1\,\text{g}$ resting baseline and emit `DetectorEvent` records when thresholds are exceeded.
+### 2.2 Validate native builds on platform runners
+[PR #24 — Add native platform build validation](https://github.com/jonathannerd/WATSafe/pull/24)
 
-### Task 2.2: Windows Webcam Scene-Motion & Native Audio/DPAPI Bridges
-- **Goal:** Provide webcam motion detection, native looping siren playback, and DPAPI secure PIN storage on Windows.
-- **Files:** `windows/runner/`, `lib/platform/desktop/windows_detectors.dart`, `lib/services/audio_alarm_service.dart`, `lib/services/secure_pin_storage_service.dart`.
-- **Acceptance Criteria:**
-  - Implement `dev.watsafe/windows_camera` using Windows Media Foundation (`IMFMediaSource`) with `64x48` grayscale frame differencing.
-  - Implement `dev.watsafe/audio_alarm` on Windows so alarms play a continuous siren rather than fallback system alert sounds.
-  - Implement `dev.watsafe/secure_storage` using Windows `CryptProtectData` (DPAPI) or `PasswordVault`.
+- Compile Web and Android on Linux.
+- Compile macOS and unsigned iOS on macOS.
+- Compile Windows on a Windows runner.
+- Keep the existing formatting / analysis / unit-test workflow intact.
 
----
+### 2.3 Complete physical-device verification
 
-## Area 3 — Mobile Native Integrations (Android & iOS)
+Automated tests use fake sensors and mocked platform channels for many scenarios. Run and record the hardware checklist in docs/testing.md on actual Macs, Windows laptops, Android phones, and iPhones. Do not close native platform tasks solely because mocked tests pass.
 
-### Task 3.1: Android Accelerometer & Linear Acceleration Detector
-- **Goal:** Implement real hardware pickup/tilt detection on Android using `SensorManager`.
-- **Files:** `android/app/src/main/kotlin/.../MainActivity.kt`, `lib/platform/mobile/android_motion_detector.dart`.
-- **Acceptance Criteria:**
-  - Register `Sensor.TYPE_LINEAR_ACCELERATION` (or `Sensor.TYPE_ACCELEROMETER` with gravity high-pass filter) behind `dev.watsafe/android_motion` and `dev.watsafe/android_motion_events`.
-  - Include a 2-second settling window after arming before reporting triggers.
-  - Implement `dev.watsafe/audio_alarm` (`MediaPlayer` / `AudioTrack` on `USAGE_ALARM`) and `dev.watsafe/secure_storage` (`AndroidKeyStore`).
+### 2.4 Revisit detection thresholds only with measured evidence
 
-### Task 3.2: Android User-Initiated Foreground Monitoring Service
-- **Goal:** Keep Android motion monitoring alive when the screen turns off while armed.
-- **Files:** `android/app/src/main/AndroidManifest.xml`, `android/app/src/main/kotlin/.../`.
-- **Acceptance Criteria:**
-  - Declare necessary foreground service permissions and service types in `AndroidManifest.xml` for Android 14+ (`API 34+`).
-  - Show a persistent, user-visible notification (`WATSafe is armed and monitoring motion`) whenever armed.
-  - Stop the foreground service immediately on PIN disarm.
+The camera analyzer already includes ego-motion, landmark anchoring, optical flow, illumination normalization, obstruction detection, and synthetic false-alarm / pickup tests. Any further tuning should be driven by recorded false-positive and true-positive results from physical use, not speculative threshold changes.
 
-### Task 3.3: iOS Core Motion Foreground Detector & Lifecycle Pause
-- **Goal:** Implement foreground physical motion detection on iOS with honest background/lock suspension handling.
-- **Files:** `ios/Runner/AppDelegate.swift`, `lib/platform/mobile/ios_motion_detector.dart`, `ios/Runner/Info.plist`.
-- **Acceptance Criteria:**
-  - Add `NSMotionUsageDescription` to `ios/Runner/Info.plist`.
-  - Stream `CMMotionManager.startDeviceMotionUpdates` over `dev.watsafe/ios_motion_events` while the app is in the foreground.
-  - Automatically enable `UIApplication.shared.isIdleTimerDisabled = true` while armed in the foreground, and transition `AlarmController` to `paused` with a clear banner if the user locks the phone or backgrounds the app.
+### 2.5 Refresh older issue backlog
 
----
+Issues #2–#9 predate substantial implementation work. In particular, Windows webcam detection, Windows accelerometer support, Android foreground motion monitoring, alarm state/lifecycle handling, and PIN/alarm integration tests now have corresponding code and automated tests. Review each issue against current implementation and remaining physical-device acceptance checks before assigning duplicate implementation work.
 
-## Area 4 — Backend, Pairing & Remote Notifications
+## 3. Development rule
 
-### Task 4.1: Pairing & Incident Relay Backend Service
-- **Goal:** Implement the minimal REST API specified in [backend/README.md](../backend/README.md).
-- **Files:** `backend/` (server code, Dockerfile/compose for local dev, unit tests).
-- **Acceptance Criteria:**
-  - Implement `POST /v1/devices/register`, `POST /v1/pairings/request`, `POST /v1/pairings/confirm`, `GET /v1/pairings`, `DELETE /v1/pairings/:pairingId`, and `POST /v1/incidents`.
-  - Enforce 6-digit pairing token expiration (10 minutes), rate limiting, and schema validation rejecting any payload containing raw images or PIN fields.
-  - Provide a local development mode that logs push payloads to stdout without requiring paid APNs/FCM credentials.
-
-### Task 4.2: Client Pairing UI & Remote Notification Service Integration
-- **Goal:** Connect the Flutter app's Paired Devices screen and `RemoteNotificationService` to the backend API.
-- **Files:** `lib/services/remote_notification_service.dart`, `lib/features/paired_devices/paired_devices_screen.dart`.
-- **Acceptance Criteria:**
-  - Allow optional backend URL configuration via `--dart-define=WATSAFE_API_URL=...` or Settings.
-  - Keep `RemoteNotificationServiceState.notConfigured` as the default when no backend URL is configured.
-  - Verify that `AlarmController` still sounds the local siren immediately even if `dispatchIncidentAlert` times out or returns HTTP 500.
+Keep security changes, native platform changes, and documentation/cleanup in separate pull requests. For any change touching shared contracts, native channels, storage formats, or platform lifecycle behavior, add regression tests and preserve existing behavior on platforms not involved in the change.

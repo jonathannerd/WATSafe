@@ -1,60 +1,77 @@
 # WATSafe Platform Capabilities & Limitations
 
-This document records what is **Implemented**, **Tested**, and **Planned** across each target platform, along with hardware and operating system constraints that affect user decisions.
+This document distinguishes what is implemented in source, what automated tests exercise, and what still needs validation on physical hardware. A mocked platform-channel test or successful compile does not prove that an OS permission, sensor, camera, siren, or background service behaves correctly on every device.
 
----
+## 1. Capability matrix
 
-## 1. Capability Matrix
+| Capability | macOS | Windows | Android | iOS | Web |
+|---|---|---|---|---|---|
+| Shared Flutter UI and alarm state machine | Implemented | Implemented | Implemented | Implemented | Implemented |
+| PIN storage | Keychain with protected Application Support fallback | Windows DPAPI | Android Keystore AES-256-GCM | iOS Keychain | Browser-restricted local fallback |
+| Camera scene-motion detection | AVFoundation + shared Dart motion analyzer | Media Foundation native capture and motion pipeline | Not applicable | Not applicable | Browser camera APIs where supported |
+| Motion sensors | No public built-in Mac laptop accelerometer API used | Optional WinRT / Sensor API accelerometer | SensorManager linear-acceleration or accelerometer fallback | Core Motion while foregrounded | Not applicable |
+| Background motion monitoring | Native sleep/lid lifecycle reporting; no capture while asleep | Native sleep/lid/shutdown lifecycle reporting; camera capture pauses during sleep | User-visible special-use foreground service | Foreground only; pauses on background/screen lock | Browser lifecycle and permissions apply |
+| Local alarm audio | AVAudioPlayer | Native Windows audio bridge | Platform audio adapter | AVAudioPlayer / AVAudioSession | Browser audio policy applies |
+| Pairing and remote alerts | Configurable HTTPS relay | Configurable HTTPS relay | Companion client / relay | Companion client / relay | Phone companion PWA |
 
-| Subsystem / Feature | macOS | Windows | Android | iOS | Status in Code |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Shared Material 3 UI & Adaptive Shell** | Implemented | Implemented | Implemented | Implemented | Automated widget tests + macOS/Windows builds |
-| **Central Alarm State Machine (`AlarmController`)** | Implemented | Implemented | Implemented | Implemented | Unit & widget test suites passing |
-| **Salted PBKDF2-HMAC-SHA256 PIN & Lockout** | Implemented (`Keychain` + `0600` fallback) | **Implemented** (`DPAPI CryptProtectData`) | Planned (`AndroidKeyStore`) | Planned (`Keychain`) | Tested on macOS & Windows |
-| **Local Looping Siren & 5s Test Alarm** | Implemented (`AVAudioPlayer`) | **Implemented** (`WinMM PlaySoundW`) | Fallback (`SystemSound`) | Fallback (`SystemSound`) | Tested (`assets/audio/alarm_siren.wav`) |
-| **Local Incident & Settings Storage** | Implemented | Implemented | Implemented | Implemented | Tested (JSON persistence, zero images/PINs) |
-| **Webcam Scene-Motion Detection** | **Implemented** (`AVFoundation`) | **Implemented** (`MediaFoundation`) | N/A | N/A | Implemented & compiled on macOS & Windows |
-| **Hardware Accelerometer Detection** | Unsupported (No public macOS API) | **Implemented** (`WinRT Sensors` + `ISensorManager`) | Planned (`SensorManager`) | Planned (`CMMotionManager`) | Implemented on Windows; returns `unsupported` when hardware absent |
-| **Background / Foreground Service Lifecycle** | Implemented (`NSWorkspace` sleep/wake) | **Implemented** (`WM_POWERBROADCAST` sleep/wake) | Planned (Android 14+ FGS) | Foreground-only (iOS limit) | macOS & Windows sleep/wake wired; mobile planned |
-| **Device Pairing & Remote Push Alerts** | Interface ready | Interface ready | Interface ready | Interface ready | Explicitly shows `Not configured` |
+The matrix describes code in the repository. It does not mean every optional integration is configured by default or verified on physical hardware.
 
----
+## 2. Detection and lifecycle behavior
 
-## 2. Explicit Capability Status Values
+### macOS
 
-Every `MotionDetectorAdapter` and `RemoteNotificationAdapter` reports one of the following distinct states (`CapabilityStatus` in `lib/core/models/detector_models.dart`):
+- Camera frames are captured through AVFoundation and processed locally.
+- The shared CameraMotionAnalyzer downsamples frames to a compact grayscale grid and estimates camera ego-motion using landmark anchoring, Lucas-Kanade optical flow, illumination normalization, and temporal filtering.
+- Camera images are not intended to be saved or uploaded.
+- The native lifecycle bridge reports sleep, lid/power, and termination-related events. A sleeping or powered-off Mac cannot continue live camera capture or play its local siren.
 
-- `ready` — Hardware is present, OS permission is granted, and the detector can arm immediately.
-- `supported` — Hardware is present, awaiting configuration.
-- `permissionRequired` — Hardware is present, but OS permission is `notDetermined`, `denied`, or `restricted`.
-- `degraded` — Detector is running or available, but input quality is poor (e.g., covered camera lens or extreme low light).
-- `unsupported` — Required hardware is absent or the detector belongs to a different operating system.
-- `notImplemented` — Shared contract is wired into the UI and controller, but native platform implementation is scheduled for a teammate task. Never pretends to monitor.
-- `notConfigured` — Requires external backend/pairing configuration not set up in this local milestone.
+### Windows
 
----
+- Webcam capture uses Windows Media Foundation (MFEnumDeviceSources and IMFSourceReader) on a native worker thread.
+- The native motion pipeline samples supported camera pixel formats, accounts for row pitch, and reports camera obstruction / low-light conditions.
+- An optional hardware accelerometer uses WinRT / Windows Sensor APIs when suitable hardware exists. Many conventional laptops do not expose an integrated three-axis accelerometer; in that case the adapter reports unsupported and the app can use webcam detection when available.
+- Native lifecycle hooks cover lid state, sleep/wake, shutdown/logoff, and optional input-interaction monitoring. Camera capture itself cannot run while Windows is asleep or powered off.
 
-## 3. Platform-Specific Hardware & OS Notes
+### Android
 
-### macOS (`macos_camera_scene_motion`)
-- **Why Camera Scene-Motion:** Apple does not expose an internal MacBook motion sensor via `CMMotionManager` on macOS.
-- **How It Works:** Captures low-resolution frames via `AVFoundation` on a background queue, downsamples to `64x48` grayscale, calibrates a reference frame, and computes normalized pixel delta scores.
-- **Honest Limitation:** Because this algorithm measures *scene motion*, it reacts to people moving in front of the laptop or abrupt lighting changes as well as physical laptop movement. Optical-flow camera ego-motion estimation is documented in `docs/roadmap.md` as a future improvement.
-- **System Sleep / Lid Closure:** When macOS enters sleep (`NSWorkspace.willSleepNotification`), camera capture pauses and `AlarmController` transitions from `armed` (`PROTECTED`) to `paused` (`PAUSED`).
+- The native adapter queries SensorManager for TYPE_LINEAR_ACCELERATION, falling back to TYPE_ACCELEROMETER with gravity filtering.
+- Monitoring runs on a sensor thread and uses a user-visible WatSafeForegroundService with the declared special-use foreground-service type and persistent notification.
+- If the service stops, the native bridge emits a failure event so the controller can leave the armed state.
+- Background execution remains subject to Android version, permission, battery-management, and device-manufacturer policies. Validate on physical devices, including screen-off behavior and service termination.
 
-### Windows (`windows_accelerometer` & `windows_camera_scene_motion`)
-- **Hardware Accelerometer (`windows_accelerometer`):** Queries `Windows.Devices.Sensors.Accelerometer.GetDefault()` and `ISensorManager` (`SENSOR_TYPE_ACCELEROMETER_3D`). On 2-in-1 convertibles and tablets with a 3-axis accelerometer, it calibrates a $1\,\text{g}$ resting vector/magnitude baseline and triggers on tilt or pickup acceleration. When `GetDefault()` returns `nullptr` (common on standard clamshell laptops without an HID sensor hub), the adapter reports `CapabilityStatus.unsupported` and `AlarmController` automatically falls back to `Windows Webcam Scene-Motion` when a camera is available.
-- **Webcam Scene-Motion (`windows_camera_scene_motion`):** Enumerates video capture hardware via Windows Media Foundation (`MFEnumDeviceSources`) and processes frames off the UI thread via `IMFSourceReader`, downsampling `NV12`, `YUY2`, `RGB32`, or `RGB24` frames to a `64x48` grayscale grid with adaptive reference calibration, consecutive-frame persistence filtering, and covered-lens / low-light warnings.
-- **System Sleep / Wake:** Handles `WM_POWERBROADCAST` (`PBT_APMSUSPEND` / `PBT_APMRESUMEAUTOMATIC`) to pause and resume active Windows monitoring sessions honestly.
+### iOS
 
-### Android (`android_motion_sensors`)
-- **Sensors:** Uses `SensorManager` (`Sensor.TYPE_LINEAR_ACCELERATION` with `Sensor.TYPE_ACCELEROMETER` fallback).
-- **Foreground Service Requirement:** Android 14+ (API 34+) requires declaring a user-initiated foreground service with a persistent notification so sensor monitoring continues when the screen turns off.
+- Motion detection uses CMMotionManager through the native Core Motion bridge.
+- Live monitoring is deliberately foreground-only. When iOS backgrounds or suspends the app (including screen lock), the bridge stops motion updates and emits a lifecycle pause; the controller must not continue displaying Protected while monitoring is inactive.
+- Returning to the foreground triggers a capability check and a guarded monitoring restart. iOS does not provide indefinite background accelerometer capture for this app.
 
-### iOS (`ios_core_motion_foreground`)
-- **Foreground-Only Live Monitoring:** iOS suspends standard applications shortly after screen locking or switching apps and does not permit indefinite background accelerometer capture.
-- **Honest UX Rule:** On iOS, live `CMMotionManager` monitoring operates only while WATSafe remains in the foreground. If the app is backgrounded or the screen locks, the iOS adapter must emit `DetectorEventType.lifecyclePaused` so the app transitions to `paused` rather than falsely claiming `Protected`. Backgrounded iOS devices receive remote APNs push alerts from paired desktop laptops.
+### Web
 
-### Audio & OS Lock Limitations (All Platforms)
-- WATSafe plays its siren through the active OS audio output device at the user-configured volume.
-- WATSafe does **not** claim to prevent hardware power-off, OS force-quitting, headphone unplugging/rerouting, or physical hardware mute buttons. Its PIN screen disarms the WATSafe alarm and is separate from the operating system login/lock screen.
+- Browser camera and audio access depend on browser support, user permission, autoplay policy, and page lifecycle.
+- A browser tab being hidden, suspended, or closed cannot be treated as equivalent to a native always-on foreground service.
+
+## 3. PIN and storage behavior
+
+- PINs are validated as 6–12 digits and stored as salted PBKDF2-HMAC-SHA256 verifier records, not as plaintext PINs.
+- Native storage adapters exist for macOS, Windows, Android, and iOS. A restricted local fallback is used where the native channel is unavailable; it is not intended to be a second copy after a successful native write.
+- The current PIN work factor and in-memory failed-attempt backoff are under a separate security task: Issue #23 — Persist PIN lockout state and strengthen the PIN KDF. A restart currently resets the in-memory lockout counter.
+- Benchmark any higher KDF cost on target hardware before changing production defaults because PIN verification is part of the disarm flow.
+
+## 4. Pairing, location, and remote alerts
+
+- ConfigurableRemoteNotificationService supports pairing, reconnection, authenticated relay requests, and companion alert/location flows.
+- The service is not equivalent to a configured production deployment: a relay URL, valid host/companion pairing, push-provider configuration, and durable server storage may still be required.
+- The relay supports local file storage and PostgreSQL-backed persistence. Cloud deployments should use a durable database and keep database / push credentials in environment secrets.
+- Phone location sharing is opt-in. Camera frames and PIN material are not part of relay payloads.
+
+## 5. Verification status and known limits
+
+Automated tests cover controller transitions, mocked native channels, camera-frame sampling / synthetic motion scenarios, relay request behavior, pairing, and notification flows. CI runs formatting, static analysis, and automated tests.
+
+Physical-device verification is still required for:
+- macOS Keychain behavior, camera permission prompts, sleep/lid interruption, and local siren routing;
+- Windows webcam/accelerometer availability, camera-in-use errors, lid/sleep reporting, and audio routing;
+- Android sensor availability, foreground-service notification, screen-off monitoring, OEM battery restrictions, and service-stop handling;
+- iPhone/iPad Core Motion permission, screen-lock pause, foreground resume, and real notification delivery.
+
+WATSafe cannot prevent a user or operating system from powering off, force-quitting, muting, or physically disconnecting a device. A laptop that is asleep or powered off cannot keep sampling its camera or playing its local siren; the relay watchdog can only act on information already received and while the relay itself is available.
