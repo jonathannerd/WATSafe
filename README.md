@@ -1,30 +1,39 @@
-<h1 align="center">WATSafe</h1>
+<div align="center">
 
-<p align="center"><strong>Arm your laptop. Get alerted on your phone.</strong></p>
+# WATSafe
 
-<p align="center">WATSafe helps protect an unattended laptop by detecting movement and camera tampering. If something happens while it's armed, it can sound a siren and send a notification to your paired phone.</p>
+**A laptop protection app with a phone companion.**
 
-[![Watch the 30-second WATSafe demo](assets/demo/watsafe-preview.jpg)](assets/demo/WATSafe.mp4?raw=true)
+![Flutter](https://img.shields.io/badge/Flutter-desktop-02569B?logo=flutter&logoColor=white)
+![Desktop](https://img.shields.io/badge/Desktop-macOS%20%7C%20Windows-334155)
+![Phone](https://img.shields.io/badge/Companion-iPhone%20%7C%20Android-059669)
 
-**[▶ Watch the 30-second demo](assets/demo/WATSafe.mp4?raw=true)**
+</div>
 
-*The animation shows a library scenario. The app displays reported device locations and their accuracy on a map. It does not pinpoint a device to a room or shelf indoors.*
+WATSafe is built for the moment you step away from your laptop in a library, café, or shared workspace. Arm it before you leave. If the laptop moves or its camera monitoring is interrupted, WATSafe can sound a siren and alert your phone.
 
-## What WATSafe does
+## Demo
 
-| Feature | What you get |
-| --- | --- |
-| **Movement detection** | Arm your laptop before stepping away. WATSafe looks for signs that the laptop itself has moved and aims to ignore people simply walking past. |
-| **Camera tamper alerts** | Sustained obstruction or loss of camera capture while armed can trigger a siren and a phone alert. |
-| **Lid-close and connection alerts** | WATSafe attempts to alert your phone before an armed laptop sleeps. If the laptop stops checking in, the relay can send a separate warning. |
-| **Phone notifications** | Pair by QR code and enable notifications in the Home Screen companion. Tap an alert to open the affected device on the map. |
-| **Device map** | See the laptop and phone on the same map when both share location. Accuracy and timestamps help you distinguish a recent fix from a last-known position. |
-| **PIN and appearance** | Disarm with your PIN and choose from six themes on desktop and phone. |
+[![WATSafe animated demo](assets/demo/watsafe-demo.webp)](assets/demo/WATSafe.mp4?raw=true)
+
+## Highlights
+
+- **Movement detection** looks for signs the laptop itself moved and aims to ignore people walking past.
+- **Camera tamper detection** responds to sustained obstruction or loss of camera capture. Camera frames are processed on the laptop.
+- **Lid-close and connection alerts** can warn you before an armed laptop goes to sleep or when it stops checking in. A sleeping laptop cannot keep playing its siren.
+- **Phone notifications** open the affected device on the map. Pair once by scanning a QR code with the iPhone or Android web companion.
+- **Device map** shows reported laptop and phone locations with timestamps and an estimate of accuracy.
+- **PIN and themes** let you disarm protection with your PIN and choose from six themes on desktop and phone.
 
 ## How it works
 
-**Pair your phone → Arm your laptop → Get an alert → Check the map**
+```mermaid
+flowchart LR
+    A["Pair your phone"] --> B["Arm your laptop"]
+    B --> C["Get a phone alert"]
+    C --> D["Check the device map"]
+```
 
-The laptop app runs on **macOS and Windows**. The companion installs from the browser on **iPhone and Android**. Camera frames are processed locally, and precise coordinates stay out of lock-screen notifications.
+## Built with
 
-A sleeping laptop cannot keep sounding its siren or reporting new locations. Remote alerts depend on the relay and push delivery.
+**Flutter** for the desktop app, native **Swift** and **C++** for desktop integrations, and a **Dart** relay with **PostgreSQL** for pairing and alerts. The phone companion uses **Web Push** and displays **OpenStreetMap** tiles.
