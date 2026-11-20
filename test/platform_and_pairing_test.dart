@@ -195,6 +195,75 @@ void main() {
       await adapter.dispose();
     });
 
+    test('iOS Core Motion does not claim permission before the user has decided', () async {
+      var permissionStatus = 'notDetermined';
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(iosMethodChannel, (MethodCall call) async {
+            switch (call.method) {
+              case 'checkCapability':
+                return <String, Object?>{
+                  'hasMotionHardware': true,
+                  'deviceName': 'Apple Core Motion IMU',
+                  'permissionStatus': permissionStatus,
+                  'detail': 'Permission state supplied by the native Core Motion bridge.',
+                };
+              case 'requestPermission':
+                permissionStatus = 'denied';
+                return permissionStatus;
+            }
+            return null;
+          });
+
+      final adapter = IosCoreMotionDetectorAdapter(
+        methodChannel: iosMethodChannel,
+        eventChannel: iosEventChannel,
+        isIOSOverride: true,
+      );
+
+      final undecided = await adapter.checkCapability();
+      expect(undecided.permissionStatus, PermissionStatus.notDetermined);
+      expect(undecided.status, CapabilityStatus.permissionRequired);
+      expect(undecided.canArm, isFalse);
+      expect(undecided.needsPermissionRequest, isTrue);
+
+      expect(await adapter.requestPermission(), PermissionStatus.denied);
+      final denied = await adapter.checkCapability();
+      expect(denied.permissionStatus, PermissionStatus.denied);
+      expect(denied.status, CapabilityStatus.permissionRequired);
+      expect(denied.canArm, isFalse);
+      await adapter.dispose();
+    });
+
+    test('iOS versions without a separate live-sensor permission status rely on actual sensor startup', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(iosMethodChannel, (MethodCall call) async {
+            switch (call.method) {
+              case 'checkCapability':
+                return <String, Object?>{
+                  'hasMotionHardware': true,
+                  'deviceName': 'Apple Core Motion IMU',
+                  'permissionStatus': 'notApplicable',
+                  'detail': 'This OS does not expose a separate live-sensor authorization status.',
+                };
+              case 'requestPermission':
+                return 'notApplicable';
+            }
+            return null;
+          });
+
+      final adapter = IosCoreMotionDetectorAdapter(
+        methodChannel: iosMethodChannel,
+        eventChannel: iosEventChannel,
+        isIOSOverride: true,
+      );
+      final capability = await adapter.checkCapability();
+      expect(capability.permissionStatus, PermissionStatus.notApplicable);
+      expect(capability.status, CapabilityStatus.ready);
+      expect(capability.canArm, isTrue);
+      expect(await adapter.requestPermission(), PermissionStatus.notApplicable);
+      await adapter.dispose();
+    });
+
     test('AndroidMotionDetectorAdapter bridges foreground motion sensors from a paired Android companion on non-Android hosts', () async {
       final notificationService = ConfigurableRemoteNotificationService(
         persistToDisk: false,
