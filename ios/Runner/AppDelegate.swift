@@ -178,55 +178,6 @@ final class IOSCoreMotionBridge: NSObject, FlutterStreamHandler {
     return motionManager.isDeviceMotionAvailable || motionManager.isAccelerometerAvailable
   }
 
-  /// CMMotionManager exposes an explicit authorization status starting in
-  /// iOS/iPadOS 27.2. Earlier supported releases do not expose an equivalent
-  /// status for this live-sensor API, so report notApplicable rather than
-  /// incorrectly claiming that permission was granted.
-  private func motionPermissionStatus() -> String {
-    if #available(iOS 27.2, *) {
-      switch CMMotionManager.authorizationStatus {
-      case .notDetermined:
-        return "notDetermined"
-      case .restricted:
-        return "restricted"
-      case .denied:
-        return "denied"
-      case .authorized:
-        return "granted"
-      @unknown default:
-        return "notDetermined"
-      }
-    }
-    return "notApplicable"
-  }
-
-  /// Starting a short-lived sensor stream is what allows iOS to present its
-  /// motion-access prompt when authorization is not yet determined.
-  private func requestMotionPermission(result: @escaping FlutterResult) {
-    var completed = false
-    let finish: (Bool) -> Void = { [weak self] receivedSample in
-      guard let self = self, !completed else { return }
-      completed = true
-      self.motionManager.stopAccelerometerUpdates()
-      let status = self.motionPermissionStatus()
-      // A delivered sensor sample is definitive proof of access even if the
-      // OS authorization snapshot has not refreshed yet.
-      result(status == "notDetermined" && receivedSample ? "granted" : status)
-    }
-
-    motionManager.accelerometerUpdateInterval = 0.10
-    motionManager.startAccelerometerUpdates(to: .main) { data, error in
-      if data != nil {
-        finish(true)
-      } else if error != nil {
-        finish(false)
-      }
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-      finish(false)
-    }
-  }
-
   private func handleMethodCall(
     call: FlutterMethodCall,
     result: @escaping FlutterResult
@@ -234,41 +185,21 @@ final class IOSCoreMotionBridge: NSObject, FlutterStreamHandler {
     switch call.method {
     case "checkCapability":
       let available = hasMotionHardware()
-      let permission = motionPermissionStatus()
       result([
         "hasMotionHardware": available,
         "deviceName": available ? "Apple Core Motion IMU" : "No Core Motion Hardware",
-        "permissionStatus": available ? permission : "notApplicable",
-        "detail": !available
-          ? "CMMotionManager reported no device motion or accelerometer hardware."
-          : (permission == "notApplicable"
-              ? "Foreground Core Motion is available. This iOS version does not expose a separate live-sensor authorization status."
-              : "Foreground Core Motion availability and authorization: \(permission)."),
+        // The app consumes live accelerometer/device-motion samples. It does
+        // not query the separate authorization used for stored activity data.
+        "permissionStatus": "notApplicable",
+        "detail": available
+          ? "Foreground Core Motion hardware is available; actual sensor sampling is validated when monitoring starts."
+          : "CMMotionManager reported no device motion or accelerometer hardware.",
       ])
 
     case "requestPermission":
-      guard hasMotionHardware() else {
-        result("notApplicable")
-        return
-      }
-      if #available(iOS 27.2, *) {
-        switch CMMotionManager.authorizationStatus {
-        case .notDetermined:
-          requestMotionPermission(result: result)
-        case .restricted:
-          result("restricted")
-        case .denied:
-          result("denied")
-        case .authorized:
-          result("granted")
-        @unknown default:
-          result("notDetermined")
-        }
-      } else {
-        // No separate live-sensor permission status exists on earlier iOS.
-        // Actual sensor availability is checked when monitoring starts.
-        result("notApplicable")
-      }
+      // Raw CMMotionManager sampling has no separate authorization request
+      // exposed by the SDK used for this build. Sensor startup is the check.
+      result("notApplicable")
 
     case "startMonitoring":
       let args = call.arguments as? [String: Any] ?? [:]
@@ -305,18 +236,6 @@ final class IOSCoreMotionBridge: NSObject, FlutterStreamHandler {
       ])
       return
     }
-    if #available(iOS 27.2, *),
-      CMMotionManager.authorizationStatus != .authorized
-    {
-      result([
-        "started": false,
-        "message": "Allow WATSafe to access motion data before arming protection.",
-        "errorCode": "MOTION_PERMISSION_REQUIRED",
-        "permissionStatus": motionPermissionStatus(),
-      ])
-      return
-    }
-
     let sessionId = (args["sessionId"] as? String) ?? "session_default"
     let threshold = (args["motionScoreThreshold"] as? NSNumber)?.doubleValue ?? 0.095
     let calibrationMs = (args["calibrationDurationMs"] as? NSNumber)?.int64Value ?? 1500
