@@ -120,7 +120,10 @@ class _SetupReadinessCard extends StatelessWidget {
     }
 
     if (!controller.settings.shareLocationOnAlarm) {
+      // This method handles the opt-in permission request and starts
+      // the location refresh schedule.
       await controller.updateShareLocationOnAlarm(true);
+      return;
     }
     if (controller.locationPermissionStatus != PermissionStatus.granted) {
       await controller.requestLocationPermission();
@@ -143,6 +146,12 @@ class _SetupReadinessCard extends StatelessWidget {
     final phoneConnected =
         controller.companionSession.isConnected ||
         controller.pairedDevices.any((device) => device.connected);
+    final phonePaired =
+        controller.companionSession.isConnected ||
+        controller.pairedDevices.isNotEmpty;
+    final locationBlocked =
+        controller.locationPermissionStatus == PermissionStatus.denied ||
+        controller.locationPermissionStatus == PermissionStatus.restricted;
 
     final cameraStatus = detectorReady
         ? 'Ready'
@@ -151,10 +160,18 @@ class _SetupReadinessCard extends StatelessWidget {
         : 'Needs attention';
     final locationStatus = !controller.isLocationSupported
         ? 'Not available'
-        : (locationSharingEnabled && locationGranted)
+        : !locationSharingEnabled
+        ? 'Off'
+        : locationGranted
         ? 'Enabled'
-        : (locationSharingEnabled ? 'Optional' : 'Off');
-    final phoneStatus = phoneConnected ? 'Connected' : 'Optional';
+        : locationBlocked
+        ? 'Blocked'
+        : 'Permission needed';
+    final phoneStatus = phoneConnected
+        ? 'Connected'
+        : phonePaired
+        ? 'Offline'
+        : 'Optional';
 
     final locationNeedsAction =
         controller.isLocationSupported &&
@@ -250,6 +267,8 @@ class _SetupReadinessCard extends StatelessWidget {
               title: 'Phone pairing · Optional',
               detail: phoneConnected
                   ? 'A companion phone is connected.'
+                  : phonePaired
+                  ? 'Your phone is paired but currently offline.'
                   : 'Pair a phone to receive remote incident alerts.',
               status: phoneStatus,
               isReady: phoneConnected,
