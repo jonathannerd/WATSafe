@@ -25,6 +25,14 @@ jobs:
           channel: stable
           cache: true
 
+      # Keep Gradle on Java 17: the project uses Gradle 8.14 and AGP 8.11.1.
+      # Newer GitHub runner defaults (Java 25) are not supported by this wrapper.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Install dependencies
         run: flutter pub get
 
