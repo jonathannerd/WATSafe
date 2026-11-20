@@ -120,7 +120,7 @@ class _SetupReadinessCard extends StatelessWidget {
     }
 
     if (!controller.settings.shareLocationOnAlarm) {
-      await controller.updateSettings(shareLocationOnAlarm: true);
+      await controller.updateShareLocationOnAlarm(true);
     }
     if (controller.locationPermissionStatus != PermissionStatus.granted) {
       await controller.requestLocationPermission();
