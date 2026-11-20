@@ -40,10 +40,7 @@ void main() {
     test('failed attempts and lockout survive service recreation and clear on correct PIN', () async {
       final storage = InMemorySecurePinStorage();
       final firstService = createService(storage);
-      await firstService.setupInitialPin(
-        pin: '246810',
-        confirmPin: '246810',
-      );
+      await firstService.setupInitialPin(pin: '246810', confirmPin: '246810');
 
       final firstFailure = await firstService.verifyPin('000000');
       expect(firstFailure.verified, isFalse);
@@ -98,7 +95,9 @@ void main() {
           'hashBase64': 'aGFzaA==',
           'updatedAtUtcIso': now.toIso8601String(),
           'failedAttempts': 9999999,
-          'lockedUntilUtcIso': now.add(const Duration(days: 365)).toIso8601String(),
+          'lockedUntilUtcIso': now
+              .add(const Duration(days: 365))
+              .toIso8601String(),
         }),
       );
 
@@ -129,10 +128,7 @@ void main() {
     test('correct PIN transparently upgrades old PBKDF2 records and preserves PIN validity', () async {
       final storage = InMemorySecurePinStorage();
       final legacyService = createService(storage, iterations: 500);
-      await legacyService.setupInitialPin(
-        pin: '654321',
-        confirmPin: '654321',
-      );
+      await legacyService.setupInitialPin(pin: '654321', confirmPin: '654321');
       expect((await storage.readPinRecord())?.iterations, 500);
 
       final upgradedService = createService(storage, iterations: 1500);
@@ -147,20 +143,26 @@ void main() {
       expect((await afterRestart.verifyPin('654321')).verified, isTrue);
     });
 
-    test('concurrent failures are serialized and cannot overwrite each other', () async {
-      final storage = InMemorySecurePinStorage();
-      final service = createService(storage);
-      await service.setupInitialPin(pin: '135790', confirmPin: '135790');
+    test(
+      'concurrent failures are serialized and cannot overwrite each other',
+      () async {
+        final storage = InMemorySecurePinStorage();
+        final service = createService(storage);
+        await service.setupInitialPin(pin: '135790', confirmPin: '135790');
 
-      final results = await Future.wait(<Future<PinVerificationResult>>[
-        service.verifyPin('000000'),
-        service.verifyPin('111111'),
-      ]);
+        final results = await Future.wait(<Future<PinVerificationResult>>[
+          service.verifyPin('000000'),
+          service.verifyPin('111111'),
+        ]);
 
-      expect(results.map((result) => result.failedAttempts).toList(), <int>[1, 2]);
-      expect(results.last.isLockedOut, isTrue);
-      expect((await storage.readPinRecord())?.failedAttempts, 2);
-    });
+        expect(results.map((result) => result.failedAttempts).toList(), <int>[
+          1,
+          2,
+        ]);
+        expect(results.last.isLockedOut, isTrue);
+        expect((await storage.readPinRecord())?.failedAttempts, 2);
+      },
+    );
 
     test('write failures preserve in-memory backoff and disclose failed persistence', () async {
       final storage = _ControlledPinStorage();
@@ -199,25 +201,28 @@ void main() {
       expect(storage.record?.failedAttempts, 0);
     });
 
-    test('PIN change and installation reset clear persisted lockout metadata', () async {
-      final storage = InMemorySecurePinStorage();
-      final service = createService(storage);
-      await service.setupInitialPin(pin: '111222', confirmPin: '111222');
-      await service.verifyPin('000000');
+    test(
+      'PIN change and installation reset clear persisted lockout metadata',
+      () async {
+        final storage = InMemorySecurePinStorage();
+        final service = createService(storage);
+        await service.setupInitialPin(pin: '111222', confirmPin: '111222');
+        await service.verifyPin('000000');
 
-      final changed = await service.changePin(
-        currentPin: '111222',
-        newPin: '333444',
-        confirmNewPin: '333444',
-      );
-      expect(changed.isValid, isTrue);
-      expect((await storage.readPinRecord())?.failedAttempts, 0);
-      expect((await storage.readPinRecord())?.lockedUntilUtcIso, isNull);
+        final changed = await service.changePin(
+          currentPin: '111222',
+          newPin: '333444',
+          confirmNewPin: '333444',
+        );
+        expect(changed.isValid, isTrue);
+        expect((await storage.readPinRecord())?.failedAttempts, 0);
+        expect((await storage.readPinRecord())?.lockedUntilUtcIso, isNull);
 
-      await service.verifyPin('000000');
-      await service.clearPinForInstallationReset();
-      expect(await storage.readPinRecord(), isNull);
-    });
+        await service.verifyPin('000000');
+        await service.clearPinForInstallationReset();
+        expect(await storage.readPinRecord(), isNull);
+      },
+    );
   });
 }
 
