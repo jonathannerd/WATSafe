@@ -105,7 +105,7 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
 
       final hasHardware = response['hasMotionHardware'] as bool? ?? false;
       final deviceName = response['deviceName'] as String?;
-      final permRaw = response['permissionStatus'] as String? ?? 'granted';
+      final permRaw = response['permissionStatus'] as String? ?? 'notDetermined';
       final permissionStatus = _parsePermissionStatus(permRaw);
       final detail = response['detail'] as String?;
 
@@ -178,7 +178,7 @@ class IosCoreMotionDetectorAdapter implements MotionDetectorAdapter {
       final raw = await _methodChannel.invokeMethod<String>(
         'requestPermission',
       );
-      return _parsePermissionStatus(raw ?? 'granted');
+      return _parsePermissionStatus(raw ?? 'notDetermined');
     } on MissingPluginException {
       return PermissionStatus.notApplicable;
     } on PlatformException {
