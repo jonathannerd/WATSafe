@@ -149,8 +149,7 @@ class PinSecurityService {
     if (await hasConfiguredPin()) {
       return const PinValidationResult(
         isValid: false,
-        errorMessage:
-            'A PIN is already configured. Use Change PIN with your current PIN.',
+        errorMessage: 'A PIN is already configured. Use Change PIN with your current PIN.',
       );
     }
     final validation = validateNewPin(pin: pin, confirmPin: confirmPin);
@@ -186,9 +185,7 @@ class PinSecurityService {
   }
 
   /// Restores and enforces persisted lockout metadata before doing KDF work.
-  Future<PinVerificationResult> _verifyPinInternal(
-    String candidatePin,
-  ) async {
+  Future<PinVerificationResult> _verifyPinInternal(String candidatePin) async {
     final record = await _storage.readPinRecord();
     if (record == null) {
       _resetBackoff();
@@ -222,8 +219,7 @@ class PinSecurityService {
       return PinVerificationResult(
         verified: false,
         failedAttempts: _failedAttempts,
-        message:
-            'The stored PIN verifier is invalid or unsupported. Secure PIN storage must be repaired before disarming.',
+        message: 'The stored PIN verifier is invalid or unsupported. Secure PIN storage must be repaired before disarming.',
       );
     }
 
@@ -236,8 +232,7 @@ class PinSecurityService {
       return PinVerificationResult(
         verified: false,
         failedAttempts: _failedAttempts,
-        message:
-            'The stored PIN verifier is damaged. Secure PIN storage must be repaired before disarming.',
+        message: 'The stored PIN verifier is damaged. Secure PIN storage must be repaired before disarming.',
       );
     }
 
@@ -274,9 +269,7 @@ class PinSecurityService {
       return PinVerificationResult(
         verified: true,
         failedAttempts: 0,
-        message: persisted
-            ? 'PIN verified.'
-            : 'PIN verified, but the lockout reset and verifier upgrade could not be saved. Check secure storage before the next protected session.',
+        message: persisted ? 'PIN verified.' : 'PIN verified, but the lockout reset and verifier upgrade could not be saved. Check secure storage before the next protected session.',
         securityStatePersisted: persisted,
         verifierUpgraded: persisted && needsUpgrade,
       );
@@ -325,7 +318,7 @@ class PinSecurityService {
     final delaySeconds = delay.inSeconds;
     final suffix = delaySeconds > 0
         ? ' Please wait $delaySeconds second'
-            '${delaySeconds == 1 ? '' : 's'} before retrying.'
+              '${delaySeconds == 1 ? '' : 's'} before retrying.'
         : '';
     final persistenceWarning = persisted
         ? ''
