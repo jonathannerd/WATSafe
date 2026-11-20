@@ -163,14 +163,8 @@ void main() {
         // iPad mini portrait is narrower than the 760pt rail breakpoint.
         await tester.binding.setSurfaceSize(const Size(744, 1133));
         await tester.pumpAndSettle();
-        expect(
-          find.byKey(const Key('compact_navigation_bar')),
-          findsOneWidget,
-        );
-        expect(
-          find.byKey(const Key('desktop_navigation_rail')),
-          findsNothing,
-        );
+        expect(find.byKey(const Key('compact_navigation_bar')), findsOneWidget);
+        expect(find.byKey(const Key('desktop_navigation_rail')), findsNothing);
         expect(tester.takeException(), isNull);
 
         // Rotating the same iPad mini to landscape restores the navigation rail.
@@ -180,10 +174,7 @@ void main() {
           find.byKey(const Key('desktop_navigation_rail')),
           findsOneWidget,
         );
-        expect(
-          find.byKey(const Key('compact_navigation_bar')),
-          findsNothing,
-        );
+        expect(find.byKey(const Key('compact_navigation_bar')), findsNothing);
         expect(tester.takeException(), isNull);
 
         await tester.tap(find.text('Settings'));
