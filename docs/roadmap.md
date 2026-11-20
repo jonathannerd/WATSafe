@@ -19,14 +19,14 @@ These are code-level implementation statements, not a claim that every path has 
 
 ## 2. Highest-priority remaining work
 
-### 2.1 Persist PIN lockouts and review KDF strength
+### 2.1 Benchmark production PIN KDF on supported devices
 [Issue #23](https://github.com/jonathannerd/WATSafe/issues/23)
 
-- Persist failed-attempt count and lockout deadline using protected local storage.
-- Preserve lockout state across app restart / service recreation.
-- Benchmark higher PBKDF2 work factors or Argon2id on real supported devices.
-- Migrate old verifier records without forcing users to reset their PIN.
-- Verify that storage failures do not silently clear security state.
+- Persistent failed-attempt count and UTC lockout deadlines are now included in secure PIN records and restored after service recreation.
+- Older PIN records remain readable and are upgraded to the configured work factor after successful authentication.
+- Storage-write failures preserve in-memory backoff and are surfaced; a valid PIN can still disarm after lockout expiry, but persistence status is explicit.
+- Run `flutter test integration_test/pin_kdf_benchmark_test.dart -d <device-id>` on real macOS, Windows, Android, and iOS devices.
+- Record benchmark results and tune the 600,000-iteration production target to keep verification responsive (general target: under one second).
 
 ### 2.2 Review macOS Keychain / Application Support duplication
 [Issue #26](https://github.com/jonathannerd/WATSafe/issues/26)
